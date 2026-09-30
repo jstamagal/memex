@@ -30,7 +30,6 @@ use crate::transfer::{
 use crate::tui;
 use crate::types::{RecordLinks, SourceFilter};
 use crate::usage::{CostMode, UsageQuery, scan_usage};
-use crate::vector::VectorIndex;
 use crate::watch::WatchMode;
 use crate::watch::{WatchService, watch_roots};
 use anyhow::{Context, Result, anyhow};

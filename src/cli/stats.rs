@@ -267,8 +267,9 @@ mod tests {
             total_bytes: 4096,
         };
         let lease = IngestLease::acquire(&paths, "stats test", INGEST_LEASE_TIMEOUT).unwrap();
+        // This fixture starts with an empty root and no checkpoint authority.
         let mut writer =
-            CheckpointWriter::open(&paths.state.join("ingest.json"), &lease, false).unwrap();
+            CheckpointWriter::open(&paths.state.join("ingest.json"), &lease, true).unwrap();
         writer
             .commit_delta(&CheckpointDelta {
                 scan_cache: Some(cache),
