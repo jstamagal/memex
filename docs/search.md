@@ -84,7 +84,9 @@ memex debug eval-retrieval cases.jsonl --records records.jsonl --baseline baseli
 Baseline comparisons fail on **individual query** quality regressions. They
 require matching dataset/corpus hashes, cutoff and search configuration (including
 live index revision for an existing root). Reports flag local index changes during
-the run, and baseline comparisons reject such runs. Latency is reported but not used as a
+the run, and baseline comparisons reject such runs. Semantic/hybrid reports also
+identify the vector snapshot; evaluation fails if that snapshot changes or disappears
+around a search, and baselines require the same snapshot. Latency is reported but not used as a
 machine-dependent CI gate. Reports contain queries, paths and snippets: keep
 private evaluations outside tracked files.
 

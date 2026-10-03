@@ -66,7 +66,15 @@ pub(super) fn run(args: EvaluationArgs) -> Result<()> {
     }
     // Production search falls back to lexical when vectors are absent. Such a run must not
     // be labelled a semantic/hybrid comparison.
-    let vector_model = if args.mode != CliSearchMode::Lexical {
+    let vector_revision = if args.mode != CliSearchMode::Lexical {
+        Some(
+            VectorIndex::snapshot_revision(&paths.vectors)?
+                .context("semantic/hybrid evaluation requires a prepared vector index")?,
+        )
+    } else {
+        None
+    };
+    let vector_model = if vector_revision.is_some() {
         let vectors = VectorIndex::open(&paths.vectors)
             .context("semantic/hybrid evaluation requires a prepared vector index")?;
         if vectors.doc_id_count() == 0 {
@@ -88,11 +96,13 @@ pub(super) fn run(args: EvaluationArgs) -> Result<()> {
     };
     let mut cases = Vec::with_capacity(dataset.cases.len());
     for (number, case) in dataset.cases.iter().enumerate() {
+        verify_vector_revision(&paths, vector_revision.as_deref())?;
         let started = Instant::now();
         let results = search(&paths, &args, case).with_context(|| {
             format!("evaluate case {}", case.id.as_deref().unwrap_or("unnamed"))
         })?;
         let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        verify_vector_revision(&paths, vector_revision.as_deref())?;
         let metrics = evaluate_case(case, &results.hits, &results.snippets, args.k)?;
         let recall_at_20 = evaluate_case(case, &results.hits, &results.snippets, 20)?.recall_at_k;
         let hits = results
@@ -118,7 +128,8 @@ pub(super) fn run(args: EvaluationArgs) -> Result<()> {
     } else {
         false
     };
-    let configuration = json!({
+    verify_vector_revision(&paths, vector_revision.as_deref())?;
+    let mut configuration = json!({
         "surface": args.surface, "mode": format!("{:?}", args.mode).to_lowercase(),
         "k": args.k, "limit": args.limit, "origin": args.origin,
         "unique_session": args.unique_session, "recency_weight": args.recency_weight,
@@ -127,6 +138,10 @@ pub(super) fn run(args: EvaluationArgs) -> Result<()> {
         "live_index_revision": live_revision,
         "machines": machines,
     });
+    // Keep lexical baseline configuration compatible: it does not search vectors.
+    if let Some(revision) = vector_revision {
+        configuration["vector_index_revision"] = json!(revision);
+    }
     let mut report = json!({
         "schema_version": 1, "configuration": configuration, "cases": cases.len(), "k": args.k,
         "summary": summarize(&cases), "per_case": cases,
@@ -344,6 +359,17 @@ fn index_revision(paths: &Paths) -> Result<Value> {
     Ok(json!({"opstamp": revision.opstamp, "segments": revision.segments}))
 }
 
+fn verify_vector_revision(paths: &Paths, expected: Option<&str>) -> Result<()> {
+    if let Some(expected) = expected {
+        let current = VectorIndex::snapshot_revision(&paths.vectors)
+            .context("verify evaluation vector snapshot")?;
+        if current.as_deref() != Some(expected) {
+            bail!("vector index changed during evaluation; semantic/hybrid results are invalid");
+        }
+    }
+    Ok(())
+}
+
 fn mean(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
     let values = values.flatten().collect::<Vec<_>>();
     (!values.is_empty()).then(|| values.iter().sum::<f64>() / values.len() as f64)
@@ -425,4 +451,61 @@ fn compare_baseline(report: &Value, baseline: &Value) -> Result<Vec<Value>> {
         }
     }
     Ok(regressions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_evaluation_rejects_same_model_replacement_and_deletion() {
+        let temporary = tempfile::tempdir().unwrap();
+        let paths = Paths::new(Some(temporary.path().to_path_buf())).unwrap();
+        let mut vectors = VectorIndex::open_or_create(&paths.vectors, 2, Some("fixture")).unwrap();
+        vectors.add(1, &[1.0, 0.0]).unwrap();
+        vectors.save().unwrap();
+        let initial = VectorIndex::snapshot_revision(&paths.vectors)
+            .unwrap()
+            .unwrap();
+        verify_vector_revision(&paths, Some(&initial)).unwrap();
+
+        // Same model and unchanged lexical corpus, but a different searched vector snapshot.
+        vectors.add(2, &[0.0, 1.0]).unwrap();
+        vectors.save().unwrap();
+        assert!(verify_vector_revision(&paths, Some(&initial)).is_err());
+        let replacement = VectorIndex::snapshot_revision(&paths.vectors)
+            .unwrap()
+            .unwrap();
+        verify_vector_revision(&paths, Some(&replacement)).unwrap();
+        VectorIndex::reset(&paths.vectors).unwrap();
+        assert!(verify_vector_revision(&paths, Some(&replacement)).is_err());
+        // Lexical evaluations remain independent of vector publication/deletion.
+        verify_vector_revision(&paths, None).unwrap();
+    }
+
+    #[test]
+    fn vector_baselines_require_the_same_snapshot() {
+        for mode in ["semantic", "hybrid"] {
+            let baseline = json!({
+                "schema_version": 1,
+                "index_changed_during_run": false,
+                "configuration": {
+                    "mode": mode, "vector_model": "fixture",
+                    "vector_index_revision": "generation-original",
+                    "live_index_revision": {"opstamp": 1, "segments": []},
+                },
+                "per_case": [],
+            });
+            assert!(compare_baseline(&baseline, &baseline).unwrap().is_empty());
+            let mut replacement = baseline.clone();
+            replacement["configuration"]["vector_index_revision"] = json!("generation-rebuilt");
+            assert!(compare_baseline(&replacement, &baseline).is_err());
+            let mut old_report = baseline.clone();
+            old_report["configuration"]
+                .as_object_mut()
+                .unwrap()
+                .remove("vector_index_revision");
+            assert!(compare_baseline(&baseline, &old_report).is_err());
+        }
+    }
 }
