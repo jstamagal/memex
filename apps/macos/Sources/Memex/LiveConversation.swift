@@ -28,11 +28,16 @@ struct InAppResumeTarget: Sendable, Equatable {
     static func unavailableReason(for session: Session) -> String? {
         guard session.machineID == "local" else { return "Resume this conversation on \(session.machineID)." }
         guard ["codex", "claude"].contains(session.source) else { return "In-app resume supports Codex and Claude conversations." }
+        guard !isArchived(session) else { return "Unarchive this conversation in Codex to continue here." }
         guard !session.isSubagent, session.conversationKind != "guardian_review" else {
             return "Resume the parent conversation to continue this agent's work."
         }
         guard session.cwd?.nilIfBlank != nil else { return "The original working directory is unavailable." }
         return nil
+    }
+
+    static func isArchived(_ session: Session) -> Bool {
+        session.source == "codex" && URL(fileURLWithPath: session.sourcePath).pathComponents.contains("archived_sessions")
     }
 
     static func resolve(_ session: Session, environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -140,22 +145,26 @@ struct ConversationSnapshot: Equatable, Sendable {
     var approvals: [ConversationApproval] = []
     var questions: [ConversationQuestion] = []
     var warning: String?
+    var controls: ConversationControls?
+    var deliveries: [ConversationDelivery] = []
 }
 
 struct ConversationCommand: Sendable, Equatable {
-    enum Action: Sendable, Equatable { case prompt, cancel, approval, userInput }
+    enum Action: Sendable, Equatable { case prompt, cancel, approval, userInput, model, configuration }
     let id: String
     let issuedAt: String
     let action: Action
     let text: String
     let requestID: String?
+    let attachments: [ConversationAttachment]
 
-    init(_ action: Action, text: String = "", requestID: String? = nil) {
+    init(_ action: Action, text: String = "", requestID: String? = nil, attachments: [ConversationAttachment] = []) {
         id = UUID().uuidString
         issuedAt = Date().ISO8601Format()
         self.action = action
         self.text = text
         self.requestID = requestID
+        self.attachments = attachments
     }
 }
 
@@ -174,6 +183,10 @@ final class LiveConversation {
 
     let session: Session
     var draft = "" { didSet { persistDraft() } }
+    private(set) var attachments: [ConversationAttachment] = []
+    private(set) var attachmentError: String?
+    private(set) var loadingAttachments = false
+    private(set) var pendingPrompt: ConversationPendingPrompt?
     private(set) var snapshot = ConversationSnapshot()
     private(set) var hasSnapshot = false
     private(set) var connecting = false
@@ -209,7 +222,11 @@ final class LiveConversation {
         self.adoptingCreatedSession = adoptingCreatedSession
         if let saved = drafts?.drafts[session.id] {
             draft = saved.text
+            attachments = saved.attachments
+            pendingPrompt = saved.pendingPrompt
             deliveryUncertain = saved.deliveryUncertain
+            if pendingPrompt?.phase == .preparing { pendingPrompt?.phase = .notSent }
+            if deliveryUncertain { pendingPrompt?.phase = .uncertain }
             if saved.deliveryUncertain {
                 error = "The previous send could not be confirmed. Reload and review the conversation before sending again."
                 connectionAttempted = true
@@ -219,7 +236,8 @@ final class LiveConversation {
     }
 
     private func persistDraft() {
-        drafts?.set(.init(text: draft, deliveryUncertain: deliveryUncertain), for: session.id)
+        drafts?.set(.init(text: draft, deliveryUncertain: deliveryUncertain, attachments: attachments,
+                         pendingPrompt: pendingPrompt), for: session.id)
     }
 
     var draftSaveError: String? { drafts?.error }
@@ -233,7 +251,8 @@ final class LiveConversation {
         else if isWorking { activity = stopping ? .stopping : .working }
         else if isOpenElsewhere { activity = .openElsewhere }
         else { activity = completion }
-        return ConversationListState(activity: activity, hasDraft: draft.nilIfBlank != nil)
+        return ConversationListState(activity: activity,
+                                     hasDraft: hasPrompt || pendingPrompt?.phase == .notSent || pendingPrompt?.phase == .uncertain)
     }
 
     var isOpenElsewhere: Bool { ownership == .openElsewhere }
@@ -256,11 +275,14 @@ final class LiveConversation {
     var canSend: Bool {
         ownership == .available && snapshot.connected && snapshot.ready && !snapshot.running && !snapshot.pendingPrompt
             && snapshot.approvals.isEmpty && snapshot.questions.isEmpty && !connecting && !submitting && error == nil
+            && snapshot.controls?.pendingChanges != true && !loadingAttachments
     }
     var canSubmit: Bool {
-        ownership == .available && !preparingPrompt
+        ownership == .available && !preparingPrompt && pendingPrompt == nil
             && (canSend || (!connectionAttempted && !connecting && !submitting && error == nil))
     }
+    var hasPrompt: Bool { draft.nilIfBlank != nil || !attachments.isEmpty }
+    var canChangeSettings: Bool { canSend && !preparingPrompt && pendingPrompt == nil }
     var isWorking: Bool { connecting || preparingPrompt || submitting || snapshot.running || snapshot.pendingPrompt }
     var canStop: Bool { connecting || (snapshot.connected && snapshot.canCancel && (snapshot.running || snapshot.pendingPrompt) && !submitting) }
     var visibleRecords: [TranscriptRecord] { Array(snapshot.records.suffix(visibleLimit)) }
@@ -335,12 +357,13 @@ final class LiveConversation {
                         else if wasWorking, snapshot.ready, snapshot.approvals.isEmpty, snapshot.questions.isEmpty,
                                 self.completion == nil { self.completion = self.stopping ? .stopped : .completed }
                         self.snapshot = snapshot
+                        self.reconcilePendingPrompt()
                         self.hasSnapshot = true
                         self.revision += 1
                         if snapshot.ready {
                             self.connecting = false
                             self.finishConnecting(true)
-                            if wasConnecting, self.deliveryUncertain {
+                            if wasConnecting, self.deliveryUncertain, self.pendingPrompt == nil {
                                 self.deliveryUncertain = false
                                 self.persistDraft()
                             }
@@ -372,6 +395,14 @@ final class LiveConversation {
         submitting = false
         snapshot.connected = false
         snapshot.ready = false
+        snapshot.running = false
+        snapshot.pendingPrompt = false
+        snapshot.controls = nil
+        if pendingPrompt?.phase == .awaitingConfirmation {
+            pendingPrompt?.phase = .uncertain
+            deliveryUncertain = true
+            persistDraft()
+        }
         if failure.kind == .openElsewhere {
             ownership = .openElsewhere
             // Resume was rejected before a prompt could be delivered. Unlocking
@@ -396,16 +427,94 @@ final class LiveConversation {
 
     func send() async {
         refreshOwnership()
-        guard canSubmit, let text = draft.nilIfBlank else { return }
+        guard canSubmit, hasPrompt else { return }
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = attachments
+        let command = ConversationCommand(.prompt, text: text, attachments: attachments)
+        pendingPrompt = ConversationPendingPrompt(command)
+        self.attachments = []
+        draft = ""
         preparingPrompt = true
-        defer { preparingPrompt = false }
+        defer {
+            preparingPrompt = false
+            restoreUnsentPrompt()
+        }
         // Browsing history does not launch a provider. The first explicit send
         // loads its original session, then sends exactly once when it is ready.
         if !connectionAttempted, !(await connect()) { return }
         guard canSend else { return }
         completion = nil
         stopping = false
-        _ = await perform(ConversationCommand(.prompt, text: text))
+        _ = await perform(command)
+    }
+
+    private func restoreUnsentPrompt() {
+        guard let pending = pendingPrompt, pending.phase == .preparing || pending.phase == .notSent else { return }
+        pendingPrompt?.phase = .notSent
+        if draft.isEmpty && attachments.isEmpty { restorePendingDraft() }
+        else { persistDraft() }
+    }
+
+    /// Explicit recovery never sends. Preserve any newer draft behind the returned intent.
+    func restorePendingDraft() {
+        guard let pending = pendingPrompt, pending.phase == .notSent || pending.phase == .uncertain,
+              !isWorking else { return }
+        pendingPrompt = nil
+        deliveryUncertain = false
+        attachments = pending.attachments + attachments.filter { item in !pending.attachments.contains { $0.id == item.id } }
+        draft = [pending.text, draft].filter { !$0.isEmpty }.joined(separator: "\n\n")
+        persistDraft()
+        focus()
+    }
+
+    private func reconcilePendingPrompt() {
+        guard let pending = pendingPrompt,
+              let delivery = snapshot.deliveries.first(where: { $0.commandID == pending.commandID }) else { return }
+        if delivery.hasNativeEcho(in: snapshot.records) {
+            pendingPrompt = nil
+            deliveryUncertain = false
+            if pending.phase == .uncertain { error = nil }
+            persistDraft()
+        } else if delivery.status == "failed" {
+            pendingPrompt?.phase = .uncertain
+            deliveryUncertain = true
+            error = delivery.error ?? "The send could not be confirmed. Review the native conversation before retrying."
+            persistDraft()
+        }
+    }
+
+    func setModel(_ id: String) async {
+        guard canChangeSettings, snapshot.controls?.models.contains(where: { $0.id == id }) == true else { return }
+        _ = await perform(ConversationCommand(.model, text: id))
+    }
+
+    func configure(_ option: ConversationControls.Configuration, value: String) async {
+        guard canChangeSettings, snapshot.controls?.configurations.contains(option) == true,
+              option.choices.contains(where: { $0.id == value }) else { return }
+        _ = await perform(ConversationCommand(.configuration, text: value, requestID: option.id))
+    }
+
+    func attachFiles(_ urls: [URL]) async {
+        guard !loadingAttachments, ownership == .available else { return }
+        attachmentError = nil
+        if !connectionAttempted, !(await connect()) { return }
+        guard let controls = snapshot.controls, snapshot.ready else { return }
+        loadingAttachments = true
+        defer { loadingAttachments = false }
+        do {
+            let existing = attachments
+            let captured = try await Task.detached {
+                try ConversationAttachment.capture(urls, controls: controls, existing: existing)
+            }.value
+            attachments.append(contentsOf: captured)
+            persistDraft()
+        } catch { attachmentError = error.localizedDescription }
+    }
+
+    func removeAttachment(_ id: String) {
+        attachments.removeAll { $0.id == id }
+        attachmentError = nil
+        persistDraft()
     }
 
     func stop() async {
@@ -413,6 +522,11 @@ final class LiveConversation {
             await disconnect()
             connectionAttempted = false
             completion = .stopped
+            // Cancellation before provider dispatch is known not to have sent.
+            if pendingPrompt?.phase == .preparing {
+                pendingPrompt?.phase = .notSent
+                persistDraft()
+            }
             return
         }
         guard canStop else { return }
@@ -440,17 +554,26 @@ final class LiveConversation {
             // Persist before crossing the provider boundary. A process exit while
             // awaiting acknowledgement must restore a draft that requires review.
             deliveryUncertain = true
+            pendingPrompt?.phase = .awaitingConfirmation
             persistDraft()
             await drafts?.flush()
             guard generation == token else { return false }
+            guard draftSaveError == nil else {
+                deliveryUncertain = false
+                pendingPrompt?.phase = .notSent
+                snapshot.pendingPrompt = false
+                error = "The outgoing message could not be saved. Restore the draft and retry after saving succeeds."
+                persistDraft()
+                submitting = false
+                return false
+            }
         }
         defer { if generation == token { submitting = false } }
         do {
             try await runtime.perform(command)
             if command.action == .prompt, generation == token {
-                deliveryUncertain = false
-                if draft == command.text { draft = "" }
-                else { persistDraft() }
+                // Queuing a command is not confirmation that the provider accepted it.
+                reconcilePendingPrompt()
             }
             return generation == token
         } catch {
@@ -458,6 +581,8 @@ final class LiveConversation {
             self.error = error.localizedDescription
             if command.action == .prompt {
                 deliveryUncertain = true
+                pendingPrompt?.phase = .uncertain
+                snapshot.pendingPrompt = false
                 persistDraft()
             }
             // A provider can accept a command before its acknowledgement is lost.
@@ -475,6 +600,9 @@ final class LiveConversation {
         submitting = false
         snapshot.connected = false
         snapshot.ready = false
+        snapshot.running = false
+        snapshot.pendingPrompt = false
+        snapshot.controls = nil
         snapshot.approvals = []
         snapshot.questions = []
         let previous = runtime
@@ -515,7 +643,8 @@ final class LiveConversations {
         if let conversation = sessions[session.id] { return conversation.listState }
         let draft = drafts.drafts[session.id]
         return ConversationListState(activity: draft?.deliveryUncertain == true ? .failed : nil,
-                                     hasDraft: draft?.text.nilIfBlank != nil)
+                                     hasDraft: draft?.text.nilIfBlank != nil || draft?.attachments.isEmpty == false
+                                        || draft?.pendingPrompt != nil)
     }
 
     func disconnectAll() async {

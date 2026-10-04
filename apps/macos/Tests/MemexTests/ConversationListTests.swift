@@ -25,19 +25,25 @@ import Testing
         #expect(controller.rows[0].state == state)
         #expect(controller.table.selectedRow == 0)
         let height = controller.tableView(controller.table, heightOfRow: 0)
-        #expect(height > initialHeight)
+        #expect(height == initialHeight)
         let cell = ConversationCell()
         cell.frame = NSRect(x: 0, y: 0, width: 280, height: height)
         cell.configure(controller.rows[0])
         cell.layoutSubtreeIfNeeded()
         let fields = cell.subviews.compactMap { $0 as? NSTextField }.filter { !$0.isHidden }
         let title = try #require(fields.first { $0.stringValue == session.title })
-        let project = try #require(fields.first { $0.stringValue == session.projectName })
+        let metadata = try #require(fields.first { $0.stringValue == "memex · codex" })
         let preview = try #require(fields.first { $0.stringValue == session.snippet })
-        #expect(title.frame.minY < project.frame.minY)
+        #expect(title.maximumNumberOfLines == 2)
+        #expect(title.cell?.wraps == true)
+        #expect(title.frame.maxY <= metadata.frame.minY)
         #expect(preview.maximumNumberOfLines == 2)
         #expect(fields.allSatisfy { $0.frame.maxY <= height })
         #expect(cell.accessibilityLabel()?.contains("Approval needed · Draft") == true)
+        let icons = cell.subviews.compactMap { $0 as? NSImageView }.filter { !$0.isHidden }
+        #expect(icons.count == 2)
+        #expect(icons.contains { $0.toolTip == "Approval needed" })
+        #expect(icons.contains { $0.toolTip == "Draft" })
     }
 
     @Test func nativeCellsShowSubagentsAndKeepMetadataInsideTheRow() throws {
@@ -57,18 +63,41 @@ import Testing
             cell.configure(controller.rows[0])
             cell.layoutSubtreeIfNeeded()
             let visibleLabels = cell.subviews.compactMap { $0 as? NSTextField }.filter { !$0.isHidden }
-            let icon = try #require(cell.subviews.compactMap { $0 as? NSImageView }.first)
-            #expect(icon.image != nil)
-            #expect(icon.isHidden == (machine == "local"))
-            if !icon.isHidden { #expect(icon.frame.maxY <= height) }
             #expect(visibleLabels.allSatisfy { $0.frame.maxY <= height })
-            if expected.isEmpty {
-                #expect(!visibleLabels.contains { $0.stringValue.contains("nicbook-atm") || $0.stringValue.contains("Subagent") })
-            } else {
-                #expect(visibleLabels.contains { $0.stringValue == expected })
-            }
+            let metadata = "memex · codex" + (expected.isEmpty ? "" : " · \(expected)")
+            #expect(visibleLabels.contains { $0.stringValue == metadata && $0.toolTip == metadata })
             #expect(cell.accessibilityLabel()?.contains("Subagent") == (kind == "subagent"))
         }
+    }
+
+    @Test func activityAndDraftChangesKeepRowGeometryAndHelp() throws {
+        let session = sessions(1)[0]
+        let cell = ConversationCell()
+        let baseline = ConversationListController.Row(session)
+        cell.frame = NSRect(x: 0, y: 0, width: 260, height: baseline.height)
+        cell.configure(baseline)
+        cell.layoutSubtreeIfNeeded()
+        let initialFrames = cell.subviews.map(\.frame)
+        let activities: [ConversationActivity?] = [nil, .starting, .working, .stopping, .approval, .question,
+                                                  .failed, .completed, .stopped, .openElsewhere]
+        for activity in activities {
+            for hasDraft in [false, true] {
+                let state = ConversationListState(activity: activity, hasDraft: hasDraft)
+                let row = ConversationListController.Row(session, state: state)
+                cell.configure(row)
+                cell.layoutSubtreeIfNeeded()
+                #expect(row.height == baseline.height)
+                #expect(cell.subviews.map(\.frame) == initialFrames)
+                #expect(cell.toolTip == state.label)
+                if let label = state.label { #expect(cell.accessibilityLabel()?.contains(label) == true) }
+            }
+        }
+        // A provider belongs in metadata; it should not consume a preview line.
+        var withoutSnippet = session
+        withoutSnippet.snippet = nil
+        let compact = ConversationListController.Row(withoutSnippet)
+        #expect(compact.preview.isEmpty)
+        #expect(compact.height < baseline.height)
     }
 
     func sessions(_ count: Int) -> [Session] {
@@ -102,6 +131,13 @@ import Testing
         #expect(controller.table.view(atColumn: 0, row: row, makeIfNecessary: false) === cell)
         let realized = (0..<2000).filter { controller.table.view(atColumn: 0, row: $0, makeIfNecessary: false) != nil }
         #expect(realized.count < 40)
+        controller.update(sessions: sessions(2000), selectedID: initial[5].id,
+                          states: [initial[0].id: .init(activity: .working),
+                                   initial[row].id: .init(activity: .approval, hasDraft: true)],
+                          select: { _ in }, loadMore: { _ in })
+        controller.table.layoutSubtreeIfNeeded()
+        #expect(abs(controller.scrollView.contentView.bounds.minY - y) < 1)
+        #expect(controller.table.selectedRow == 5)
     }
     @Test func selectionPagingAndReplacementKeepExactIdentity() async throws {
         let controller = ConversationListController()

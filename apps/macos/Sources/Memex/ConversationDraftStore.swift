@@ -8,6 +8,26 @@ final class ConversationDraftStore {
     struct Draft: Codable, Equatable, Sendable {
         var text: String
         var deliveryUncertain = false
+        var attachments: [ConversationAttachment] = []
+        var pendingPrompt: ConversationPendingPrompt?
+
+        init(text: String, deliveryUncertain: Bool = false, attachments: [ConversationAttachment] = [],
+             pendingPrompt: ConversationPendingPrompt? = nil) {
+            self.text = text
+            self.deliveryUncertain = deliveryUncertain
+            self.attachments = attachments
+            self.pendingPrompt = pendingPrompt
+        }
+
+        private enum CodingKeys: String, CodingKey { case text, deliveryUncertain, attachments, pendingPrompt }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            text = try values.decode(String.self, forKey: .text)
+            deliveryUncertain = try values.decodeIfPresent(Bool.self, forKey: .deliveryUncertain) ?? false
+            attachments = try values.decodeIfPresent([ConversationAttachment].self, forKey: .attachments) ?? []
+            pendingPrompt = try values.decodeIfPresent(ConversationPendingPrompt.self, forKey: .pendingPrompt)
+        }
     }
 
     private(set) var drafts: [String: Draft] = [:]
@@ -42,7 +62,8 @@ final class ConversationDraftStore {
     }
 
     func set(_ draft: Draft, for sessionID: String) {
-        let value: Draft? = draft.text.isEmpty && !draft.deliveryUncertain ? nil : draft
+        let value: Draft? = draft.text.isEmpty && draft.attachments.isEmpty && draft.pendingPrompt == nil
+            && !draft.deliveryUncertain ? nil : draft
         guard drafts[sessionID] != value else { return }
         drafts[sessionID] = value
         guard canWrite, let writer else { return }

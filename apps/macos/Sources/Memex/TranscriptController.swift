@@ -743,9 +743,9 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         let textHeight = isLong && !showsFullBody ? 360 : fullTextHeight
         let hasBody = !body.isEmpty || richContent != nil
         let showsRawControl = isTool && isExpanded && !body.isEmpty && !findQuery.isEmpty && showsRaw
-        let bodyY: CGFloat = isDisclosure ? (showsRawControl ? 74 : 44) : 16
+        let bodyY: CGFloat = isDisclosure ? (showsRawControl ? 74 : 44) : 8
         let bodyBottom = bodyY + textHeight + (isUser ? 16 : 0)
-        let height: CGFloat = hasBody ? bodyBottom + (isLong ? 26 : 0) + (isDisclosure ? 12 : 0) + 4 + 18 + 10 : 38
+        let height: CGFloat = hasBody ? bodyBottom + (isLong ? 26 : 0) + (isDisclosure ? 12 : 0) + (isDisclosure ? 32 : 24) : 38
         let highlighted: NSAttributedString
         if findQuery.isEmpty {
             highlighted = textLayout.attributedText
@@ -937,7 +937,7 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
         let actionGutter: CGFloat = value.isDisclosure ? 32 : 0
         disclosure.frame = NSRect(x: x, y: 8, width: max(0, width - actionGutter), height: 22)
         rawDisclosure.frame = NSRect(x: x + 12, y: 44, width: width - 24, height: 22)
-        let bodyY: CGFloat = value.isDisclosure ? (value.showsRawControl ? 74 : 44) : 16
+        let bodyY: CGFloat = value.isDisclosure ? (value.showsRawControl ? 74 : 44) : 8
         let inset: CGFloat = value.isUser || value.isDisclosure ? 12 : 0
         let verticalInset: CGFloat = value.isUser ? 8 : 0
         message.frame = NSRect(x: x + inset, y: bodyY + verticalInset, width: width - 2 * inset, height: value.textHeight)

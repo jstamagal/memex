@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import Memex
 
@@ -96,4 +98,23 @@ private struct WorkspaceFixture {
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
     defer { try? FileManager.default.removeItem(at: directory) }
     #expect(try await WorkspaceChangesClient().snapshot(directory: directory) == nil)
+}
+
+@Test @MainActor func workspaceSummaryLoadsWhileItsInitialContentIsEmpty() async throws {
+    let fixture = try WorkspaceFixture()
+    defer { fixture.clean() }
+    try fixture.write("new.txt", "visible workspace change\n")
+    let host = NSHostingView(rootView: WorkspaceChangeSummary(directory: fixture.root, isWorking: false, review: { _ in }))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 100),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+    for _ in 0..<200 {
+        host.layoutSubtreeIfNeeded()
+        if host.fittingSize.height > 12 { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(host.fittingSize.height > 12)
+    #expect(!window.isVisible)
 }

@@ -1,5 +1,9 @@
 import Foundation
 
+#if canImport(SQACPHost)
+import SQACPHost
+#endif
+
 /// Projects the runtime's display subset. Its complete persisted catalog is evidence,
 /// not an additional timeline: rendering both would duplicate the active turn.
 enum ConversationProjection {
@@ -120,6 +124,14 @@ enum ConversationProjection {
             case "message":
                 let role = data["role"].string ?? "assistant"
                 let initialCount = records.count
+                // Provider attachment manifests belong to a single native message.
+                // Reuse its transport's presentation parser, retaining the complete
+                // entity as raw evidence rather than showing generated wire text.
+                if role == "user", let presentation = Self.attachmentPresentation(data) {
+                    append(entity, suffix: "attachments", role: role, text: presentation.text,
+                           nativeID: data["native_message_id"].string, sourceContent: presentation.content)
+                    return
+                }
                 for (index, part) in data["parts"].array.enumerated() {
                     switch part["type"].string {
                     case "text", "reasoning":
@@ -168,6 +180,33 @@ enum ConversationProjection {
                 if let summary = data["summary"]["entity_id"].string, let value = entities[summary] { emit(value) }
             default: break
             }
+        }
+
+        private static func attachmentPresentation(_ data: RawTranscriptJSON) -> (text: String, content: String)? {
+            #if canImport(SQACPHost)
+            let parts = data["parts"].array
+            // Do not discard unknown or interleaved non-message content.
+            guard parts.allSatisfy({ ["text", "artifact", "opaque"].contains($0["type"].string ?? "") }) else { return nil }
+            let presentation = AgentPromptAttachments.presentation(textBlocks: parts.compactMap {
+                $0["type"].string == "text" ? $0["data"].string : nil
+            })
+            guard !presentation.attachments.isEmpty else { return nil }
+            let blocks = presentation.attachments.map { attachment -> RawTranscriptJSON in
+                var fields: [String: RawTranscriptJSON] = [
+                    "type": .string(attachment.kind == .image ? "image" : "attachment"),
+                    "title": .string(attachment.name),
+                ]
+                if let uri = attachment.uri {
+                    fields["path"] = .string(uri)
+                    fields["url"] = .string(uri)
+                }
+                return .object(fields)
+            }
+            guard let content = RawTranscriptJSON.array(blocks).jsonText else { return nil }
+            return (presentation.text, content)
+            #else
+            return nil
+            #endif
         }
 
         mutating func appendArtifact(_ entity: RawTranscriptJSON, owner: RawTranscriptJSON, suffix: String, role: String) {

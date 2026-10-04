@@ -28,6 +28,8 @@ final class Store {
     var findConversationRequest = 0
     var showingNewConversation = false
     var showingWorkspaceChanges = false
+    private(set) var workspaceChangeReviewRequest = UUID()
+    private var workspaceChangeSelections: [String: String] = [:]
     var selectedID: String?
     var records: [TranscriptRecord] = []
     var query = ""
@@ -131,6 +133,15 @@ final class Store {
         guard let selected, selected.machineID == "local", let cwd = selected.cwd?.nilIfBlank,
               cwd.hasPrefix("/") else { return nil }
         return URL(fileURLWithPath: cwd, isDirectory: true)
+    }
+    var selectedWorkspaceChange: String? {
+        selectedWorkspace.flatMap { workspaceChangeSelections[$0.path] }
+    }
+    func reviewWorkspaceChange(_ path: String?) {
+        guard let directory = selectedWorkspace else { return }
+        if let path { workspaceChangeSelections[directory.path] = path }
+        workspaceChangeReviewRequest = UUID()
+        showingWorkspaceChanges = true
     }
     var selectedMachineIDs: [String] {
         switch machineSelection {

@@ -21,15 +21,9 @@ struct ReaderView: View {
                             Button("Retry saving") { store.createdConversations.retrySave() }
                         }.padding(8)
                     }
-                    if let live = store.selectedLiveConversation {
-                        if let error = live.ownershipError ?? live.error {
-                            HStack {
-                                Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                                Button("Reload") { Task { await live.connect() } }
-                            }.padding(8)
-                        } else if let warning = live.snapshot.warning {
-                            Text(warning).font(.caption).foregroundStyle(.secondary).padding(8)
-                        }
+                    ConversationRecoveryView(session: session, conversation: store.selectedLiveConversation)
+                    if let live = store.selectedLiveConversation, live.error == nil, let warning = live.snapshot.warning {
+                        Text(warning).font(.caption).foregroundStyle(.secondary).padding(8)
                     }
                     if let find, find.isOpen { findBar(find) }
                     if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot {
@@ -65,9 +59,15 @@ struct ReaderView: View {
                             Text("No messages in this transcript.").foregroundStyle(.secondary).padding(12)
                         }
                     }
+                    if let directory = store.selectedWorkspace {
+                        WorkspaceChangeSummary(directory: directory,
+                                               isWorking: store.selectedLiveConversation?.isWorking == true,
+                                               review: store.reviewWorkspaceChange)
+                    }
                     if let live = store.selectedLiveConversation {
+                        ConversationPendingView(conversation: live)
                         ConversationComposer(conversation: live)
-                    } else {
+                    } else if !InAppResumeTarget.isArchived(session) {
                         Label(InAppResumeTarget.unavailableReason(for: session)
                               ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
                             .font(.caption).foregroundStyle(.secondary)
@@ -160,7 +160,7 @@ struct ReaderView: View {
             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
         .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
-        .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 18)
+        .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
     }
 }

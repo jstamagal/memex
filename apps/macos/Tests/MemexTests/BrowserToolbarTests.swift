@@ -137,7 +137,8 @@ struct BrowserToolbarTests {
         store.selectedID = session.id
         await pumpNative(window)
         #expect(find.isEnabled)
-        let reveal = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.reveal })
+        let more = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.more } as? NSMenuToolbarItem)
+        let reveal = try #require(more.menu.items.first { $0.action == #selector(BrowserToolbarController.revealSource) })
         #expect(!reveal.isEnabled)
     }
 
@@ -201,7 +202,8 @@ struct BrowserToolbarTests {
         controller.update()
         #expect(search.searchField.stringValue == "replacement query")
         let find = try item(BrowserToolbarController.find, in: controller)
-        let reveal = try item(BrowserToolbarController.reveal, in: controller)
+        let more = try #require(item(BrowserToolbarController.more, in: controller) as? NSMenuToolbarItem)
+        let reveal = try #require(more.menu.items.first { $0.action == #selector(BrowserToolbarController.revealSource) })
         #expect(!find.isEnabled)
         #expect(!reveal.isEnabled)
         var session = Session(source: "codex", sessionID: "toolbar-fixture", sourcePath: "/fixture", project: "memex")
@@ -221,6 +223,33 @@ struct BrowserToolbarTests {
         #expect(find.isEnabled)
         #expect(!reveal.isEnabled)
         #expect(try !item(BrowserToolbarController.refresh, in: controller).isEnabled)
+    }
+
+    @Test func utilityMenuKeepsActionsAndTracksLocalRemoteAndEmptySelection() throws {
+        let (window, _, controller) = fixture()
+        defer { window.close() }
+        let more = try #require(item(BrowserToolbarController.more, in: controller) as? NSMenuToolbarItem)
+        let copy = try #require(more.menu.items.first { $0.action == #selector(BrowserToolbarController.copySessionID) })
+        let reveal = try #require(more.menu.items.first { $0.action == #selector(BrowserToolbarController.revealSource) })
+        #expect(more.menu.items.map(\.title) == ["Copy session ID", "Reveal source"])
+        #expect(copy.target === controller)
+        #expect(reveal.target === controller)
+        #expect(!more.isEnabled && !copy.isEnabled && !reveal.isEnabled)
+
+        var session = Session(source: "codex", sessionID: "menu-fixture", sourcePath: "/fixture", project: "memex")
+        for machine in ["local", "nicbook-atm"] {
+            session.machine = machine
+            controller.store.sessions = [session]
+            controller.store.selectedID = session.id
+            controller.update()
+            more.menu.update()
+            #expect(more.isEnabled && copy.isEnabled)
+            #expect(reveal.isEnabled == (machine == "local"))
+        }
+        controller.store.selectedID = nil
+        controller.update()
+        more.menu.update()
+        #expect(!more.isEnabled && !copy.isEnabled && !reveal.isEnabled)
     }
 
     @Test func nativeFilterPopoverUsesAccentWhileOpenAndResetsOnClose() async throws {

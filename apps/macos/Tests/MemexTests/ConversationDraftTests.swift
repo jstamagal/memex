@@ -3,6 +3,14 @@ import Testing
 @testable import Memex
 
 @Suite(.serialized) @MainActor struct ConversationDraftTests {
+    @Test func earlierDraftFormatStillDecodesWithoutAttachmentsOrPendingIntent() throws {
+        let data = Data(#"{"text":"  Nice  ","deliveryUncertain":true}"#.utf8)
+        let draft = try JSONDecoder().decode(ConversationDraftStore.Draft.self, from: data)
+        #expect(draft == .init(text: "  Nice  ", deliveryUncertain: true))
+        #expect(draft.attachments.isEmpty)
+        #expect(draft.pendingPrompt == nil)
+    }
+
     @Test func relaunchRestoresExactLatestDraftByNativeIdentity() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

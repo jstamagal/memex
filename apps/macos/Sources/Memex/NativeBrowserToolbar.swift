@@ -73,6 +73,7 @@ import SwiftUI
     private lazy var resumeController = ResumeToolbarController(store: store)
     private var actionItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var searchItem: NSSearchToolbarItem?
+    private var utilityMenu: NSMenu?
     private(set) var filterPopover: NSPopover?
 
     static let sidebarBoundary = NSToolbarItem.Identifier("MemexSidebarBoundary")
@@ -81,8 +82,7 @@ import SwiftUI
     static let filters = NSToolbarItem.Identifier("MemexFilters")
     static let refresh = NSToolbarItem.Identifier("MemexRefresh")
     static let find = NSToolbarItem.Identifier("MemexFind")
-    static let copyID = NSToolbarItem.Identifier("MemexCopyID")
-    static let reveal = NSToolbarItem.Identifier("MemexReveal")
+    static let more = NSToolbarItem.Identifier("MemexMore")
     static let resume = NSToolbarItem.Identifier("MemexResume")
     static let search = NSToolbarItem.Identifier("MemexSearch")
     static let newConversation = NSToolbarItem.Identifier("MemexNewConversation")
@@ -124,8 +124,8 @@ import SwiftUI
             return [.toggleSidebar, Self.sidebarBoundary, Self.newConversation, .flexibleSpace]
         }
         return [.toggleSidebar, Self.sidebarBoundary, Self.title, .flexibleSpace, Self.filters,
-         Self.readerBoundary, Self.newConversation, Self.refresh, Self.find, Self.copyID, Self.reveal, Self.workspaceChanges,
-         .flexibleSpace, Self.resume, .flexibleSpace, Self.search]
+         Self.readerBoundary, Self.newConversation, Self.refresh, Self.find, Self.workspaceChanges,
+         .flexibleSpace, Self.resume, Self.more, .flexibleSpace, Self.search]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
@@ -165,8 +165,29 @@ import SwiftUI
             return item
         case Self.refresh: return action(id, title: "Refresh", symbol: "arrow.clockwise", selector: #selector(refresh))
         case Self.find: return action(id, title: "Find in conversation", symbol: "magnifyingglass", selector: #selector(find))
-        case Self.copyID: return action(id, title: "Copy session ID", symbol: "link", selector: #selector(copySessionID))
-        case Self.reveal: return action(id, title: "Reveal source", symbol: "doc", selector: #selector(revealSource))
+        case Self.more:
+            let item = NSMenuToolbarItem(itemIdentifier: id)
+            item.label = "More conversation actions"
+            item.toolTip = item.label
+            item.image = NSImage(systemSymbolName: "ellipsis", accessibilityDescription: item.label)
+            item.isBordered = true
+            item.showsIndicator = false
+            item.autovalidates = false
+            let menu = NSMenu(title: item.label)
+            menu.autoenablesItems = false
+            for (title, symbol, selector) in [
+                ("Copy session ID", "link", #selector(copySessionID)),
+                ("Reveal source", "doc", #selector(revealSource))
+            ] {
+                let action = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+                action.target = self
+                action.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+                menu.addItem(action)
+            }
+            item.menu = menu
+            utilityMenu = menu
+            actionItems[id] = item
+            return item
         case Self.newConversation: return action(id, title: "New conversation (⌘N)", symbol: "square.and.pencil", selector: #selector(newConversation))
         case Self.workspaceChanges: return action(id, title: "Workspace changes", symbol: "sidebar.right", selector: #selector(toggleWorkspaceChanges))
         case .toggleSidebar:
@@ -211,8 +232,11 @@ import SwiftUI
         actionItems[Self.refresh]?.isEnabled = !store.loadingSessions
         resumeController.update()
         actionItems[Self.find]?.isEnabled = store.selected != nil
-        actionItems[Self.copyID]?.isEnabled = store.selected != nil
-        actionItems[Self.reveal]?.isEnabled = store.selected?.machineID == "local"
+        actionItems[Self.more]?.isEnabled = store.selected != nil
+        for item in utilityMenu?.items ?? [] {
+            item.isEnabled = item.action == #selector(revealSource)
+                ? store.selected?.machineID == "local" : store.selected != nil
+        }
         actionItems[Self.newConversation]?.isEnabled = InAppAgentRuntime.isAvailable
         actionItems[Self.workspaceChanges]?.isEnabled = store.selectedWorkspace != nil
         if let field = searchItem?.searchField, field.stringValue != store.query { field.stringValue = store.query }

@@ -23,11 +23,12 @@ struct NativeConversationList: NSViewControllerRepresentable {
         let title: String
         let preview: String
         let date: String
-        let metadata: String?
+        let metadata: String
         let state: ConversationListState
         let isSearchResult: Bool
-        var previewHeight: CGFloat { isSearchResult ? 34 : 16 }
-        var height: CGFloat { 52 + previewHeight + (metadata == nil ? 0 : 18) + (state.label == nil ? 0 : 18) }
+        var previewHeight: CGFloat { preview.isEmpty ? 0 : (isSearchResult ? 34 : 16) }
+        // Reserve two title lines and a single metadata line, independent of activity.
+        var height: CGFloat { 62 + (previewHeight == 0 ? 0 : previewHeight + 3) }
         init(_ session: Session, state: ConversationListState = .init(), query: String = "") {
             self.session = session
             self.state = state
@@ -35,11 +36,12 @@ struct NativeConversationList: NSViewControllerRepresentable {
             id = session.id
             project = session.projectName
             title = session.title
-            preview = ConversationExcerpt.text(session.snippet?.nilIfBlank ?? session.source, query: query)
+            preview = ConversationExcerpt.text(session.snippet?.nilIfBlank ?? "", query: query)
             date = session.date?.formatted(.dateTime.month(.abbreviated).day()) ?? ""
-            metadata = [session.machineID == "local" ? nil : session.machineID,
+            metadata = [session.projectName, session.source,
+                        session.machineID == "local" ? nil : session.machineID,
                         session.isSubagent ? "Subagent" : nil]
-                .compactMap { $0 }.joined(separator: " · ").nilIfBlank
+                .compactMap { $0 }.joined(separator: " · ")
         }
     }
 
@@ -98,6 +100,7 @@ struct NativeConversationList: NSViewControllerRepresentable {
         let changed = IndexSet(next.indices.filter {
             $0 < rows.count && (next[$0].session != rows[$0].session || next[$0].state != rows[$0].state || next[$0].preview != rows[$0].preview)
         })
+        let resized = IndexSet(changed.filter { next[$0].height != rows[$0].height })
         let anchor = table.row(at: NSPoint(x: 0, y: scrollView.contentView.bounds.minY))
         let anchorID = rows.indices.contains(anchor) ? rows[anchor].id : nil
         let offset = anchor >= 0 ? scrollView.contentView.bounds.minY - table.rect(ofRow: anchor).minY : 0
@@ -107,7 +110,7 @@ struct NativeConversationList: NSViewControllerRepresentable {
                 table.insertRows(at: IndexSet(integersIn: oldIDs.count..<next.count), withAnimation: [])
             }
             if !changed.isEmpty {
-                table.noteHeightOfRows(withIndexesChanged: changed)
+                if !resized.isEmpty { table.noteHeightOfRows(withIndexesChanged: resized) }
                 table.reloadData(forRowIndexes: changed, columnIndexes: IndexSet(integer: 0))
             }
         } else {
@@ -147,18 +150,17 @@ struct NativeConversationList: NSViewControllerRepresentable {
 }
 
 @MainActor final class ConversationCell: NSTableCellView {
-    private let project = NSTextField(labelWithString: "")
     private let date = NSTextField(labelWithString: "")
     private let title = NSTextField(wrappingLabelWithString: "")
     private let preview = NSTextField(wrappingLabelWithString: "")
     private let metadata = NSTextField(labelWithString: "")
-    private let state = NSTextField(labelWithString: "")
-    private let machineIcon = NSImageView()
+    private let activityIcon = NSImageView()
+    private let draftIcon = NSImageView()
     private var previewHeight: CGFloat = 16
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for field in [project, date, title, preview, metadata, state] {
+        for field in [date, title, preview, metadata] {
             field.font = .systemFont(ofSize: 11)
             field.textColor = .secondaryLabelColor
             field.lineBreakMode = .byTruncatingTail
@@ -172,48 +174,52 @@ struct NativeConversationList: NSViewControllerRepresentable {
             field.cell?.wraps = false
             field.cell?.isScrollable = false
         }
-        title.maximumNumberOfLines = 1
+        title.maximumNumberOfLines = 2
+        title.cell?.wraps = true
         preview.maximumNumberOfLines = 1
         date.alignment = .right
-        machineIcon.image = NSImage(systemSymbolName: "network", accessibilityDescription: "Remote machine")
-        machineIcon.contentTintColor = .secondaryLabelColor
-        machineIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
-        addSubview(machineIcon)
+        for icon in [activityIcon, draftIcon] {
+            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+            addSubview(icon)
+        }
+        draftIcon.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "Draft")
+        draftIcon.contentTintColor = .secondaryLabelColor
+        draftIcon.toolTip = "Draft"
         setAccessibilityElement(true)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override var isFlipped: Bool { true }
     func configure(_ row: ConversationListController.Row) {
-        project.stringValue = row.project
         date.stringValue = row.date
         title.stringValue = row.title
+        title.toolTip = row.title
         preview.stringValue = row.preview
         preview.toolTip = row.session.snippet
         previewHeight = row.previewHeight
+        preview.isHidden = row.previewHeight == 0
         preview.maximumNumberOfLines = row.isSearchResult ? 2 : 1
         preview.cell?.wraps = row.isSearchResult
         preview.lineBreakMode = row.isSearchResult ? .byWordWrapping : .byTruncatingTail
-        metadata.stringValue = row.metadata ?? ""
-        metadata.isHidden = row.metadata == nil
-        machineIcon.isHidden = row.session.machineID == "local"
-        state.stringValue = row.state.label ?? ""
-        state.isHidden = row.state.label == nil
-        state.textColor = row.state.activity.map { NSColor($0.color) } ?? .secondaryLabelColor
-        setAccessibilityLabel([row.title, row.project, row.date, row.preview, row.metadata, row.state.label].compactMap { $0 }.joined(separator: ", "))
+        metadata.stringValue = row.metadata
+        metadata.toolTip = row.metadata
+        activityIcon.isHidden = row.state.activity == nil
+        activityIcon.image = row.state.activity.flatMap { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: $0.label) }
+        activityIcon.contentTintColor = row.state.activity.map { NSColor($0.color) } ?? .secondaryLabelColor
+        activityIcon.toolTip = row.state.activity?.label
+        draftIcon.isHidden = !row.state.hasDraft
+        toolTip = row.state.label
+        setAccessibilityLabel([row.title, row.metadata, row.date, row.preview, row.state.label].compactMap { $0?.nilIfBlank }.joined(separator: ", "))
         needsLayout = true
     }
     override func layout() {
         super.layout()
         let width = max(0, bounds.width - 16)
         let dateWidth = min(width, ceil(date.intrinsicContentSize.width) + 4)
-        title.frame = NSRect(x: 8, y: 7, width: max(0, width - dateWidth - 6), height: 17)
-        date.frame = NSRect(x: 8 + width - dateWidth, y: 8, width: dateWidth, height: 15)
-        project.frame = NSRect(x: 8, y: 26, width: width, height: 15)
-        preview.frame = NSRect(x: 8, y: 44, width: width, height: previewHeight)
-        let metadataY = preview.frame.maxY + 2
-        machineIcon.frame = NSRect(x: 8, y: metadataY + 1, width: 12, height: 12)
-        let iconWidth: CGFloat = machineIcon.isHidden ? 0 : 16
-        metadata.frame = NSRect(x: 8 + iconWidth, y: metadataY, width: max(0, width - iconWidth), height: 15)
-        state.frame = NSRect(x: 8, y: metadataY + (metadata.isHidden ? 0 : 18), width: width, height: 15)
+        title.frame = NSRect(x: 8, y: 7, width: max(0, width - 20), height: 34)
+        activityIcon.frame = NSRect(x: 8 + width - 14, y: 8, width: 14, height: 14)
+        draftIcon.frame = NSRect(x: 8 + width - 14, y: 26, width: 14, height: 14)
+        metadata.frame = NSRect(x: 8, y: 43, width: max(0, width - dateWidth - 6), height: 15)
+        date.frame = NSRect(x: 8 + width - dateWidth, y: 43, width: dateWidth, height: 15)
+        preview.frame = NSRect(x: 8, y: 61, width: width, height: previewHeight)
     }
 }

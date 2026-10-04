@@ -187,6 +187,11 @@ actor NativeConversationRuntime: ConversationRuntime {
         let operations = try request("provider_operation.list", params: ["threadId": .string(sessionID), "includeTerminal": .bool(false)])
         var snapshot = ConversationProjection.snapshot(conversation, thread: thread, operations: operations,
             ready: actions.contains(.prompt), canCancel: actions.contains(.cancel), sentPromptIDs: sentPromptIDs)
+        snapshot.controls = try service.settings(sessionID: sessionID).map(ConversationControls.init)
+        snapshot.deliveries = try service.commandStatuses(sessionID: sessionID).filter { $0.action == .prompt }.map {
+            .init(commandID: $0.commandID, status: $0.status, error: $0.error,
+                  nativeTurnID: $0.nativeTurnID, nativeMessageID: $0.nativeMessageID)
+        }
         snapshot.warning = snapshot.warning ?? warning
         if snapshot.ready { wasReady = true }
         receive?(.success(snapshot))
@@ -212,10 +217,16 @@ actor NativeConversationRuntime: ConversationRuntime {
         case .cancel: action = .cancel
         case .approval: action = .approval
         case .userInput: action = .userInput
+        case .model: action = .model
+        case .configuration: action = .configuration
         }
         if command.action == .prompt { sentPromptIDs.insert(command.id) }
+        let content: [AcpPromptContentBlock]? = command.attachments.isEmpty ? nil
+            : [.text(command.text)] + (try command.attachments.map { try $0.promptContent() })
         _ = try service.perform(action, sessionID: sessionID, commandID: command.id,
-            issuedAt: command.issuedAt, text: command.text, requestID: command.requestID)
+            issuedAt: command.issuedAt, text: command.text,
+            optionID: command.action == .configuration ? command.requestID : nil,
+            requestID: command.requestID, promptContent: content)
         try publish()
     }
 

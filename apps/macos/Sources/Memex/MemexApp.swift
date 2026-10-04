@@ -101,7 +101,9 @@ private struct BrowserReader: View {
         .sheet(isPresented: $store.showingNewConversation) { NewConversationView(store: store) }
         .inspector(isPresented: $store.showingWorkspaceChanges) {
             if store.showingWorkspaceChanges, let directory = store.selectedWorkspace, store.scope != .home {
-                WorkspaceChangesView(directory: directory, isWorking: store.selectedLiveConversation?.isWorking == true) {
+                WorkspaceChangesView(directory: directory, isWorking: store.selectedLiveConversation?.isWorking == true,
+                                     initialSelectedPath: store.selectedWorkspaceChange,
+                                     reviewRequest: store.workspaceChangeReviewRequest) {
                     store.showingWorkspaceChanges = false
                 }
                     .inspectorColumnWidth(min: 430, ideal: 620, max: 1000)

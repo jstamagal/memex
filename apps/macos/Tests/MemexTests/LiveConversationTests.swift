@@ -51,6 +51,14 @@ private actor RecordingConversationRuntime: ConversationRuntime {
     func holdNextPrompt() { holdPrompt = true }
     func acknowledgePrompt() { promptWaiter?.resume(); promptWaiter = nil }
     func emit(_ snapshot: ConversationSnapshot) { receive?(.success(snapshot)) }
+    func confirm(_ command: ConversationCommand, messageID: String = "native-user", turnID: String = "native-turn") {
+        let user = TranscriptRecord(recordID: "runtime:\(messageID)", record: Message(
+            role: "user", text: command.text, toolName: nil, toolInput: nil, toolOutput: nil,
+            eventID: messageID, sourceTurnID: turnID))
+        receive?(.success(ConversationSnapshot(records: [user], connected: true, ready: true,
+            deliveries: [.init(commandID: command.id, status: "completed", error: nil,
+                               nativeTurnID: turnID, nativeMessageID: messageID)])))
+    }
     func rejectOwnership() {
         receive?(.failure(ConversationRuntimeError(message: "Open elsewhere", kind: .openElsewhere)))
     }
@@ -102,7 +110,9 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         try await waitFor { conversation.submitting }
         await drafts.flush()
         let restoredDrafts = ConversationDraftStore(directory: directory)
-        #expect(restoredDrafts.drafts[session.id] == .init(text: "Original prompt", deliveryUncertain: true))
+        #expect(restoredDrafts.drafts[session.id]?.text == "")
+        #expect(restoredDrafts.drafts[session.id]?.pendingPrompt?.text == "Original prompt")
+        #expect(restoredDrafts.drafts[session.id]?.deliveryUncertain == true)
         let restored = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: restoredDrafts)
         #expect(!restored.canSubmit)
         #expect(restored.listState == .init(activity: .failed, hasDraft: true))
@@ -113,8 +123,36 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         await send.value
         await drafts.flush()
         #expect(conversation.draft == "New unsent edit")
+        #expect(conversation.pendingPrompt?.text == "Original prompt")
+        #expect(!conversation.canSubmit)
+        // A local queue receipt is insufficient. Only the native echo removes the intent.
+        await driver.confirm(try #require(await driver.commands.first))
+        try await waitFor { conversation.pendingPrompt == nil }
+        await drafts.flush()
         #expect(ConversationDraftStore(directory: directory).drafts[session.id] == .init(text: "New unsent edit"))
         #expect(await driver.commands.map(\.text) == ["Original prompt"])
+        await conversation.disconnect()
+    }
+
+    @Test func unreadableDraftStorePreventsProviderDeliveryAndPreservesPrompt() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("drafts.json")
+        let original = Data("unreadable saved draft".utf8)
+        try original.write(to: file)
+        let driver = RecordingConversationRuntime()
+        let drafts = ConversationDraftStore(directory: directory)
+        let conversation = LiveConversation(session: liveSession(), makeRuntime: { driver },
+            resolveTarget: fakeTarget, drafts: drafts)
+        conversation.draft = "Must remain unsent"
+        await conversation.send()
+        #expect(await driver.commands.isEmpty)
+        #expect(conversation.draft == "Must remain unsent")
+        #expect(conversation.pendingPrompt == nil)
+        #expect(!conversation.isWorking)
+        #expect(conversation.error?.contains("could not be saved") == true)
+        #expect(try Data(contentsOf: file) == original)
         await conversation.disconnect()
     }
 
@@ -134,6 +172,9 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         await restored.send()
         #expect(await driver.commands.count == 1)
         await restored.connect()
+        #expect(!restored.canSubmit)
+        #expect(restored.pendingPrompt?.text == "Unconfirmed prompt")
+        restored.restorePendingDraft()
         #expect(restored.canSubmit)
         #expect(restored.draft == "Unconfirmed prompt")
         #expect(drafts.drafts[session.id]?.deliveryUncertain == false)
@@ -141,6 +182,97 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         await restored.disconnect()
         await conversation.disconnect()
     }
+
+    @Test func pendingPromptRequiresExactNativeIdentityEvenForRepeatedText() async throws {
+        let driver = RecordingConversationRuntime()
+        let conversation = LiveConversation(session: liveSession(), makeRuntime: { driver }, resolveTarget: fakeTarget)
+        conversation.draft = "Same message"
+        await conversation.send()
+        let command = try #require(await driver.commands.first)
+        conversation.draft = "Next draft"
+        let unrelated = TranscriptRecord(recordID: "older-message", record: Message(
+            role: "user", text: "Same message", toolName: nil, toolInput: nil, toolOutput: nil,
+            eventID: "other-user", sourceTurnID: "other-turn"))
+        await driver.emit(ConversationSnapshot(records: [unrelated], connected: true, ready: true,
+            deliveries: [.init(commandID: command.id, status: "completed", error: nil,
+                               nativeTurnID: "current-turn", nativeMessageID: "current-user")]))
+        try await waitFor { conversation.snapshot.records.count == 1 }
+        #expect(conversation.pendingPrompt?.commandID == command.id)
+        #expect(!conversation.canSubmit)
+        await driver.confirm(command, messageID: "current-user", turnID: "current-turn")
+        try await waitFor { conversation.pendingPrompt == nil }
+        #expect(conversation.draft == "Next draft")
+        #expect(conversation.canSubmit)
+        #expect(await driver.commands.count == 1)
+        await conversation.disconnect()
+    }
+
+    @Test func pendingConfigurationBlocksSendWithoutChangingTheDraft() async throws {
+        let driver = RecordingConversationRuntime()
+        let conversation = LiveConversation(session: liveSession(), makeRuntime: { driver }, resolveTarget: fakeTarget)
+        await conversation.connect()
+        var controls = ConversationControls(models: [.init(id: "provider-model", title: "Provider model")])
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, controls: controls))
+        try await waitFor { conversation.snapshot.controls != nil }
+        await conversation.setModel("invented-model")
+        #expect(await driver.commands.isEmpty)
+        await conversation.setModel("provider-model")
+        #expect(await driver.commands.map(\.action) == [.model])
+        controls.pendingChanges = true
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, controls: controls))
+        try await waitFor { !conversation.canSubmit }
+        conversation.draft = "Wait for settings"
+        await conversation.send()
+        #expect(conversation.draft == "Wait for settings")
+        #expect(await driver.commands.count == 1)
+        controls.pendingChanges = false
+        controls.selectedModelID = "provider-model"
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, controls: controls))
+        try await waitFor { conversation.canSubmit }
+        await conversation.send()
+        #expect(await driver.commands.map(\.action) == [.model, .prompt])
+        await conversation.disconnect()
+    }
+
+    #if canImport(SQACPHost)
+    @Test func attachmentDraftSurvivesRelaunchAndSendsCapturedBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = root.appendingPathComponent("context.txt")
+        try Data("original captured contents".utf8).write(to: file)
+        let driver = RecordingConversationRuntime()
+        let drafts = ConversationDraftStore(directory: root.appendingPathComponent("drafts"))
+        let session = liveSession()
+        let conversation = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: drafts)
+        await conversation.connect()
+        let controls = ConversationControls(supportsFileContents: true)
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, controls: controls))
+        try await waitFor { conversation.snapshot.controls != nil }
+        await conversation.attachFiles([file])
+        #expect(conversation.attachmentError == nil)
+        let captured = try #require(conversation.attachments.first)
+        #expect(conversation.hasPrompt)
+        await drafts.flush()
+        await conversation.disconnect()
+        try Data("new contents must not replace attachment".utf8).write(to: file)
+        let restored = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget,
+            drafts: ConversationDraftStore(directory: root.appendingPathComponent("drafts")))
+        #expect(restored.attachments == [captured])
+        #expect(restored.listState.hasDraft)
+        restored.draft = "Use the attached context"
+        await restored.send()
+        let command = try #require(await driver.commands.last)
+        #expect(command.attachments == [captured])
+        let encoded = try JSONDecoder().decode(AcpPromptContentBlock.self, from: captured.content)
+        #expect(encoded == .resource(.init(resource: .blob(.init(uri: file.absoluteString,
+            blob: Data("original captured contents".utf8).base64EncodedString(), mimeType: "text/plain")))))
+        await driver.confirm(command)
+        try await waitFor { restored.pendingPrompt == nil }
+        #expect(restored.attachments.isEmpty)
+        await restored.disconnect()
+    }
+    #endif
 
     @Test func retainedConversationStatusTracksWorkAttentionCompletionAndDraft() async throws {
         let driver = RecordingConversationRuntime()
@@ -353,7 +485,9 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         await driver.failNextSend()
         conversation.draft = "Keep this prompt"
         await conversation.send()
-        #expect(conversation.draft == "Keep this prompt")
+        #expect(conversation.draft.isEmpty)
+        #expect(conversation.pendingPrompt?.text == "Keep this prompt")
+        #expect(conversation.pendingPrompt?.phase == .uncertain)
         #expect(!conversation.canSend)
         #expect(conversation.error == "Acknowledgement lost")
         conversation.refreshOwnership()
@@ -533,6 +667,27 @@ private func decodeJSON(_ json: String) throws -> RawTranscriptJSON {
 }
 
 #if canImport(SQACPHost)
+@Test func attachmentProjectionUsesRetainedMetadataWithoutShowingTransportText() throws {
+    let uri = "file:///private/attachment-store/captured.txt"
+    let reference = "Read attached file context.txt: \(uri)"
+    let attachment = AgentAttachmentProjection(id: "captured-content", kind: .file, name: "context.txt",
+        mimeType: "text/plain", uri: uri, byteCount: 8, sourceURI: "file:///original/context.txt")
+    let manifest = "Sidequery attachment metadata (v1):\n"
+        + String(decoding: try JSONEncoder().encode([attachment]), as: UTF8.self)
+    let content: [String: Any] = ["ephemeral": [["item_id": "native-message", "source_order": 1,
+        "body": ["kind": "message", "data": ["role": "user", "native_message_id": "native-user",
+            "parts": ["User caption", reference, reference, manifest].map { ["type": "text", "data": $0] }]]]]]
+    let json = try JSONDecoder().decode(RawTranscriptJSON.self, from: JSONSerialization.data(withJSONObject: content))
+    let snapshot = ConversationProjection.snapshot(json, ready: true, canCancel: true)
+    let record = try #require(snapshot.records.first)
+    #expect(snapshot.records.count == 1)
+    // Keep an identical reference deliberately included in the user's prose.
+    #expect(record.record.text == "User caption\n" + reference)
+    #expect(record.record.eventID == "native-user")
+    #expect(SourceContent.blocks(record.record) == [.attachment(label: "context.txt", source: uri, image: false)])
+    #expect(record.rawTranscriptBody.contains("Sidequery attachment metadata"))
+}
+
 /// Resume-only diagnostic for a specified local session. Sends no prompt.
 @Test(.enabled(if: ProcessInfo.processInfo.environment["MEMEX_LOAD_TEST_SESSION"] != nil))
 @MainActor func nativeRuntimeLoadsSpecifiedSession() async throws {

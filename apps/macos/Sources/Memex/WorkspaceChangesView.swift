@@ -4,107 +4,153 @@ import SwiftUI
 struct WorkspaceChangesView: View {
     let directory: URL
     var isWorking = false
+    var initialSelectedPath: String? = nil
+    var reviewRequest: UUID? = nil
     var close: (() -> Void)? = nil
-    @State private var snapshot: WorkspaceChangesSnapshot?
-    @State private var selectedPath: String?
-    @State private var loading = true
-    @State private var error: String?
-    @State private var patch = ""
-    @State private var loadingPatch = false
+    @State private var state = WorkspaceChangesState()
     @State private var refreshID = UUID()
-    @State private var snapshotID = UUID()
     private let client = WorkspaceChangesClient()
+
+    private var displayedRoot: String {
+        (state.directory == directory ? state.snapshot?.root.path : nil) ?? directory.path
+    }
+
+    private struct PatchTask: Equatable {
+        let directory: URL
+        let path: String?
+        let revision: UUID
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Uncommitted changes").font(.headline)
-                    Text(snapshot?.root.path ?? directory.path)
+                    Text(displayedRoot)
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        .help(snapshot?.root.path ?? directory.path)
+                        .help(displayedRoot)
                 }
                 Spacer()
+                if state.loading { ProgressView().controlSize(.small).help("Refreshing workspace changes") }
                 if let close {
                     Button(action: close) { Image(systemName: "xmark") }
                         .help("Close workspace changes").accessibilityLabel("Close workspace changes")
                 }
                 Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
                     .help("Refresh workspace changes").accessibilityLabel("Refresh workspace changes")
-                    .disabled(loading)
+                    .disabled(state.loading)
             }.padding(12)
             Divider()
-            if loading {
+            if state.directory != directory {
                 ProgressView("Reading workspace changes…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error {
-                ContentUnavailableView("Could not read changes", systemImage: "exclamationmark.triangle", description: Text(error))
-            } else if let snapshot {
-                if snapshot.files.isEmpty {
-                    ContentUnavailableView("No uncommitted changes", systemImage: "checkmark.circle",
-                        description: Text("This Git working tree has no staged, unstaged, or untracked files."))
-                } else {
-                    HSplitView {
-                        List(snapshot.files, selection: $selectedPath) { file in
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(file.label).lineLimit(2).truncationMode(.middle)
-                                Text(file.status).font(.caption).foregroundStyle(.secondary)
-                            }.tag(file.id).help(file.label)
-                        }.listStyle(.sidebar).frame(minWidth: 150, idealWidth: 230, maxWidth: 340)
-                        Group {
-                            if loadingPatch { ProgressView("Reading diff…").frame(maxWidth: .infinity, maxHeight: .infinity) }
-                            else if selectedPath != nil { WorkspaceDiffText(text: patch) }
-                            else { Text("Select a file to see its changes.").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
-                        }.frame(minWidth: 250, maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
             } else {
-                ContentUnavailableView("Not a Git working tree", systemImage: "folder",
-                    description: Text("The selected workspace is not inside a Git repository."))
+                if let error = state.error {
+                    errorBanner(error, retained: state.snapshot != nil) { refreshID = UUID() }
+                }
+                if let snapshot = state.snapshot {
+                    if snapshot.files.isEmpty {
+                        ContentUnavailableView("No uncommitted changes", systemImage: "checkmark.circle",
+                            description: Text("This Git working tree has no staged, unstaged, or untracked files."))
+                    } else {
+                        HSplitView {
+                            List(snapshot.files, selection: Binding(get: { state.selectedPath }, set: { state.select($0) })) { file in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(file.label).lineLimit(2).truncationMode(.middle)
+                                    Text(file.status).font(.caption).foregroundStyle(.secondary)
+                                }.tag(file.id).help(file.label)
+                            }.listStyle(.sidebar).frame(minWidth: 150, idealWidth: 230, maxWidth: 340)
+                            VStack(spacing: 0) {
+                                if let error = state.patchError {
+                                    errorBanner(error, retained: state.patch != nil) { state.retryPatch() }
+                                }
+                                WorkspaceDiffText(text: state.patch, identity: directory.path + "/" + (state.selectedPath ?? ""))
+                                    .overlay {
+                                        if state.patch == nil {
+                                            if state.loadingPatch { ProgressView("Reading diff…") }
+                                            else {
+                                                Text(state.patchError != nil ? "Could not read this diff." : "Select a file to see its changes.")
+                                                    .foregroundStyle(.secondary)
+                                            }
+                                        }
+                                    }
+                                    .overlay(alignment: .topTrailing) {
+                                        if state.loadingPatch && state.patch != nil {
+                                            ProgressView().controlSize(.small).padding(8).help("Refreshing diff")
+                                        }
+                                    }
+                            }.frame(minWidth: 250, maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }
+                } else if state.loading {
+                    ProgressView("Reading workspace changes…").frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if state.error != nil {
+                    ContentUnavailableView("Could not read changes", systemImage: "exclamationmark.triangle",
+                        description: Text("Try refreshing the workspace changes."))
+                } else {
+                    ContentUnavailableView("Not a Git working tree", systemImage: "folder",
+                        description: Text("The selected workspace is not inside a Git repository."))
+                }
             }
             Divider()
             Text("Current working tree · Staged, unstaged, and untracked files")
                 .font(.caption).foregroundStyle(.secondary).padding(8)
         }
         .task(id: directory.path + refreshID.uuidString + String(isWorking)) { await refresh() }
-        .task(id: (selectedPath ?? "") + snapshotID.uuidString) { await loadPatch() }
+        .task(id: PatchTask(directory: directory, path: state.selectedPath, revision: state.patchRevision)) { await loadPatch() }
+        .onChange(of: reviewRequest) { _, _ in
+            if let path = initialSelectedPath {
+                state.select(path)
+                refreshID = UUID()
+            }
+        }
+    }
+
+    private func errorBanner(_ message: String, retained: Bool, retry: @escaping () -> Void) -> some View {
+        HStack(alignment: .top) {
+            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+            Text((retained ? "Showing the last successful read. " : "") + message)
+                .font(.caption).textSelection(.enabled)
+            Spacer()
+            Button("Retry", action: retry).controlSize(.small)
+        }.padding(10).background(.quaternary)
     }
 
     @MainActor private func refresh() async {
-        loading = true
-        error = nil
-        snapshot = nil
+        let request = state.beginRefresh(directory: directory, initialSelectedPath: initialSelectedPath)
         do {
             let next = try await client.snapshot(directory: directory)
             guard !Task.isCancelled else { return }
-            snapshot = next
-            snapshotID = UUID()
-            if !((next?.files.contains { $0.path == selectedPath }) ?? false) { selectedPath = next?.files.first?.path }
+            state.finishRefresh(next, request: request)
         } catch {
             guard !Task.isCancelled else { return }
-            self.error = error.localizedDescription
+            state.failRefresh(error.localizedDescription, request: request)
         }
-        loading = false
     }
 
     @MainActor private func loadPatch() async {
-        guard let snapshot, let file = snapshot.files.first(where: { $0.path == selectedPath }) else { return }
-        loadingPatch = true
-        patch = ""
+        guard state.directory == directory, let read = state.beginPatch() else { return }
         do {
-            let next = try await client.diff(file: file, root: snapshot.root)
+            let next = try await client.diff(file: read.file, root: read.root)
             guard !Task.isCancelled else { return }
-            patch = next
+            state.finishPatch(next, request: read.request)
         } catch {
             guard !Task.isCancelled else { return }
-            patch = "Could not read this diff.\n\n" + error.localizedDescription
+            state.failPatch(error.localizedDescription, request: read.request)
         }
-        loadingPatch = false
     }
 }
 
-private struct WorkspaceDiffText: NSViewRepresentable {
-    let text: String
-    func makeNSView(context: Context) -> NSScrollView {
+struct WorkspaceDiffText: NSViewRepresentable {
+    let text: String?
+    let identity: String
+
+    func makeCoordinator() -> WorkspaceDiffViewport { WorkspaceDiffViewport() }
+    func makeNSView(context: Context) -> NSScrollView { Self.makeScrollView() }
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.update(scroll, text: text, identity: identity)
+    }
+
+    static func makeScrollView() -> NSScrollView {
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = true
@@ -120,15 +166,48 @@ private struct WorkspaceDiffText: NSViewRepresentable {
         scroll.documentView = view
         return scroll
     }
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let view = scroll.documentView as? NSTextView, view.string != text else { return }
-        view.textStorage?.setAttributedString(CodeSyntax.render(text, language: "diff", font: .systemFont(ofSize: 13)))
+}
+
+/// Lives with the native view, so reading position and text selection survive both
+/// changed patches and file switches without publishing scroll events into SwiftUI.
+@MainActor final class WorkspaceDiffViewport {
+    private struct Position {
+        let origin: NSPoint
+        let selection: NSRange
+    }
+    private var positions: [String: Position] = [:]
+    private var identity: String?
+    private var hasText = false
+
+    func update(_ scroll: NSScrollView, text: String?, identity nextIdentity: String) {
+        guard let view = scroll.documentView as? NSTextView else { return }
+        if let identity, hasText {
+            positions[identity] = Position(origin: scroll.contentView.bounds.origin, selection: view.selectedRange())
+        }
+        let changedFile = identity != nextIdentity
+        identity = nextIdentity
+        let position = positions[nextIdentity]
+        let next = text ?? ""
+        let changedText = view.string != next
+        hasText = text != nil
+        guard changedFile || changedText else { return }
+        if changedText {
+            view.textStorage?.setAttributedString(CodeSyntax.render(next, language: "diff", font: .systemFont(ofSize: 13)))
+        }
         if let container = view.textContainer, let manager = view.layoutManager {
             manager.ensureLayout(for: container)
             let size = manager.usedRect(for: container).size
             view.setFrameSize(NSSize(width: max(scroll.contentSize.width, ceil(size.width) + 24),
                                      height: max(scroll.contentSize.height, ceil(size.height) + 24)))
         }
-        scroll.contentView.scroll(to: .zero)
+        let length = (next as NSString).length
+        let selection = position?.selection ?? NSRange(location: 0, length: 0)
+        let start = min(selection.location, length)
+        view.setSelectedRange(NSRange(location: start, length: min(selection.length, length - start)))
+        let origin = position?.origin ?? .zero
+        scroll.contentView.scroll(to: NSPoint(
+            x: min(max(0, origin.x), max(0, view.frame.width - scroll.contentSize.width)),
+            y: min(max(0, origin.y), max(0, view.frame.height - scroll.contentSize.height))))
+        scroll.reflectScrolledClipView(scroll.contentView)
     }
 }
