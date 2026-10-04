@@ -57,6 +57,45 @@ MEMEX_DAEMON_TEST_CLI="$PWD/target/debug/memex" swift test --package-path apps/m
 This test starts and stops its own foreground daemon with a temporary data root
 and one synthetic transcript; it does not use your sources or service settings.
 
+## Local in-app agent runtime
+
+An optional local Sidequery checkout supplies `SQACP`, `SQACPHost`, `SQACPUI`, the standalone
+`sq_acp_runtime` static library, and the compiled Claude Agent SDK helper. Set
+`MEMEX_AGENT_RUNTIME_ROOT` to that checkout, or put its absolute path in the
+ignored `apps/macos/.local-runtime-root` file. Ordinary builds without this
+configuration retain external resume only; no runtime source or binary is fetched.
+
+Build the checkout's `packages/sq-acp/rust/sq-acp-ffi-runtime` library for
+`aarch64-apple-darwin`, with `MACOSX_DEPLOYMENT_TARGET=14.0` and a Rust toolchain
+whose standard library supports that deployment target. The default artifact is
+`packages/sq-acp/target/runtime-native/aarch64-apple-darwin/release/libsq_acp_runtime.a`;
+`MEMEX_AGENT_RUNTIME_LIBRARY` can select another compatible archive. Build the
+helper with the pinned dependencies and `bun run build` in
+`packages/sq-acp/Tools/ClaudeAgentSDKHost`. Then use the normal app build script;
+it embeds and signs the helper.
+
+Selecting a local main Codex or Claude session shows Sidequery's shared composer,
+send/stop controls, and approval/question panels. The first send loads the original
+session and submits the prompt once it is ready; browsing history alone does not
+launch a provider. The toolbar's **Open in** menu opens external applications.
+Continuing a chat requires the original native transcript and working directory. Each provider
+child receives the source installation's `CODEX_HOME` or `CLAUDE_CONFIG_DIR`.
+The provider's normal sign-in remains required. Optional executable overrides
+are `MEMEX_CODEX_EXECUTABLE`, `MEMEX_CLAUDE_EXECUTABLE`, and `MEMEX_CLAUDE_HELPER`.
+
+The provider writes its original transcript; existing Memex indexing continues
+to pick it up. Private runtime sidecars live under
+`~/Library/Application Support/dev.memex.app/Resume/`. They retain delivery
+receipts and a source archive, separate from the search index. Reconnect reloads
+native history and never automatically retries an uncertain prompt.
+
+The `nativeRuntimeResumesDisposableProviderSessions` test is opt-in. Set
+`MEMEX_LIVE_TEST_SESSIONS` to a JSON array of Memex session metadata for disposable
+sessions whose initial assistant response contains `MEMEX_SEED_OK`. It sends one
+test prompt, checks persistence and duplicate-free reconnect, and closes only its
+own providers. Direct Swift tests also need `MEMEX_CLAUDE_HELPER` for Claude.
+Never point this test at a working conversation.
+
 ## App releases
 
 The app is distributed separately from the CLI archives. GitHub Actions continues

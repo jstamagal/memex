@@ -26,6 +26,17 @@ struct MemexApp: App {
 @MainActor final class MemexApplicationDelegate: NSObject, NSApplicationDelegate {
     let store = Store(filterPreferences: .standard)
     private var browser: NSWindowController?
+    private var terminating = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !terminating else { return .terminateLater }
+        terminating = true
+        Task {
+            await store.liveConversations.disconnectAll()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) { showBrowser() }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

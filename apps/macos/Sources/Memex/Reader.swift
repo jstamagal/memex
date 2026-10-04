@@ -15,8 +15,28 @@ struct ReaderView: View {
                     header(session)
                         .contextMenu { Toggle("Raw transcript", isOn: $rawTranscript) }
                     Divider().opacity(0.5)
+                    if let live = store.selectedLiveConversation {
+                        if let error = live.ownershipError ?? live.error {
+                            HStack {
+                                Text(error).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                Button("Reload") { Task { await live.connect() } }
+                            }.padding(8)
+                        } else if let warning = live.snapshot.warning {
+                            Text(warning).font(.caption).foregroundStyle(.secondary).padding(8)
+                        }
+                    }
                     if let find, find.isOpen { findBar(find) }
-                    NativeTranscript(sessionID: store.readerPositionKey,
+                    if let live = store.selectedLiveConversation, live.hasSnapshot {
+                        NativeTranscript(sessionID: session.id + ":live", records: live.visibleRecords,
+                                         provider: session.source, hasMore: false, isLoading: false, onLoadMore: {},
+                                         hasEarlier: live.hasEarlierRecords, startsAtEnd: true, navigation: navigation,
+                                         onLoadEarlier: { live.loadEarlierRecords() },
+                                         findQuery: find?.isOpen == true ? find?.query ?? "" : "",
+                                         findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
+                                         rawTranscript: rawTranscript, isLocalHost: true, sourcePath: session.sourcePath,
+                                         followLatest: true)
+                    } else {
+                        NativeTranscript(sessionID: store.readerPositionKey,
                                      records: store.loadedReaderKey == store.readerPositionKey ? store.records : [],
                                      provider: session.source, hasMore: store.hasMoreRecords,
                                      isLoading: store.loadingRecords,
@@ -28,17 +48,20 @@ struct ReaderView: View {
                                      findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
                                      rawTranscript: rawTranscript, isLocalHost: session.machineID == "local",
                                      sourcePath: session.sourcePath)
-                    if let error = store.readerError {
-                        ErrorBanner(message: error) {
-                            Task { await store.retryRecords() }
+                        if let error = store.readerError {
+                            ErrorBanner(message: error) {
+                                Task { await store.retryRecords() }
+                            }
+                        }
+                        if store.loadingRecords {
+                            ProgressView("Loading conversation…").controlSize(.small).padding(12)
+                        } else if store.records.isEmpty && store.readerError == nil {
+                            Text("No messages in this transcript.").foregroundStyle(.secondary).padding(12)
                         }
                     }
-                    if store.loadingRecords {
-                        ProgressView("Loading conversation…").controlSize(.small).padding(12)
-                    } else if store.records.isEmpty && store.readerError == nil {
-                        Text("No messages in this transcript.").foregroundStyle(.secondary).padding(12)
+                    if let live = store.selectedLiveConversation {
+                        ConversationComposer(conversation: live)
                     }
-
                 }
             } else {
                 ContentUnavailableView("Your conversations, together", systemImage: "bubble.left.and.bubble.right",
@@ -46,19 +69,36 @@ struct ReaderView: View {
             }
         }
         .onAppear { if find == nil { find = ConversationFindState(client: store.client) } }
+        .onChange(of: store.selected, initial: true) { _, session in
+            if let session { store.liveConversations.prepare(session) }
+        }
+        .task(id: store.selectedLiveConversation?.session.id) {
+            guard let live = store.selectedLiveConversation else { return }
+            while !Task.isCancelled {
+                live.refreshOwnership()
+                do { try await Task.sleep(for: .seconds(2)) } catch { return }
+            }
+        }
         .onChange(of: store.findConversationRequest) { _, _ in
             find?.isOpen = true
             findFocused = true
         }
         .onChange(of: store.selectedID) { _, _ in
-            find?.search(in: store.selected)
+            search()
         }
-        .onChange(of: find?.query) { _, _ in find?.search(in: store.selected) }
+        .onChange(of: find?.query) { _, _ in search() }
+        .onChange(of: store.selectedLiveConversation?.revision) { _, _ in search() }
         .task(id: find?.generation) {
             guard let hit = find?.selectedHit else { return }
-            await store.revealRecord(hit.recordID, offset: hit.recordOffset)
+            if let live = store.selectedLiveConversation, live.hasSnapshot { live.revealRecord(hit.recordID) }
+            else { await store.revealRecord(hit.recordID, offset: hit.recordOffset) }
         }
         .onDisappear { find?.reset() }
+    }
+
+    private func search() {
+        if let live = store.selectedLiveConversation, live.hasSnapshot { find?.search(records: live.snapshot.records) }
+        else { find?.search(in: store.selected) }
     }
 
     private func findBar(_ state: ConversationFindState) -> some View {

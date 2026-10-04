@@ -119,6 +119,15 @@ final class ConversationFindState {
             }
         }
     }
+    func search(records: [TranscriptRecord]) {
+        let selected = selectedHit
+        reset()
+        guard isOpen, !query.isEmpty else { return }
+        hits = ConversationMatcher.matches(records, query: query)
+        scannedRecords = records.count
+        selectedIndex = selected.flatMap { old in hits.firstIndex { $0.recordID == old.recordID && $0.occurrence == old.occurrence } }
+            ?? (hits.isEmpty ? nil : 0)
+    }
     func move(_ delta: Int) {
         guard !hits.isEmpty else { return }
         selectedIndex = ((selectedIndex ?? (delta > 0 ? -1 : 0)) + delta + hits.count) % hits.count

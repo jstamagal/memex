@@ -105,15 +105,18 @@ struct TranscriptRecord: Decodable, Identifiable, Equatable, Sendable {
     let record: Message
     var sourceRecordID: String? = nil
     var rawJSON: String? = nil
+    // Provider evidence without a readable message stays available in Raw transcript.
+    var isRawOnly = false
     var sourceID: String { sourceRecordID ?? recordID }
     var id: String { recordID }
     enum CodingKeys: String, CodingKey { case recordID = "record_id", record }
 
-    init(recordID: String, record: Message, sourceRecordID: String? = nil, rawJSON: String? = nil) {
+    init(recordID: String, record: Message, sourceRecordID: String? = nil, rawJSON: String? = nil, isRawOnly: Bool = false) {
         self.recordID = recordID
         self.record = record
         self.sourceRecordID = sourceRecordID
         self.rawJSON = rawJSON
+        self.isRawOnly = isRawOnly
     }
 
     init(from decoder: Decoder) throws {

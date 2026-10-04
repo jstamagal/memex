@@ -30,6 +30,19 @@ for arch in "${ARCH_LIST[@]}"; do
   SWIFT_ARGS+=(--arch "$arch")
 done
 APP="$ROOT/build/Memex.app"
+RUNTIME_ROOT=${MEMEX_AGENT_RUNTIME_ROOT:-}
+if [[ -z "$RUNTIME_ROOT" && -f "$ROOT/.local-runtime-root" ]]; then
+  RUNTIME_ROOT=$(cat "$ROOT/.local-runtime-root")
+fi
+CLAUDE_HELPER=""
+if [[ -n "$RUNTIME_ROOT" ]]; then
+  export MEMEX_AGENT_RUNTIME_ROOT="$RUNTIME_ROOT"
+  CLAUDE_HELPER=${MEMEX_CLAUDE_HELPER:-$RUNTIME_ROOT/packages/sq-acp/Tools/ClaudeAgentSDKHost/dist/claude-agent-sdk-host}
+  if [[ ! -x "$CLAUDE_HELPER" ]]; then
+    echo "Build the local ClaudeAgentSDKHost helper before packaging Memex: $CLAUDE_HELPER" >&2
+    exit 1
+  fi
+fi
 CLI=${MEMEX_CLI:-$(command -v memex || true)}
 if [[ ! -f "$CLI" || ! -x "$CLI" ]]; then
   echo "Set MEMEX_CLI to an executable memex CLI, or install memex on PATH." >&2
@@ -50,6 +63,11 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" \
   "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN_DIR/Memex" "$APP/Contents/MacOS/Memex"
 cp "$CLI" "$APP/Contents/Helpers/memex"
+if [[ -n "$CLAUDE_HELPER" ]]; then
+  cp "$CLAUDE_HELPER" "$APP/Contents/Helpers/claude-agent-sdk-host"
+  chmod u+w "$APP/Contents/Helpers/claude-agent-sdk-host"
+  lipo "$CLAUDE_HELPER" -verify_arch "${ARCH_LIST[@]}"
+fi
 cp "$ROOT/bundle/Memex.icns" "$APP/Contents/Resources/Memex.icns"
 chmod u+w "$APP/Contents/Helpers/memex"
 shopt -s nullglob
@@ -73,6 +91,7 @@ verify_dependencies() {
 }
 verify_dependencies "$CLI"
 verify_dependencies "$BIN_DIR/Memex"
+if [[ -n "$CLAUDE_HELPER" ]]; then verify_dependencies "$CLAUDE_HELPER"; fi
 for binary in "$APP/Contents/MacOS/Memex" "$APP/Contents/Helpers/memex"; do
   lipo "$binary" -verify_arch "${ARCH_LIST[@]}"
 done
@@ -97,6 +116,9 @@ PLIST
 plutil -lint "$APP/Contents/Info.plist"
 xattr -cr "$APP"
 codesign "${SIGN_ARGS[@]}" "$APP/Contents/Helpers/memex"
+if [[ -n "$CLAUDE_HELPER" ]]; then
+  codesign "${SIGN_ARGS[@]}" --entitlements "$ROOT/bundle/Release.entitlements" "$APP/Contents/Helpers/claude-agent-sdk-host"
+fi
 codesign "${SIGN_ARGS[@]}" --entitlements "$ROOT/bundle/Release.entitlements" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 "$APP/Contents/Helpers/memex" --version

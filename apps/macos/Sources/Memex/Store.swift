@@ -3,6 +3,7 @@ import Observation
 
 @MainActor @Observable
 final class Store {
+    let liveConversations = LiveConversations()
     var sessions: [Session] = []
     var catalog: [Session] = []
     private(set) var projects: [ProjectSummary] = []
@@ -118,6 +119,7 @@ final class Store {
     }
 
     var selected: Session? { sessions.first { $0.id == selectedID } }
+    var selectedLiveConversation: LiveConversation? { selectedID.flatMap { liveConversations.sessions[$0] } }
     var selectedMachineIDs: [String] {
         switch machineSelection {
         case .all: machines.map(\.id)

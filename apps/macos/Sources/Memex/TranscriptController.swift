@@ -24,6 +24,7 @@ struct NativeTranscript: NSViewControllerRepresentable {
     var sourcePath = ""
     var requestedRecordID: String?
     var requestGeneration = 0
+    var followLatest = false
 
     func makeNSViewController(context: Context) -> TranscriptController { TranscriptController() }
     func updateNSViewController(_ controller: TranscriptController, context: Context) {
@@ -33,7 +34,8 @@ struct NativeTranscript: NSViewControllerRepresentable {
                           navigation: navigation, onLoadEarlier: onLoadEarlier,
                           findQuery: findQuery, findHit: findHit, findGeneration: findGeneration,
                           rawTranscript: rawTranscript, isLocalHost: isLocalHost, sourcePath: sourcePath,
-                          requestedRecordID: requestedRecordID, requestGeneration: requestGeneration)
+                          requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
+                          followLatest: followLatest)
     }
 }
 
@@ -183,9 +185,11 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 navigation: TranscriptNavigationState? = nil, onLoadEarlier: (() -> Void)? = nil,
                 findQuery: String = "", findHit: ConversationFindHit? = nil, findGeneration: Int = 0,
                 rawTranscript: Bool = false, isLocalHost: Bool = false, sourcePath: String = "",
-                requestedRecordID: String? = nil, requestGeneration: Int = 0) {
+                requestedRecordID: String? = nil, requestGeneration: Int = 0, followLatest: Bool = false) {
         _ = view
         let changedSession = self.sessionID != sessionID
+        let shouldFollow = followLatest && !changedSession && findQuery.isEmpty && !rows.isEmpty
+            && table.rect(ofRow: rows.count - 1).maxY - scrollView.contentView.bounds.maxY < 60
         let changedMode = self.rawTranscript != rawTranscript
         self.rawTranscript = rawTranscript
         self.isLocalHost = isLocalHost
@@ -269,6 +273,10 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         rebuildRows(resetMeasurements: !(appendOnly || prependOnly) || changedMode || changedQuery)
         if needsInitialPosition {
             applyInitialPosition()
+        } else if shouldFollow, !rows.isEmpty {
+            let end = table.rect(ofRow: rows.count - 1).maxY
+            scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, end - scrollView.contentView.bounds.height)))
+            scrollView.reflectScrolledClipView(scrollView.contentView)
         } else if let visiblePosition {
             restore(visiblePosition)
         } else {
