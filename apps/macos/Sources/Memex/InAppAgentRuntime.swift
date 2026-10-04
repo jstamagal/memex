@@ -62,6 +62,7 @@ actor NativeConversationRuntime: ConversationRuntime {
     private var wasReady = false
     private var warning: String?
     private var sentPromptIDs: Set<String> = []
+    private var newPromptIDs: Set<String> = []
 
     init(creation: AgentConversationCreation? = nil) { self.creation = creation }
 
@@ -185,13 +186,21 @@ actor NativeConversationRuntime: ConversationRuntime {
         let actions = service.supportedActions(sessionID: sessionID)
         let thread = try request("thread.snapshot", params: ["threadId": .string(sessionID)])
         let operations = try request("provider_operation.list", params: ["threadId": .string(sessionID), "includeTerminal": .bool(false)])
-        var snapshot = ConversationProjection.snapshot(conversation, thread: thread, operations: operations,
-            ready: actions.contains(.prompt), canCancel: actions.contains(.cancel), sentPromptIDs: sentPromptIDs)
-        snapshot.controls = try service.settings(sessionID: sessionID).map(ConversationControls.init)
-        snapshot.deliveries = try service.commandStatuses(sessionID: sessionID).filter { $0.action == .prompt }.map {
-            .init(commandID: $0.commandID, status: $0.status, error: $0.error,
-                  nativeTurnID: $0.nativeTurnID, nativeMessageID: $0.nativeMessageID)
+        let deliveries = try service.commandStatuses(sessionID: sessionID).filter { $0.action == .prompt }.map {
+            ConversationDelivery(commandID: $0.commandID, status: $0.status, error: $0.error,
+                                 nativeTurnID: $0.nativeTurnID, nativeMessageID: $0.nativeMessageID)
         }
+        // We observed the complete native stream for turns started and accepted
+        // through this connection. Resumed or unconfirmed turns have no such guarantee.
+        let ownedLiveUserTurns: Set<String> = target?.session.source == "codex"
+            ? Set(deliveries.filter {
+                newPromptIDs.contains($0.commandID) && $0.status == "completed"
+            }.compactMap(\.nativeTurnID)) : []
+        var snapshot = ConversationProjection.snapshot(conversation, thread: thread, operations: operations,
+            ready: actions.contains(.prompt), canCancel: actions.contains(.cancel), sentPromptIDs: sentPromptIDs,
+            ownedLiveUserTurns: ownedLiveUserTurns)
+        snapshot.controls = try service.settings(sessionID: sessionID).map(ConversationControls.init)
+        snapshot.deliveries = deliveries
         snapshot.warning = snapshot.warning ?? warning
         if snapshot.ready { wasReady = true }
         receive?(.success(snapshot))
@@ -223,10 +232,14 @@ actor NativeConversationRuntime: ConversationRuntime {
         if command.action == .prompt { sentPromptIDs.insert(command.id) }
         let content: [AcpPromptContentBlock]? = command.attachments.isEmpty ? nil
             : [.text(command.text)] + (try command.attachments.map { try $0.promptContent() })
-        _ = try service.perform(action, sessionID: sessionID, commandID: command.id,
+        let result = try service.perform(action, sessionID: sessionID, commandID: command.id,
             issuedAt: command.issuedAt, text: command.text,
             optionID: command.action == .configuration ? command.requestID : nil,
             requestID: command.requestID, promptContent: content)
+        if command.action == .prompt {
+            let receipt = try JSONDecoder().decode(RawTranscriptJSON.self, from: Data(result.utf8))
+            if receipt["replayed"].bool == false { newPromptIDs.insert(command.id) }
+        }
         try publish()
     }
 
@@ -239,6 +252,7 @@ actor NativeConversationRuntime: ConversationRuntime {
     func disconnect() {
         creation = nil
         sentPromptIDs.removeAll()
+        newPromptIDs.removeAll()
         poll?.cancel(); poll = nil
         drain?.cancel(); drain = nil
         if let subscription { service?.unsubscribe(subscription) }

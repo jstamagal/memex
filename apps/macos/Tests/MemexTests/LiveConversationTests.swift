@@ -667,6 +667,83 @@ private func decodeJSON(_ json: String) throws -> RawTranscriptJSON {
 }
 
 #if canImport(SQACPHost)
+@Test func codexUserMessageDoesNotDuplicateWhenItsSourceArrivesDuringTheTurn() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let source = root.appendingPathComponent("session.jsonl")
+    // Codex's model-input message ID differs from its UI item ID. The native
+    // completion event follows the recorded input before the turn completes.
+    let json = #"""
+    {"type":"session_meta","payload":{"id":"native-session","cwd":"/tmp"}}
+    {"type":"event_msg","payload":{"type":"task_started","turn_id":"native-turn"}}
+    {"type":"turn_context","payload":{"turn_id":"native-turn"}}
+    {"type":"response_item","payload":{"id":"model-input-id","type":"message","role":"user","content":[{"type":"input_text","text":"A single sent message"}]},"metadata":{"user_input_order":0}}
+    {"type":"event_msg","payload":{"type":"item_completed","thread_id":"native-session","turn_id":"native-turn","item":{"type":"UserMessage","id":"native-ui-id","client_id":"client-message-id","content":[{"type":"text","text":"A single sent message","text_elements":[]}]}}}
+    """#
+    try Data((json + "\n").utf8).write(to: source)
+    let runtime = try AgentRuntimeClient(databaseURL: root.appendingPathComponent("runtime.sqlite"))
+    let service = try AgentConversationService(runtime: runtime, archiveURL: root.appendingPathComponent("history"), executionHostID: "local")
+    _ = try service.addSource(agent: "codex", format: "jsonl", url: source,
+        nativeNamespace: "test-installation", nativeSessionID: "native-session", sessionID: "canonical-session")
+    func request(_ method: String, _ params: [String: Any]) throws -> RawTranscriptJSON {
+        let data = try JSONSerialization.data(withJSONObject: ["id": UUID().uuidString, "method": method, "params": params])
+        let result = try decodeJSON(runtime.requestJSON(String(decoding: data, as: UTF8.self)))
+        #expect(result["error"] == .null)
+        return result["result"]
+    }
+    let connected = try request("conversation.connect", ["sessionId": "canonical-session", "protocol": "codex_app_server"])
+    let token = try #require(connected["token"].string)
+    let live = try request("conversation.apply", ["sessionId": "canonical-session", "token": token,
+        "update": ["type": "snapshot", "through_sequence": 1, "final_item": true,
+            "entity": ["item_id": "native-ui-id", "native_turn_id": "native-turn", "source_order": 1,
+                "body": ["kind": "message", "data": ["role": "user", "native_message_id": "native-ui-id",
+                    "parts": [["type": "text", "data": "A single sent message"]]]]]]])
+    let snapshot = ConversationProjection.snapshot(live["conversation"], ready: true, canCancel: true,
+        ownedLiveUserTurns: ["native-turn"])
+    let prompts = snapshot.records.filter { $0.record.role == "user" }
+    #expect(prompts.count == 1, "A persisted prompt and its live native item must occupy one row: \(prompts.map(\.id))")
+    #expect(prompts.first?.record.eventID == "native-ui-id")
+    // Unowned/resumed turns do not claim complete native user-message coverage.
+    let unowned = ConversationProjection.snapshot(live["conversation"], ready: true, canCancel: true)
+    #expect(unowned.records.filter { $0.record.role == "user" }.count == 2)
+    // Presentation selection does not discard canonical evidence.
+    #expect(live["conversation"]["persisted"].array.contains {
+        $0["body"]["data"]["native_message_id"].string == "model-input-id"
+    })
+
+    // A second native user item can have identical text. Keep both occurrences
+    // when steering adds another input to the same turn.
+    let repeated = try request("conversation.apply", ["sessionId": "canonical-session", "token": token,
+        "update": ["type": "snapshot", "through_sequence": 2, "final_item": true,
+            "entity": ["item_id": "native-ui-repeat", "native_turn_id": "native-turn", "source_order": 2,
+                "body": ["kind": "message", "data": ["role": "user", "native_message_id": "native-ui-repeat",
+                    "parts": [["type": "text", "data": "A single sent message"]]]]]]])
+    let repeatedSnapshot = ConversationProjection.snapshot(repeated["conversation"], ready: true, canCancel: true,
+        ownedLiveUserTurns: ["native-turn"])
+    let repeatedPrompts = repeatedSnapshot.records.filter { $0.record.role == "user" }
+    #expect(repeatedPrompts.map(\.record.eventID) == ["native-ui-id", "native-ui-repeat"])
+
+    let handle = try FileHandle(forWritingTo: source)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data((#"{"type":"response_item","payload":{"id":"model-input-repeat","type":"message","role":"user","content":[{"type":"input_text","text":"A single sent message"}]}}"# + "\n").utf8))
+    let refreshed = try service.refresh(sessionID: "canonical-session")
+    let whileRunning = try #require(try ConversationProjection.conversation(in: refreshed, sessionID: "canonical-session"))
+    let refreshedSnapshot = ConversationProjection.snapshot(whileRunning, ready: true, canCancel: true,
+        ownedLiveUserTurns: ["native-turn"])
+    #expect(refreshedSnapshot.records.filter { $0.record.role == "user" }.map(\.record.eventID)
+        == ["native-ui-id", "native-ui-repeat"])
+    try handle.write(contentsOf: Data((#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"native-turn"}}"# + "\n").utf8))
+    try handle.close()
+    let completedSource = try service.refresh(sessionID: "canonical-session")
+    let complete = try #require(try ConversationProjection.conversation(in: completedSource, sessionID: "canonical-session"))
+    let completedSnapshot = ConversationProjection.snapshot(complete, ready: true, canCancel: true,
+        ownedLiveUserTurns: ["native-turn"])
+    let savedPrompts = completedSnapshot.records.filter { $0.record.role == "user" }
+    #expect(savedPrompts.map(\.record.eventID) == ["model-input-id", "model-input-repeat"])
+    #expect(complete["ephemeral"].array.isEmpty)
+}
+
 @Test func attachmentProjectionUsesRetainedMetadataWithoutShowingTransportText() throws {
     let uri = "file:///private/attachment-store/captured.txt"
     let reference = "Read attached file context.txt: \(uri)"
@@ -686,6 +763,57 @@ private func decodeJSON(_ json: String) throws -> RawTranscriptJSON {
     #expect(record.record.eventID == "native-user")
     #expect(SourceContent.blocks(record.record) == [.attachment(label: "context.txt", source: uri, image: false)])
     #expect(record.rawTranscriptBody.contains("Sidequery attachment metadata"))
+}
+
+/// Opt-in native regression: creates a disposable conversation and samples the
+/// handoff from local send intent through live echo and persisted transcript.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["MEMEX_SEND_TRANSITION_CHECK"] != nil))
+@MainActor func nativeSendShowsEachPromptOnceThroughoutDelivery() async throws {
+    let directory = try #require(ProcessInfo.processInfo.environment["MEMEX_SEND_TRANSITION_CHECK"])
+    let storage = FileManager.default.temporaryDirectory.appendingPathComponent("memex-send-transition-" + UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: storage) }
+    let created = try await NewConversationRuntime.create(
+        .init(provider: "codex", workingDirectory: URL(fileURLWithPath: directory)), applicationSupport: storage)
+    let conversations = LiveConversations(drafts: ConversationDraftStore(directory: storage.appendingPathComponent("drafts")))
+    let conversation = await conversations.adopt(created)
+    let prompt = "Reply with exactly MEMEX_SEND_TRANSITION_OK. Do not use tools or change files."
+    for sendNumber in 1...2 {
+        conversation.draft = prompt
+        let send = Task { await conversation.send() }
+        var duplicateStates: Set<String> = []
+        var completedAt: ContinuousClock.Instant?
+        let deadline = ContinuousClock.now.advanced(by: .seconds(90))
+        while ContinuousClock.now < deadline {
+            if let error = conversation.error {
+                await conversations.disconnectAll()
+                throw ConversationRuntimeError(message: error)
+            }
+            let users = conversation.snapshot.records.filter {
+                $0.record.role == "user" && $0.record.text.contains("MEMEX_SEND_TRANSITION_OK")
+            }
+            let pendingCount = conversation.pendingPrompt?.text == prompt ? 1 : 0
+            if users.count + pendingCount > sendNumber {
+                let identities = users.map {
+                    "\($0.id) event=\($0.record.eventID ?? "nil") turn=\($0.record.sourceTurnID ?? "nil")"
+                }.joined(separator: "; ")
+                duplicateStates.insert("send=\(sendNumber) pending=\(pendingCount) users=[\(identities)] deliveries=\(conversation.snapshot.deliveries)")
+            }
+            if conversation.canSubmit && conversation.snapshot.records.filter({
+                $0.record.role == "assistant" && $0.record.text == "MEMEX_SEND_TRANSITION_OK"
+            }).count == sendNumber {
+                completedAt = completedAt ?? .now
+                if let completedAt, completedAt.duration(to: .now) > .seconds(2) { break }
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await send.value
+        #expect(completedAt != nil, "Native send did not finish")
+        #expect(duplicateStates.isEmpty, "Duplicate visible sends: \(duplicateStates.sorted())")
+        #expect(conversation.snapshot.records.filter {
+            $0.record.role == "user" && $0.record.text.contains("MEMEX_SEND_TRANSITION_OK")
+        }.count == sendNumber)
+    }
+    await conversations.disconnectAll()
 }
 
 /// Resume-only diagnostic for a specified local session. Sends no prompt.

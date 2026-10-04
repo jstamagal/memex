@@ -15,7 +15,7 @@ enum ConversationProjection {
 
     static func snapshot(_ conversation: RawTranscriptJSON, thread: RawTranscriptJSON = .null,
                          operations: RawTranscriptJSON = .array([]), ready: Bool, canCancel: Bool,
-                         sentPromptIDs: Set<String> = []) -> ConversationSnapshot {
+                         sentPromptIDs: Set<String> = [], ownedLiveUserTurns: Set<String> = []) -> ConversationSnapshot {
         let pendingIDs = Set(conversation["state"]["pending_interactions"].array.compactMap(\.string))
         let pending = thread["pendingRequests"].array.filter { pendingIDs.contains($0["requestId"].string ?? "") }
         let approvals = pending.filter { $0["kind"].string == "approval" }.compactMap { request -> ConversationApproval? in
@@ -46,7 +46,7 @@ enum ConversationProjection {
         let recoveredPrompt = pendingPrompts.contains {
             !sentPromptIDs.contains($0["command"]["commandId"].string ?? "")
         }
-        var renderer = Renderer(conversation: conversation)
+        var renderer = Renderer(conversation: conversation, ownedLiveUserTurns: ownedLiveUserTurns)
         return ConversationSnapshot(records: renderer.render(), connected: conversation["connected"].bool ?? false,
             ready: ready, running: running, pendingPrompt: !pendingPrompts.isEmpty,
             canCancel: canCancel, approvals: approvals, questions: questions,
@@ -61,12 +61,24 @@ enum ConversationProjection {
         var entities: [String: RawTranscriptJSON] = [:]
         var liveTools: [String: RawTranscriptJSON] = [:]
         var liveResults: [String: RawTranscriptJSON] = [:]
+        var liveUserTurns: Set<String> = []
+        var sourceTurns: [String: String] = [:]
         var emitted: Set<String> = []
         var records: [TranscriptRecord] = []
 
-        init(conversation: RawTranscriptJSON) {
+        init(conversation: RawTranscriptJSON, ownedLiveUserTurns: Set<String>) {
             persisted = conversation["presentation"].array
             live = conversation["ephemeral"].array.sorted { $0["source_order"].integer < $1["source_order"].integer }
+            liveUserTurns = Set(live.compactMap { entity -> String? in
+                guard entity["body"]["kind"].string == "message",
+                      entity["body"]["data"]["role"].string == "user",
+                      let turn = entity["native_turn_id"].string,
+                      ownedLiveUserTurns.contains(turn) else { return nil }
+                return turn
+            })
+            if !liveUserTurns.isEmpty {
+                sourceTurns = Self.codexSourceTurns(conversation["persisted"].array)
+            }
             for entity in persisted {
                 if let id = entity["entity_id"].string { entities[id] = entity }
             }
@@ -79,6 +91,33 @@ enum ConversationProjection {
                     liveResults[call] = entity
                 }
             }
+        }
+
+        /// Canonical content and its Codex metadata share the same retained
+        /// source occurrence. Associate turns by that evidence, never by text,
+        /// timestamps, adjacency, or the provider's unrelated UI/model-input IDs.
+        private static func codexSourceTurns(_ entities: [RawTranscriptJSON]) -> [String: String] {
+            var evidenceTurns: [String: Set<String>] = [:]
+            for entity in entities {
+                let payload = entity["body"]["data"]["payload"]
+                guard entity["body"]["kind"].string == "entry",
+                      payload["type"].string == "metadata",
+                      payload["data"]["namespace"].string == "codex",
+                      let turn = payload["data"]["value"]["associated_turn_id"].string,
+                      !turn.isEmpty else { continue }
+                for evidence in entity["evidence"].array {
+                    if let key = evidence.jsonText { evidenceTurns[key, default: []].insert(turn) }
+                }
+            }
+            var turns: [String: String] = [:]
+            for entity in entities {
+                guard let id = entity["entity_id"].string else { continue }
+                let matches = entity["evidence"].array.reduce(into: Set<String>()) { result, evidence in
+                    if let key = evidence.jsonText, let candidates = evidenceTurns[key] { result.formUnion(candidates) }
+                }
+                if matches.count == 1 { turns[id] = matches.first }
+            }
+            return turns
         }
 
         mutating func render() -> [TranscriptRecord] {
@@ -123,6 +162,12 @@ enum ConversationProjection {
             switch kind {
             case "message":
                 let role = data["role"].string ?? "assistant"
+                // A locally started turn has a complete native user-message
+                // stream. Display that sequence until the source's terminal
+                // fence retires it, then display the persisted sequence. This
+                // selects one representation without claiming cross-ID matches.
+                if role == "user", entity["item_id"].string == nil,
+                   let turn = sourceTurns[id], liveUserTurns.contains(turn) { return }
                 let initialCount = records.count
                 // Provider attachment manifests belong to a single native message.
                 // Reuse its transport's presentation parser, retaining the complete
