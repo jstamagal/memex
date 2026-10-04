@@ -85,6 +85,8 @@ import SwiftUI
     static let reveal = NSToolbarItem.Identifier("MemexReveal")
     static let resume = NSToolbarItem.Identifier("MemexResume")
     static let search = NSToolbarItem.Identifier("MemexSearch")
+    static let newConversation = NSToolbarItem.Identifier("MemexNewConversation")
+    static let workspaceChanges = NSToolbarItem.Identifier("MemexWorkspaceChanges")
 
     init(store: Store, splitView: NSSplitView) {
         self.store = store
@@ -106,6 +108,7 @@ import SwiftUI
             _ = store.scope
             _ = store.loadingSessionMetadata
             _ = store.sessionMetadataError
+            _ = store.showingWorkspaceChanges
         } onChange: { [weak self] in
             // Observation fires before the mutation; read the completed state
             // on the next main-loop turn, then subscribe to subsequent changes.
@@ -118,10 +121,10 @@ import SwiftUI
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         if store.scope == .home {
-            return [.toggleSidebar, Self.sidebarBoundary, .flexibleSpace]
+            return [.toggleSidebar, Self.sidebarBoundary, Self.newConversation, .flexibleSpace]
         }
         return [.toggleSidebar, Self.sidebarBoundary, Self.title, .flexibleSpace, Self.filters,
-         Self.readerBoundary, Self.refresh, Self.find, Self.copyID, Self.reveal,
+         Self.readerBoundary, Self.newConversation, Self.refresh, Self.find, Self.copyID, Self.reveal, Self.workspaceChanges,
          .flexibleSpace, Self.resume, .flexibleSpace, Self.search]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -164,6 +167,8 @@ import SwiftUI
         case Self.find: return action(id, title: "Find in conversation", symbol: "magnifyingglass", selector: #selector(find))
         case Self.copyID: return action(id, title: "Copy session ID", symbol: "link", selector: #selector(copySessionID))
         case Self.reveal: return action(id, title: "Reveal source", symbol: "doc", selector: #selector(revealSource))
+        case Self.newConversation: return action(id, title: "New conversation (⌘N)", symbol: "square.and.pencil", selector: #selector(newConversation))
+        case Self.workspaceChanges: return action(id, title: "Workspace changes", symbol: "sidebar.right", selector: #selector(toggleWorkspaceChanges))
         case .toggleSidebar:
             let item = action(id, title: "Toggle sidebar", symbol: "sidebar.left", selector: #selector(toggleSidebar))
             item.isNavigational = true
@@ -200,6 +205,7 @@ import SwiftUI
         }
         if #available(macOS 26.0, *) {
             actionItems[Self.filters]?.style = filterPopover?.isShown == true || store.filters.isActive ? .prominent : .plain
+            actionItems[Self.workspaceChanges]?.style = store.showingWorkspaceChanges ? .prominent : .plain
         }
 
         actionItems[Self.refresh]?.isEnabled = !store.loadingSessions
@@ -207,6 +213,8 @@ import SwiftUI
         actionItems[Self.find]?.isEnabled = store.selected != nil
         actionItems[Self.copyID]?.isEnabled = store.selected != nil
         actionItems[Self.reveal]?.isEnabled = store.selected?.machineID == "local"
+        actionItems[Self.newConversation]?.isEnabled = InAppAgentRuntime.isAvailable
+        actionItems[Self.workspaceChanges]?.isEnabled = store.selectedWorkspace != nil
         if let field = searchItem?.searchField, field.stringValue != store.query { field.stringValue = store.query }
     }
     func controlTextDidChange(_ notification: Notification) {
@@ -234,6 +242,8 @@ import SwiftUI
         update()
     }
     @objc func refresh() { Task { await store.refresh() } }
+    @objc func newConversation() { store.showingNewConversation = true }
+    @objc func toggleWorkspaceChanges() { store.showingWorkspaceChanges.toggle() }
     @objc func find() { store.findConversationRequest += 1 }
     @objc func copySessionID() {
         guard let session = store.selected else { return }

@@ -15,6 +15,12 @@ struct ReaderView: View {
                     header(session)
                         .contextMenu { Toggle("Raw transcript", isOn: $rawTranscript) }
                     Divider().opacity(0.5)
+                    if let error = store.createdConversations.error {
+                        HStack {
+                            Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                            Button("Retry saving") { store.createdConversations.retrySave() }
+                        }.padding(8)
+                    }
                     if let live = store.selectedLiveConversation {
                         if let error = live.ownershipError ?? live.error {
                             HStack {
@@ -96,6 +102,7 @@ struct ReaderView: View {
         .onChange(of: find?.query) { _, _ in search() }
         .onChange(of: store.selectedLiveConversation?.revision) { _, _ in
             if store.readerUsesLiveSnapshot { search() }
+            store.updateCreatedConversationTitle()
         }
         .task(id: find?.generation) {
             guard let hit = find?.selectedHit else { return }

@@ -36,7 +36,8 @@ struct InAppResumeTarget: Sendable, Equatable {
     }
 
     static func resolve(_ session: Session, environment: [String: String] = ProcessInfo.processInfo.environment,
-                        applicationSupport: URL? = nil, helperURL: URL? = nil) throws -> Self {
+                        applicationSupport: URL? = nil, helperURL: URL? = nil,
+                        requiresTranscript: Bool = true) throws -> Self {
         if let reason = unavailableReason(for: session) { throw ConversationRuntimeError(message: reason) }
         guard session.sessionID.nilIfBlank != nil, !session.sessionID.contains("\0"),
               session.sourcePath.hasPrefix("/"), !session.sourcePath.contains("\0"),
@@ -51,7 +52,7 @@ struct InAppResumeTarget: Sendable, Equatable {
         guard manager.fileExists(atPath: workingDirectory.path, isDirectory: &directory), directory.boolValue else {
             throw ConversationRuntimeError(message: "The original working directory no longer exists: \(cwd)")
         }
-        guard manager.fileExists(atPath: sourceURL.path, isDirectory: &directory), !directory.boolValue else {
+        guard !requiresTranscript || (manager.fileExists(atPath: sourceURL.path, isDirectory: &directory) && !directory.boolValue) else {
             throw ConversationRuntimeError(message: "The original agent session file is unavailable: \(session.sourcePath)")
         }
         // A session directory can be a symlink onto another volume. Its parent
@@ -187,6 +188,7 @@ final class LiveConversation {
     private(set) var completion: ConversationActivity?
     private var deliveryUncertain = false
     private var stopping = false
+    private var adoptingCreatedSession: Bool
     @ObservationIgnored private let drafts: ConversationDraftStore?
     @ObservationIgnored private var runtime: (any ConversationRuntime)?
     @ObservationIgnored private var generation = UUID()
@@ -198,12 +200,13 @@ final class LiveConversation {
     init(session: Session, makeRuntime: @escaping @Sendable () -> any ConversationRuntime = { InAppAgentRuntime.make() },
          resolveTarget: @escaping @Sendable (Session) throws -> InAppResumeTarget = { try InAppResumeTarget.resolve($0) },
          checkOwnership: @escaping (Session) throws -> Bool = ConversationOwnership.isOpenElsewhere,
-         drafts: ConversationDraftStore? = nil) {
+         drafts: ConversationDraftStore? = nil, adoptingCreatedSession: Bool = false) {
         self.session = session
         self.makeRuntime = makeRuntime
         self.resolveTarget = resolveTarget
         self.checkOwnership = checkOwnership
         self.drafts = drafts
+        self.adoptingCreatedSession = adoptingCreatedSession
         if let saved = drafts?.drafts[session.id] {
             draft = saved.text
             deliveryUncertain = saved.deliveryUncertain
@@ -242,7 +245,7 @@ final class LiveConversation {
     func refreshOwnership() {
         // Once our provider is loading or connected, its own writer lock is
         // expected. Only inspect ownership before opening a native session.
-        guard !connecting, !snapshot.connected else { return }
+        guard !adoptingCreatedSession, !connecting, !snapshot.connected else { return }
         do {
             ownership = try checkOwnership(session) ? .openElsewhere : .available
         } catch {
@@ -283,10 +286,18 @@ final class LiveConversation {
 
     func focus() { focusRequest += 1 }
 
+    func showHistory(_ records: [TranscriptRecord]) {
+        guard !connecting, !snapshot.connected else { return }
+        snapshot.records = records
+        hasSnapshot = true
+        revision += 1
+    }
+
     @discardableResult
     func connect() async -> Bool {
         refreshOwnership()
         guard ownership == .available, !connecting else { return false }
+        adoptingCreatedSession = false
         finishConnecting(false)
         let token = UUID()
         generation = token
@@ -487,6 +498,16 @@ final class LiveConversations {
         guard InAppAgentRuntime.isAvailable, InAppResumeTarget.unavailableReason(for: session) == nil,
               sessions[session.id] == nil else { return }
         sessions[session.id] = makeConversation(session, drafts)
+    }
+
+    @discardableResult
+    func adopt(_ created: CreatedConversation) async -> LiveConversation {
+        let conversation = LiveConversation(session: created.session,
+            makeRuntime: { created.runtime }, resolveTarget: { _ in created.target },
+            drafts: drafts, adoptingCreatedSession: true)
+        sessions[created.session.id] = conversation
+        _ = await conversation.connect()
+        return conversation
     }
 
     func listState(for session: Session) -> ConversationListState {

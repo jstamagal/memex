@@ -4,6 +4,7 @@ import Observation
 @MainActor @Observable
 final class Store {
     let liveConversations: LiveConversations
+    let createdConversations: CreatedConversationCatalog
     var sessions: [Session] = []
     var catalog: [Session] = []
     private(set) var projects: [ProjectSummary] = []
@@ -25,6 +26,8 @@ final class Store {
     var machineError: String?
     var loadingMachines = false
     var findConversationRequest = 0
+    var showingNewConversation = false
+    var showingWorkspaceChanges = false
     var selectedID: String?
     var records: [TranscriptRecord] = []
     var query = ""
@@ -103,8 +106,10 @@ final class Store {
     let client: MemexClient
 
     init(client: MemexClient = MemexClient(), projectCatalog: ProjectCatalog? = nil, filterPreferences: UserDefaults? = nil,
-         draftStore: ConversationDraftStore = ConversationDraftStore(), liveConversations: LiveConversations? = nil) {
+         draftStore: ConversationDraftStore = ConversationDraftStore(), liveConversations: LiveConversations? = nil,
+         createdConversations: CreatedConversationCatalog = CreatedConversationCatalog()) {
         self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore)
+        self.createdConversations = createdConversations
         self.client = client
         self.projectCatalog = projectCatalog ?? ProjectCatalog(client: client)
         self.filterPreferences = filterPreferences
@@ -122,6 +127,11 @@ final class Store {
 
     var selected: Session? { sessions.first { $0.id == selectedID } }
     var selectedLiveConversation: LiveConversation? { selectedID.flatMap { liveConversations.sessions[$0] } }
+    var selectedWorkspace: URL? {
+        guard let selected, selected.machineID == "local", let cwd = selected.cwd?.nilIfBlank,
+              cwd.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: cwd, isDirectory: true)
+    }
     var selectedMachineIDs: [String] {
         switch machineSelection {
         case .all: machines.map(\.id)
@@ -168,6 +178,42 @@ final class Store {
     func openConversation(_ session: Session) {
         if scope == .home { scope = homeProject.map(Scope.project) ?? .all }
         selectedID = session.id
+    }
+
+    func createConversation(_ request: NewConversationRequest) async throws {
+        if let error = createdConversations.error { throw ConversationRuntimeError(message: error) }
+        let created = try await NewConversationRuntime.create(request)
+        // Once creation succeeds, retain its native identity even if adoption or
+        // local persistence fails. Retrying Create would create a different chat.
+        createdConversations.save(created.session)
+        let conversation = await liveConversations.adopt(created)
+        query = ""
+        filters = .defaults
+        scope = .all
+        machineSelection = .machine("local")
+        sessionMachineScope = machineRequestID
+        listGeneration = UUID()
+        sessionBatchesCriteria = nil
+        sessions.removeAll { $0.id == created.session.id }
+        sessions.insert(created.session, at: 0)
+        catalog.removeAll { $0.id == created.session.id }
+        catalog.append(created.session)
+        selectedID = created.session.id
+        conversation.focus()
+    }
+
+    func updateCreatedConversationTitle() {
+        guard let session = selected, createdConversations.contains(session),
+              let live = selectedLiveConversation,
+              let title = Session.openingTitle(live.snapshot.records),
+              session.label?.nilIfBlank == nil else { return }
+        var updated = session
+        updated.label = title
+        updated.lastAt = Date().formatted(.iso8601)
+        createdConversations.save(updated)
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = updated }
+        catalog.removeAll { $0.id == session.id }
+        catalog.append(updated)
     }
 
     func loadMachines() async {
@@ -375,6 +421,8 @@ final class Store {
                     let metadata = Dictionary(catalog.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
                     sessions = rows.map { row in metadata[row.id].map { row.applyingMetadata($0) } ?? row }
                 } else { sessions = rows }
+                sessions = createdConversations.merging(sessions, machines: ids, project: project,
+                    filters: filters, query: query, since: since, limit: limit)
                 if query == nil {
                     // Search results need metadata from every previously browsed
                     // filter, including subagents explicitly shown by the user.
@@ -383,7 +431,7 @@ final class Store {
                     catalog.append(contentsOf: rows)
                 }
                 hasMoreSessions = rows.count >= limit
-                if scope != .home && !rows.contains(where: { $0.id == selectedID }) { selectedID = rows.first?.id }
+                if scope != .home && !sessions.contains(where: { $0.id == selectedID }) { selectedID = sessions.first?.id }
                 listError = errors.keys.sorted().compactMap { errors[$0] }.joined(separator: "\n").nilIfBlank
             }
         }
@@ -394,6 +442,9 @@ final class Store {
         sessionMetadataGeneration = generation
         loadingSessionMetadata = false
         sessionMetadataError = nil
+        // Created chats already have their native identity and working directory.
+        // The CLI cannot supply external resume metadata until it indexes them.
+        if let selected, createdConversations.contains(selected), selected.searchRecordID == nil { return }
         guard let session = selected,
               session.label?.nilIfBlank == nil || (session.searchRecordID != nil && session.machineID == "local" && session.resumeCommand == nil) else { return }
         let request = readerRequestID
@@ -447,6 +498,23 @@ final class Store {
         hasMoreRecords = false
         hasEarlierRecords = false
         guard let selected else { loadingRecords = false; return }
+        if createdConversations.contains(selected), readerAnchorID == nil, InAppAgentRuntime.isAvailable {
+            liveConversations.prepare(selected)
+            if let live = selectedLiveConversation {
+                loadingRecords = true
+                defer { if readerGeneration == generation { loadingRecords = false } }
+                if !live.hasSnapshot {
+                    do {
+                        let history = try await NewConversationRuntime.records(for: selected)
+                        guard readerGeneration == generation, readerRequestID == request, !Task.isCancelled else { return }
+                        live.showHistory(history)
+                    } catch {
+                        if readerGeneration == generation, readerRequestID == request { readerError = error.localizedDescription }
+                    }
+                }
+                return
+            }
+        }
         if let window = readerWindows[key] {
             records = window.records
             recordsOffset = window.offset

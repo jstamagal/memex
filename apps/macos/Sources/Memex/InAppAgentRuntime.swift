@@ -47,7 +47,8 @@ func conversationProviderError(_ error: Error) -> ConversationRuntimeError {
 
 /// Owns blocking runtime calls off the main actor. One private archive tracks only
 /// the explicitly resumed source; the native provider continues to own its file.
-private actor NativeConversationRuntime: ConversationRuntime {
+actor NativeConversationRuntime: ConversationRuntime {
+    private var creation: AgentConversationCreation?
     private var runtime: AgentRuntimeClient?
     private var service: AgentConversationService?
     private var sessionID: String?
@@ -61,6 +62,8 @@ private actor NativeConversationRuntime: ConversationRuntime {
     private var wasReady = false
     private var warning: String?
 
+    init(creation: AgentConversationCreation? = nil) { self.creation = creation }
+
     private struct FileVersion: Equatable {
         let size: Int
         let modified: Date?
@@ -73,6 +76,8 @@ private actor NativeConversationRuntime: ConversationRuntime {
 
     func connect(_ target: InAppResumeTarget,
                  receive: @escaping @Sendable (Result<ConversationSnapshot, ConversationRuntimeError>) -> Void) throws {
+        let created = creation
+        creation = nil
         disconnect()
         self.target = target
         self.receive = receive
@@ -87,12 +92,19 @@ private actor NativeConversationRuntime: ConversationRuntime {
         self.runtime = runtime
         self.service = service
         let id = "memex-" + InAppResumeTarget.digest(target.session.id)
-        let imported = try service.addSource(agent: target.session.source, format: "jsonl", url: target.sourceURL,
-            nativeNamespace: target.providerInstanceID, nativeSessionID: target.session.sessionID, sessionID: id)
-        guard let conversation = try ConversationProjection.conversation(in: imported, sessionID: id),
+        let source: String?
+        if created == nil {
+            let imported = try service.addSource(agent: target.session.source, format: "jsonl", url: target.sourceURL,
+                nativeNamespace: target.providerInstanceID, nativeSessionID: target.session.sessionID, sessionID: id)
+            guard let conversation = try ConversationProjection.conversation(in: imported, sessionID: id),
               let sessionEntity = conversation["persisted"].array.first(where: { $0["body"]["kind"].string == "session" }),
-              let source = sessionEntity["body"]["data"]["source_ids"].array.first?.string else {
-            throw ConversationRuntimeError(message: "The native session could not be identified in its transcript.")
+              let sourceID = sessionEntity["body"]["data"]["source_ids"].array.first?.string else {
+                throw ConversationRuntimeError(message: "The native session could not be identified in its transcript.")
+            }
+            source = sourceID
+        } else {
+            source = nil
+            warning = "The provider has not saved its transcript yet. Send a message before closing to make this conversation resumable."
         }
         sessionID = id
         let binding = AgentConversationBinding(sessionID: id, sourceID: source,
@@ -105,7 +117,9 @@ private actor NativeConversationRuntime: ConversationRuntime {
             Task { await self?.changed(error: error) }
         }
         do {
-            if target.session.source == "codex" {
+            if let created {
+                try service.connectCreated(binding, creation: created)
+            } else if target.session.source == "codex" {
                 try service.connectCodex(binding, executablePath: target.executableURL.path, environment: target.environment)
             } else if let helper = target.helperURL {
                 try service.connectClaude(binding, hostExecutablePath: helper.path,
@@ -114,7 +128,7 @@ private actor NativeConversationRuntime: ConversationRuntime {
         } catch {
             throw conversationProviderError(error)
         }
-        fileVersion = try? FileVersion(target.sourceURL)
+        fileVersion = created == nil ? try? FileVersion(target.sourceURL) : nil
         try publish()
         poll = Task { [weak self] in
             while !Task.isCancelled {
@@ -143,12 +157,19 @@ private actor NativeConversationRuntime: ConversationRuntime {
         do {
             let version = try FileVersion(target.sourceURL)
             if version != fileVersion {
-                _ = try service.refresh(sessionID: sessionID)
+                if fileVersion == nil {
+                    _ = try service.addSource(agent: target.session.source, format: "jsonl", url: target.sourceURL,
+                        nativeNamespace: target.providerInstanceID, nativeSessionID: target.session.sessionID, sessionID: sessionID)
+                } else {
+                    _ = try service.refresh(sessionID: sessionID)
+                }
                 fileVersion = version
                 warning = nil
             }
         } catch {
-            warning = "Transcript refresh failed: \(error.localizedDescription). Live output is retained."
+            if fileVersion != nil || FileManager.default.fileExists(atPath: target.sourceURL.path) {
+                warning = "Transcript refresh failed: \(error.localizedDescription). Live output is retained."
+            }
         }
         if !wasReady && Date().timeIntervalSince(connectedAt) > 45 {
             fail(ConversationRuntimeError(message: "The agent did not finish loading this session. Check its CLI and sign-in, then reconnect."))
@@ -206,6 +227,7 @@ private actor NativeConversationRuntime: ConversationRuntime {
     }
 
     func disconnect() {
+        creation = nil
         poll?.cancel(); poll = nil
         drain?.cancel(); drain = nil
         if let subscription { service?.unsubscribe(subscription) }

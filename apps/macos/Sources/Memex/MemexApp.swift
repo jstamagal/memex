@@ -9,8 +9,12 @@ struct MemexApp: App {
         Settings { EmptyView() }
             .commands {
                 CommandGroup(replacing: .newItem) {
-                    Button("Open Memex") { delegate.showBrowser() }
+                    Button("New Conversation") {
+                        delegate.showBrowser()
+                        delegate.store.showingNewConversation = true
+                    }
                         .keyboardShortcut("n")
+                        .disabled(!InAppAgentRuntime.isAvailable)
                 }
                 CommandGroup(after: .newItem) {
                     Button("Refresh Conversations") { Task { await delegate.store.refresh() } }
@@ -18,13 +22,16 @@ struct MemexApp: App {
                     Button("Find in Conversation") { delegate.store.findConversationRequest += 1 }
                         .keyboardShortcut("f")
                         .disabled(delegate.store.selected == nil)
+                    Button("Workspace Changes") { delegate.store.showingWorkspaceChanges.toggle() }
+                        .keyboardShortcut("d", modifiers: [.command, .shift])
+                        .disabled(delegate.store.selectedWorkspace == nil)
                 }
             }
     }
 }
 
 @MainActor final class MemexApplicationDelegate: NSObject, NSApplicationDelegate {
-    let store = Store(filterPreferences: .standard, draftStore: .persistent())
+    let store = Store(filterPreferences: .standard, draftStore: .persistent(), createdConversations: .persistent())
     private var browser: NSWindowController?
     private var terminating = false
 
@@ -59,9 +66,17 @@ struct MemexApp: App {
             // Installing a native content controller adopts its fitting size.
             // Restore the intended initial browser size before frame autosave.
             window.setContentSize(NSSize(width: 1380, height: 900))
-            window.center()
+            if !window.setFrameUsingName("MemexBrowser") { window.center() }
             window.setFrameAutosaveName("MemexBrowser")
             browser = NSWindowController(window: window)
+        }
+        if let window = browser?.window, !window.styleMask.contains(.fullScreen),
+           let portrait = NSScreen.screens.first(where: { $0.frame.height > $0.frame.width }),
+           window.screen !== portrait {
+            let visible = portrait.visibleFrame
+            let size = NSSize(width: min(window.frame.width, visible.width), height: min(window.frame.height, visible.height))
+            window.setFrame(NSRect(x: visible.midX - size.width / 2, y: visible.midY - size.height / 2,
+                                   width: size.width, height: size.height), display: false)
         }
         browser?.showWindow(nil)
         browser?.window?.makeKeyAndOrderFront(nil)
@@ -82,6 +97,21 @@ private struct BrowserReader: View {
         Group {
             if store.scope == .home { HomeView(store: store) }
             else { ReaderView(store: store) }
+        }
+        .sheet(isPresented: $store.showingNewConversation) { NewConversationView(store: store) }
+        .inspector(isPresented: $store.showingWorkspaceChanges) {
+            if store.showingWorkspaceChanges, let directory = store.selectedWorkspace, store.scope != .home {
+                WorkspaceChangesView(directory: directory, isWorking: store.selectedLiveConversation?.isWorking == true) {
+                    store.showingWorkspaceChanges = false
+                }
+                    .inspectorColumnWidth(min: 430, ideal: 620, max: 1000)
+            }
+        }
+        .onChange(of: store.scope) { _, scope in
+            if scope == .home { store.showingWorkspaceChanges = false }
+        }
+        .onChange(of: store.selectedWorkspace) { _, directory in
+            if directory == nil { store.showingWorkspaceChanges = false }
         }
         .task(id: store.requestID) { await store.loadSessions() }
         .task(id: store.sessionCountRequestID) { await store.loadSessionCount() }

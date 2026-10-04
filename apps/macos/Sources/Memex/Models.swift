@@ -1,6 +1,6 @@
 import Foundation
 
-struct Session: Decodable, Identifiable, Hashable, Sendable {
+struct Session: Codable, Identifiable, Hashable, Sendable {
     let source: String
     let sessionID: String
     let sourcePath: String

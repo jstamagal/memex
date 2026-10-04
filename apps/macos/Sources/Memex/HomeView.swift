@@ -34,6 +34,11 @@ struct HomeView: View {
                     HStack {
                         Text(store.query.isEmpty ? "Recent conversations" : "Matching conversations").font(.title2.weight(.semibold))
                         Spacer()
+                        if InAppAgentRuntime.isAvailable {
+                            Button { store.showingNewConversation = true } label: {
+                                Label("New conversation", systemImage: "square.and.pencil")
+                            }
+                        }
                         Button { showingFilters.toggle() } label: {
                             Image(systemName: "line.3.horizontal.decrease")
                                 .frame(width: 20, height: 20)

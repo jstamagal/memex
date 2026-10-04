@@ -65,6 +65,30 @@ private actor RecordingConversationRuntime: ConversationRuntime {
 }
 
 @Suite(.serialized) @MainActor struct LiveConversationTests {
+    @Test func adoptsCreatedConversationWithoutSendingAnInitialPrompt() async throws {
+        let runtime = RecordingConversationRuntime()
+        let session = liveSession()
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let conversations = LiveConversations(drafts: ConversationDraftStore(directory: root))
+        let conversation = await conversations.adopt(CreatedConversation(session: session, runtime: runtime, target: fakeTarget(session)))
+        #expect(conversation.snapshot.ready)
+        #expect(await runtime.connections == 1)
+        #expect(await runtime.commands.isEmpty)
+        conversation.draft = "First request"
+        await conversation.send()
+        #expect(await runtime.commands.count == 1)
+        #expect(await runtime.commands.first?.text == "First request")
+        await conversations.disconnectAll()
+    }
+
+    @Test func claudeProjectDirectoryMatchesNativeEncoding() {
+        #expect(NewConversationRuntime.claudeProjectDirectory("/tmp/new_work.x") == "-tmp-new-work-x")
+        #expect(NewConversationRuntime.claudeProjectDirectory("/tmp/😀") == "-tmp---")
+        let longPath = "/" + String(repeating: "a", count: 201)
+        #expect(NewConversationRuntime.claudeProjectDirectory(longPath) == "-" + String(repeating: "a", count: 199) + "-85qkr6")
+    }
+
     @Test func draftPersistsBeforeDeliveryAndKeepsEditsMadeDuringSend() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -583,6 +607,28 @@ private func decodeJSON(_ json: String) throws -> RawTranscriptJSON {
         #expect(image.rawTranscriptBody.contains("iVBOR"))
         #expect(!visible.contains { $0.record.text.contains("ENCRYPTED_PAYLOAD") || $0.record.text.contains("iVBOR") })
         #expect(conversation["persisted"].array.contains { $0["body"]["kind"].string == "session" && !$0["body"]["data"]["source_ids"].array.isEmpty })
+    }
+}
+
+@Test func createdConversationHistoryReadsNativeFilesBeforeIndexing() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    for provider in ["codex", "claude"] {
+        let session = liveSession(source: provider, root: root.appendingPathComponent(provider))
+        #expect(try await NewConversationRuntime.records(for: session).isEmpty)
+        let source = URL(fileURLWithPath: session.sourcePath)
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let json = provider == "codex" ? #"""
+        {"type":"session_meta","payload":{"id":"native-session","cwd":"/tmp","originator":"codex_cli_rs","timestamp":"2026-10-04T10:00:00Z"}}
+        {"type":"response_item","payload":{"id":"user-1","type":"message","role":"user","content":[{"type":"input_text","text":"Read without launching a provider"}]}}
+        """# : #"""
+        {"type":"user","sessionId":"native-session","uuid":"user-1","message":{"role":"user","content":"Read without launching a provider"}}
+        """#
+        try Data((json + "\n").utf8).write(to: source)
+        let before = try Data(contentsOf: source)
+        let records = try await NewConversationRuntime.records(for: session)
+        #expect(records.contains { $0.record.text == "Read without launching a provider" })
+        #expect(try Data(contentsOf: source) == before)
     }
 }
 #endif

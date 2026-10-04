@@ -5,6 +5,31 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct BrowserToolbarTests {
+    @Test func newAndWorkspaceActionsUseCurrentLocalSelection() throws {
+        let (window, _, controller) = fixture()
+        defer { window.close() }
+        let new = try item(BrowserToolbarController.newConversation, in: controller)
+        #expect(NSApplication.shared.sendAction(try #require(new.action), to: new.target, from: new))
+        #expect(controller.store.showingNewConversation)
+        let changes = try item(BrowserToolbarController.workspaceChanges, in: controller)
+        #expect(!changes.isEnabled)
+        var session = Session(source: "codex", sessionID: "local-workspace", sourcePath: "/fixture", project: "project", cwd: "/tmp/project")
+        controller.store.sessions = [session]
+        controller.store.selectedID = session.id
+        controller.update()
+        #expect(changes.isEnabled)
+        #expect(NSApplication.shared.sendAction(try #require(changes.action), to: changes.target, from: changes))
+        #expect(controller.store.showingWorkspaceChanges)
+        session.machine = "remote"
+        controller.store.sessions = [session]
+        controller.store.selectedID = session.id
+        controller.update()
+        #expect(!changes.isEnabled)
+        controller.store.scope = .home
+        controller.update()
+        #expect(controller.toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.newConversation })
+    }
+
     @Test func resumeUsesNativeToolbarSegmentsAndTracksSelection() throws {
         let (window, _, controller) = fixture()
         defer { window.close() }
