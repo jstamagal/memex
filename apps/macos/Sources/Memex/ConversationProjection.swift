@@ -10,7 +10,8 @@ enum ConversationProjection {
     }
 
     static func snapshot(_ conversation: RawTranscriptJSON, thread: RawTranscriptJSON = .null,
-                         operations: RawTranscriptJSON = .array([]), ready: Bool, canCancel: Bool) -> ConversationSnapshot {
+                         operations: RawTranscriptJSON = .array([]), ready: Bool, canCancel: Bool,
+                         sentPromptIDs: Set<String> = []) -> ConversationSnapshot {
         let pendingIDs = Set(conversation["state"]["pending_interactions"].array.compactMap(\.string))
         let pending = thread["pendingRequests"].array.filter { pendingIDs.contains($0["requestId"].string ?? "") }
         let approvals = pending.filter { $0["kind"].string == "approval" }.compactMap { request -> ConversationApproval? in
@@ -31,14 +32,23 @@ enum ConversationProjection {
                     return .init(id: id, title: title, value: $0["value"].string ?? title)
                 })
         }
-        let pendingPrompt = operations.array.contains {
+        let pendingPrompts = operations.array.filter {
             ["thread.turn.start", "thread.turn.steer"].contains($0["command"]["type"].string ?? "")
                 && !["completed", "failed"].contains($0["status"].string ?? "")
         }
+        let running = conversation["state"]["running"].bool ?? false
+        // A command sent by this connection is ordinary work, even before the
+        // provider reports a running turn. Only recovered operations need review.
+        let recoveredPrompt = pendingPrompts.contains {
+            !sentPromptIDs.contains($0["command"]["commandId"].string ?? "")
+        }
         var renderer = Renderer(conversation: conversation)
         return ConversationSnapshot(records: renderer.render(), connected: conversation["connected"].bool ?? false,
-            ready: ready, running: conversation["state"]["running"].bool ?? false, pendingPrompt: pendingPrompt,
-            canCancel: canCancel, approvals: approvals, questions: questions)
+            ready: ready, running: running, pendingPrompt: !pendingPrompts.isEmpty,
+            canCancel: canCancel, approvals: approvals, questions: questions,
+            warning: recoveredPrompt && !running
+                ? "A previous prompt has no confirmed outcome. It will not be sent again automatically. Check the native session before continuing."
+                : nil)
     }
 
     private struct Renderer {

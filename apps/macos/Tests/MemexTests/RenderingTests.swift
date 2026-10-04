@@ -5,6 +5,48 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct RenderingTests {
+    @Test func streamingRetainsExistingCellsAndSelectionWhileUpdatingContentAndHeight() throws {
+        let controller = TranscriptController()
+        let window = readerWindow(controller)
+        defer { window.close() }
+        // NSTableView only installs and retains visible row views in an ordered
+        // window. Keep the test window offscreen and never make it key.
+        window.setFrameOrigin(NSPoint(x: -10_000, y: -10_000))
+        window.orderBack(nil)
+        var records = ["Earlier answer", "Streaming"].enumerated().map { index, text in
+            TranscriptRecord(recordID: "stream-\(index)", record: Message(role: "assistant", text: text,
+                toolName: nil, toolInput: nil, toolOutput: nil))
+        }
+        controller.update(sessionID: "stream", records: records, provider: "codex", followLatest: true)
+        pump(window)
+        let firstCell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        let firstText = try #require(descendants(of: firstCell, as: NSTextView.self).first)
+        let selected = NSRange(location: 0, length: 7)
+        firstText.setSelectedRange(selected)
+        let streamingCell = try #require(controller.table.view(atColumn: 0, row: 1, makeIfNecessary: true))
+        let originalHeight = controller.table.rect(ofRow: 1).height
+
+        records[1] = TranscriptRecord(recordID: "stream-1", record: Message(role: "assistant",
+            text: "Streaming a longer answer.\n\nSecond paragraph.\n\nThird paragraph.",
+            toolName: nil, toolInput: nil, toolOutput: nil))
+        controller.update(sessionID: "stream", records: records, provider: "codex", followLatest: true)
+        pump(window)
+        #expect(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true) === firstCell)
+        #expect(firstText.selectedRange() == selected)
+        #expect(controller.table.view(atColumn: 0, row: 1, makeIfNecessary: true) === streamingCell)
+        #expect(controller.table.rect(ofRow: 1).height > originalHeight)
+        let streamingText = try #require(descendants(of: streamingCell, as: NSTextView.self).first)
+        #expect(streamingText.string.contains("Third paragraph."))
+
+        records.append(TranscriptRecord(recordID: "stream-2", record: Message(role: "user", text: "Next request",
+            toolName: nil, toolInput: nil, toolOutput: nil)))
+        controller.update(sessionID: "stream", records: records, provider: "codex", followLatest: true)
+        pump(window)
+        #expect(controller.table.numberOfRows == 3)
+        #expect(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true) === firstCell)
+        #expect(firstText.selectedRange() == selected)
+    }
+
     @Test func messagesUseUnlabelledContentSizedBubblesAndKeepAccessibleSpeakers() throws {
         let controller = TranscriptController()
         let window = readerWindow(controller)

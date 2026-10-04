@@ -487,6 +487,31 @@ private actor RecordingConversationRuntime: ConversationRuntime {
     #expect(snapshot.pendingPrompt)
 }
 
+@Test func promptRecoveryWarningDistinguishesCurrentDeliveryFromAnInterruptedConnection() throws {
+    let idle = try decodeJSON(#"{"connected":true,"state":{"running":false}}"#)
+    for status in ["pending", "leased", "dispatching"] {
+        let operations = try decodeJSON("""
+        [{"command":{"commandId":"current-send","type":"thread.turn.start"},"status":"\(status)"}]
+        """)
+        let sending = ConversationProjection.snapshot(idle, operations: operations,
+            ready: true, canCancel: true, sentPromptIDs: ["current-send"])
+        #expect(sending.pendingPrompt)
+        #expect(sending.warning == nil)
+        // Reopening loses the connection's ownership of this still-pending send.
+        let recovered = ConversationProjection.snapshot(idle, operations: operations, ready: true, canCancel: true)
+        #expect(recovered.pendingPrompt)
+        #expect(recovered.warning?.contains("previous prompt") == true)
+        let active = ConversationProjection.snapshot(try decodeJSON(#"{"state":{"running":true}}"#),
+            operations: operations, ready: true, canCancel: true)
+        #expect(active.warning == nil)
+    }
+    let completed = ConversationProjection.snapshot(idle,
+        operations: try decodeJSON(#"[{"command":{"type":"thread.turn.start"},"status":"completed"}]"#),
+        ready: true, canCancel: true)
+    #expect(!completed.pendingPrompt)
+    #expect(completed.warning == nil)
+}
+
 @Test func inAppResumeKeepsOwningHomeWhenSessionStorageIsSymlinked() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }

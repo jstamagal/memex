@@ -244,17 +244,9 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         }
         updatingRows = true
         defer { updatingRows = false }
-        let appendOnly = !changedSession && self.provider == provider && records.starts(with: self.records)
-        let prependOnly = !changedSession && self.provider == provider
-            && records.suffix(self.records.count).elementsEqual(self.records)
+        let changedProvider = self.provider != provider
         let oldOrigin = scrollView.contentView.bounds.origin
         let visiblePosition = changedSession ? nil : currentPosition()
-        if appendOnly, self.records != records, let last = rows.last {
-            // The final tool/instruction group may gain records across pages.
-            measurements.removeValue(forKey: last.id)
-            textLayouts.removeValue(forKey: last.id)
-            richLayouts.removeValue(forKey: last.id)
-        }
         self.sessionID = sessionID
         self.records = records
         self.provider = provider
@@ -276,7 +268,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         }
         // Both paging directions retain unchanged layouts; rebuildRows invalidates
         // boundary groups whose records or nesting changed.
-        rebuildRows(resetMeasurements: !(appendOnly || prependOnly) || changedMode || changedQuery)
+        rebuildRows(resetMeasurements: changedSession || changedProvider || changedMode || changedQuery,
+                    incrementally: followLatest && !changedSession && !changedProvider && !changedMode && !changedFind)
         if needsInitialPosition {
             applyInitialPosition()
         } else if shouldFollow, !rows.isEmpty {
@@ -394,7 +387,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 
-    private func rebuildRows(resetMeasurements: Bool = false, regroup: Bool = true) {
+    private func rebuildRows(resetMeasurements: Bool = false, regroup: Bool = true, incrementally: Bool = false) {
         if regroup {
             groupedItems = rawTranscript ? [] : TranscriptItem.group(records).map { entry in
                 var item = entry
@@ -402,6 +395,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 return item
             }
         }
+        let previousRows = rows
         let previous = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let openedRecords = Set(rows.filter {
             if case .activity = $0 { return expanded.contains($0.id) }
@@ -472,7 +466,25 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 }
             }
         }
-        table.reloadData()
+        if incrementally, !resetMeasurements, rows.map(\.id).starts(with: previousRows.map(\.id)) {
+            // Streaming changes the last message frequently. Keep existing cells
+            // and selections intact; only measure/configure changed content.
+            let changed = IndexSet(previousRows.indices.filter { previousRows[$0].records != rows[$0].records })
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0
+                if rows.count > previousRows.count {
+                    table.insertRows(at: IndexSet(integersIn: previousRows.count..<rows.count), withAnimation: [])
+                }
+                table.noteHeightOfRows(withIndexesChanged: changed)
+            }
+            for row in changed {
+                if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: false) as? TranscriptCell {
+                    configure(cell, row: row)
+                }
+            }
+        } else {
+            table.reloadData()
+        }
     }
 
     func toggle(_ id: String) {

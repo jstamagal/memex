@@ -61,6 +61,7 @@ actor NativeConversationRuntime: ConversationRuntime {
     private var connectedAt = Date()
     private var wasReady = false
     private var warning: String?
+    private var sentPromptIDs: Set<String> = []
 
     init(creation: AgentConversationCreation? = nil) { self.creation = creation }
 
@@ -185,11 +186,8 @@ actor NativeConversationRuntime: ConversationRuntime {
         let thread = try request("thread.snapshot", params: ["threadId": .string(sessionID)])
         let operations = try request("provider_operation.list", params: ["threadId": .string(sessionID), "includeTerminal": .bool(false)])
         var snapshot = ConversationProjection.snapshot(conversation, thread: thread, operations: operations,
-            ready: actions.contains(.prompt), canCancel: actions.contains(.cancel))
-        snapshot.warning = warning
-        if snapshot.pendingPrompt && !snapshot.running {
-            snapshot.warning = "A previous prompt has no confirmed outcome. It will not be sent again automatically. Check the native session before continuing."
-        }
+            ready: actions.contains(.prompt), canCancel: actions.contains(.cancel), sentPromptIDs: sentPromptIDs)
+        snapshot.warning = snapshot.warning ?? warning
         if snapshot.ready { wasReady = true }
         receive?(.success(snapshot))
         if wasReady && !snapshot.connected {
@@ -215,6 +213,7 @@ actor NativeConversationRuntime: ConversationRuntime {
         case .approval: action = .approval
         case .userInput: action = .userInput
         }
+        if command.action == .prompt { sentPromptIDs.insert(command.id) }
         _ = try service.perform(action, sessionID: sessionID, commandID: command.id,
             issuedAt: command.issuedAt, text: command.text, requestID: command.requestID)
         try publish()
@@ -228,6 +227,7 @@ actor NativeConversationRuntime: ConversationRuntime {
 
     func disconnect() {
         creation = nil
+        sentPromptIDs.removeAll()
         poll?.cancel(); poll = nil
         drain?.cancel(); drain = nil
         if let subscription { service?.unsubscribe(subscription) }

@@ -278,6 +278,7 @@ final class LiveConversation {
         if !snapshot.connected { return "Disconnected" }
         if !snapshot.approvals.isEmpty { return "Waiting for approval" }
         if !snapshot.questions.isEmpty { return "Waiting for your answer" }
+        if stopping { return "Stopping…" }
         if snapshot.running { return "Working…" }
         if submitting || snapshot.pendingPrompt { return "Sending…" }
         if !snapshot.ready { return "Loading session…" }

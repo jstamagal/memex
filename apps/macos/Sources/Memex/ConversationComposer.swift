@@ -70,6 +70,10 @@ struct ConversationComposer: View {
                         }
                     }.font(.system(size: 12)).foregroundStyle(.secondary)
                     Spacer(minLength: 0)
+                    if conversation.isWorking {
+                        Text(conversation.status)
+                            .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 },
                 sendButton: { AcpSendButton().accessibilityLabel("Send") },
                 cancelButton: { AcpStopButton().accessibilityLabel("Stop") }
