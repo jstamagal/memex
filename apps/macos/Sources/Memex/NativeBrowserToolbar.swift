@@ -124,8 +124,8 @@ import SwiftUI
             return [.toggleSidebar, Self.sidebarBoundary, Self.newConversation, .flexibleSpace]
         }
         return [.toggleSidebar, Self.sidebarBoundary, Self.title, .flexibleSpace, Self.filters,
-         Self.readerBoundary, Self.newConversation, Self.refresh, Self.find, Self.workspaceChanges,
-         .flexibleSpace, Self.resume, Self.more, .flexibleSpace, Self.search]
+         Self.readerBoundary, Self.newConversation, Self.refresh, Self.find,
+         .flexibleSpace, Self.search, Self.resume, Self.more, Self.workspaceChanges]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
