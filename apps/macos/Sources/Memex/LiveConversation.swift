@@ -172,7 +172,7 @@ final class LiveConversation {
     }
 
     let session: Session
-    var draft = ""
+    var draft = "" { didSet { persistDraft() } }
     private(set) var snapshot = ConversationSnapshot()
     private(set) var hasSnapshot = false
     private(set) var connecting = false
@@ -184,6 +184,10 @@ final class LiveConversation {
     private(set) var revision = 0
     private(set) var focusRequest = 0
     private(set) var visibleLimit = 120
+    private(set) var completion: ConversationActivity?
+    private var deliveryUncertain = false
+    private var stopping = false
+    @ObservationIgnored private let drafts: ConversationDraftStore?
     @ObservationIgnored private var runtime: (any ConversationRuntime)?
     @ObservationIgnored private var generation = UUID()
     @ObservationIgnored private var connectionWaiter: CheckedContinuation<Bool, Never>?
@@ -193,12 +197,40 @@ final class LiveConversation {
 
     init(session: Session, makeRuntime: @escaping @Sendable () -> any ConversationRuntime = { InAppAgentRuntime.make() },
          resolveTarget: @escaping @Sendable (Session) throws -> InAppResumeTarget = { try InAppResumeTarget.resolve($0) },
-         checkOwnership: @escaping (Session) throws -> Bool = ConversationOwnership.isOpenElsewhere) {
+         checkOwnership: @escaping (Session) throws -> Bool = ConversationOwnership.isOpenElsewhere,
+         drafts: ConversationDraftStore? = nil) {
         self.session = session
         self.makeRuntime = makeRuntime
         self.resolveTarget = resolveTarget
         self.checkOwnership = checkOwnership
+        self.drafts = drafts
+        if let saved = drafts?.drafts[session.id] {
+            draft = saved.text
+            deliveryUncertain = saved.deliveryUncertain
+            if saved.deliveryUncertain {
+                error = "The previous send could not be confirmed. Reload and review the conversation before sending again."
+                connectionAttempted = true
+            }
+        }
         refreshOwnership()
+    }
+
+    private func persistDraft() {
+        drafts?.set(.init(text: draft, deliveryUncertain: deliveryUncertain), for: session.id)
+    }
+
+    var draftSaveError: String? { drafts?.error }
+
+    var listState: ConversationListState {
+        let activity: ConversationActivity?
+        if error != nil || ownershipError != nil { activity = .failed }
+        else if !snapshot.approvals.isEmpty { activity = .approval }
+        else if !snapshot.questions.isEmpty { activity = .question }
+        else if connecting { activity = .starting }
+        else if isWorking { activity = stopping ? .stopping : .working }
+        else if isOpenElsewhere { activity = .openElsewhere }
+        else { activity = completion }
+        return ConversationListState(activity: activity, hasDraft: draft.nilIfBlank != nil)
     }
 
     var isOpenElsewhere: Bool { ownership == .openElsewhere }
@@ -283,12 +315,23 @@ final class LiveConversation {
                     switch result {
                     case .success(let snapshot):
                         guard self.snapshot != snapshot || !self.hasSnapshot else { return }
+                        let wasConnecting = self.connecting
+                        let wasWorking = self.snapshot.running || self.snapshot.pendingPrompt
+                        if snapshot.running || snapshot.pendingPrompt {
+                            if !self.stopping { self.completion = nil }
+                        }
+                        else if wasWorking, snapshot.ready, snapshot.approvals.isEmpty, snapshot.questions.isEmpty,
+                                self.completion == nil { self.completion = self.stopping ? .stopped : .completed }
                         self.snapshot = snapshot
                         self.hasSnapshot = true
                         self.revision += 1
                         if snapshot.ready {
                             self.connecting = false
                             self.finishConnecting(true)
+                            if wasConnecting, self.deliveryUncertain {
+                                self.deliveryUncertain = false
+                                self.persistDraft()
+                            }
                         }
                     case .failure(let failure):
                         await self.connectionFailed(failure)
@@ -348,17 +391,22 @@ final class LiveConversation {
         // loads its original session, then sends exactly once when it is ready.
         if !connectionAttempted, !(await connect()) { return }
         guard canSend else { return }
-        if await perform(ConversationCommand(.prompt, text: text)), draft == text { draft = "" }
+        completion = nil
+        stopping = false
+        _ = await perform(ConversationCommand(.prompt, text: text))
     }
 
     func stop() async {
         if connecting {
             await disconnect()
             connectionAttempted = false
+            completion = .stopped
             return
         }
         guard canStop else { return }
-        _ = await perform(ConversationCommand(.cancel))
+        stopping = true
+        if await perform(ConversationCommand(.cancel)) { completion = .stopped }
+        else { stopping = false }
     }
 
     func approve(_ approval: ConversationApproval, option: ConversationApproval.Option) async {
@@ -375,14 +423,31 @@ final class LiveConversation {
         guard let runtime, !submitting else { return false }
         let token = generation
         submitting = true
-        if command.action == .prompt { snapshot.pendingPrompt = true }
+        if command.action == .prompt {
+            snapshot.pendingPrompt = true
+            // Persist before crossing the provider boundary. A process exit while
+            // awaiting acknowledgement must restore a draft that requires review.
+            deliveryUncertain = true
+            persistDraft()
+            await drafts?.flush()
+            guard generation == token else { return false }
+        }
         defer { if generation == token { submitting = false } }
         do {
             try await runtime.perform(command)
+            if command.action == .prompt, generation == token {
+                deliveryUncertain = false
+                if draft == command.text { draft = "" }
+                else { persistDraft() }
+            }
             return generation == token
         } catch {
             guard generation == token else { return false }
             self.error = error.localizedDescription
+            if command.action == .prompt {
+                deliveryUncertain = true
+                persistDraft()
+            }
             // A provider can accept a command before its acknowledgement is lost.
             // Reconnect explicitly; never turn an uncertain result into another send.
             snapshot.ready = false
@@ -409,14 +474,30 @@ final class LiveConversation {
 @MainActor @Observable
 final class LiveConversations {
     private(set) var sessions: [String: LiveConversation] = [:]
+    let drafts: ConversationDraftStore
+    @ObservationIgnored private let makeConversation: (Session, ConversationDraftStore) -> LiveConversation
+
+    init(drafts: ConversationDraftStore = ConversationDraftStore(),
+         makeConversation: @escaping (Session, ConversationDraftStore) -> LiveConversation = { LiveConversation(session: $0, drafts: $1) }) {
+        self.drafts = drafts
+        self.makeConversation = makeConversation
+    }
 
     func prepare(_ session: Session) {
         guard InAppAgentRuntime.isAvailable, InAppResumeTarget.unavailableReason(for: session) == nil,
               sessions[session.id] == nil else { return }
-        sessions[session.id] = LiveConversation(session: session)
+        sessions[session.id] = makeConversation(session, drafts)
+    }
+
+    func listState(for session: Session) -> ConversationListState {
+        if let conversation = sessions[session.id] { return conversation.listState }
+        let draft = drafts.drafts[session.id]
+        return ConversationListState(activity: draft?.deliveryUncertain == true ? .failed : nil,
+                                     hasDraft: draft?.text.nilIfBlank != nil)
     }
 
     func disconnectAll() async {
         for conversation in sessions.values { await conversation.disconnect() }
+        await drafts.flush()
     }
 }

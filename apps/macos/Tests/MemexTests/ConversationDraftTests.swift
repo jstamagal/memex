@@ -1,0 +1,46 @@
+import Foundation
+import Testing
+@testable import Memex
+
+@Suite(.serialized) @MainActor struct ConversationDraftTests {
+    @Test func relaunchRestoresExactLatestDraftByNativeIdentity() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConversationDraftStore(directory: directory)
+        #expect(store.error == nil)
+        let local = Session(source: "codex", sessionID: "same", sourcePath: "/source", project: "one")
+        var remote = local
+        remote.machine = "nicbook-atm"
+        for index in 0..<100 { store.set(.init(text: "draft \(index)"), for: local.id) }
+        store.set(.init(text: "  Exact\ntext 🧪  ", deliveryUncertain: true), for: local.id)
+        store.set(.init(text: "Different machine"), for: remote.id)
+        await store.flush()
+        let restored = ConversationDraftStore(directory: directory)
+        #expect(restored.error == nil)
+        #expect(restored.drafts[local.id] == .init(text: "  Exact\ntext 🧪  ", deliveryUncertain: true))
+        #expect(restored.drafts[remote.id]?.text == "Different machine")
+        let registry = LiveConversations(drafts: restored)
+        #expect(registry.listState(for: local) == .init(activity: .failed, hasDraft: true))
+        #expect(registry.listState(for: remote) == .init(hasDraft: true))
+        restored.set(.init(text: ""), for: local.id)
+        await restored.flush()
+        #expect(ConversationDraftStore(directory: directory).drafts[local.id] == nil)
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.appendingPathComponent("drafts.json").path)
+        #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
+    }
+
+    @Test func unreadableSavedDraftsAreNeverOverwritten() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("drafts.json")
+        let original = Data("unreadable saved content".utf8)
+        try original.write(to: file)
+        let store = ConversationDraftStore(directory: directory)
+        #expect(store.error != nil)
+        store.set(.init(text: "new draft"), for: "session")
+        await store.flush()
+        #expect(store.drafts["session"]?.text == "new draft")
+        #expect(try Data(contentsOf: file) == original)
+    }
+}

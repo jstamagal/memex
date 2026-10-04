@@ -24,7 +24,7 @@ struct MemexApp: App {
 }
 
 @MainActor final class MemexApplicationDelegate: NSObject, NSApplicationDelegate {
-    let store = Store(filterPreferences: .standard)
+    let store = Store(filterPreferences: .standard, draftStore: .persistent())
     private var browser: NSWindowController?
     private var terminating = false
 
@@ -220,6 +220,8 @@ private struct BrowserConversationList: View {
                 ErrorBanner(message: error) { Task { await store.loadSessions() } }
             }
             NativeConversationList(sessions: store.sessions, selectedID: store.selectedID,
+                states: Dictionary(uniqueKeysWithValues: store.sessions.map { ($0.id, store.liveConversations.listState(for: $0)) }),
+                query: store.query,
                 select: { store.selectedID = $0 },
                 loadMore: { store.loadMoreSessionsIfNeeded(visibleID: $0) })
             .overlay {

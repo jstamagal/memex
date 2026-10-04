@@ -43,7 +43,8 @@ struct RenderingTests {
             let readerWidth = controller.table.bounds.width
             let value = controller.measurement(at: 0)
             #expect(value.contentWidth <= min(800, readerWidth - 60) * 0.77)
-            #expect(abs(value.contentX + value.contentWidth - (readerWidth - 30)) < 1)
+            let laneWidth = min(800, readerWidth - 60)
+            #expect(abs(value.contentX + value.contentWidth - (readerWidth + laneWidth) / 2) < 1)
             let cell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
             cell.layoutSubtreeIfNeeded()
             let text = try #require(descendants(of: cell, as: NSTextView.self).first)
@@ -54,7 +55,7 @@ struct RenderingTests {
         }
     }
 
-    @Test func wideReaderKeepsAssistantAndToolsAtLeftGutter() {
+    @Test func wideReaderCentersOneLaneForAssistantToolsAndUser() {
         let controller = TranscriptController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 1600, height: 700)
         let records = [
@@ -63,10 +64,11 @@ struct RenderingTests {
             TranscriptRecord(recordID: "user", record: Message(role: "user", text: "Reply", toolName: nil, toolInput: nil, toolOutput: nil))
         ]
         controller.update(sessionID: "wide", records: records, provider: "codex")
-        #expect(controller.measurement(at: 0).contentX == 30)
-        #expect(controller.measurement(at: 1).contentX == 30)
+        let laneX = (controller.table.bounds.width - 800) / 2
+        #expect(controller.measurement(at: 0).contentX == laneX)
+        #expect(controller.measurement(at: 1).contentX == laneX)
         let user = controller.measurement(at: 2)
-        #expect(abs(user.contentX + user.contentWidth - (controller.table.bounds.width - 30)) < 1)
+        #expect(abs(user.contentX + user.contentWidth - (laneX + 800)) < 1)
     }
 
     @Test func bubbleEdgesDoNotMeasureBlankLinesAndKeepInteriorFormatting() {

@@ -4,12 +4,14 @@ import SwiftUI
 struct NativeConversationList: NSViewControllerRepresentable {
     let sessions: [Session]
     let selectedID: String?
+    var states: [String: ConversationListState] = [:]
+    var query = ""
     let select: (String?) -> Void
     let loadMore: (String) -> Void
 
     func makeNSViewController(context: Context) -> ConversationListController { ConversationListController() }
     func updateNSViewController(_ controller: ConversationListController, context: Context) {
-        controller.update(sessions: sessions, selectedID: selectedID, select: select, loadMore: loadMore)
+        controller.update(sessions: sessions, selectedID: selectedID, states: states, query: query, select: select, loadMore: loadMore)
     }
 }
 
@@ -22,12 +24,18 @@ struct NativeConversationList: NSViewControllerRepresentable {
         let preview: String
         let date: String
         let metadata: String?
-        init(_ session: Session) {
+        let state: ConversationListState
+        let isSearchResult: Bool
+        var previewHeight: CGFloat { isSearchResult ? 34 : 16 }
+        var height: CGFloat { 52 + previewHeight + (metadata == nil ? 0 : 18) + (state.label == nil ? 0 : 18) }
+        init(_ session: Session, state: ConversationListState = .init(), query: String = "") {
             self.session = session
+            self.state = state
+            isSearchResult = session.searchRecordID != nil
             id = session.id
             project = session.projectName
             title = session.title
-            preview = session.snippet?.nilIfBlank ?? session.source
+            preview = ConversationExcerpt.text(session.snippet?.nilIfBlank ?? session.source, query: query)
             date = session.date?.formatted(.dateTime.month(.abbreviated).day()) ?? ""
             metadata = [session.machineID == "local" ? nil : session.machineID,
                         session.isSubagent ? "Subagent" : nil]
@@ -41,6 +49,7 @@ struct NativeConversationList: NSViewControllerRepresentable {
     private var select: ((String?) -> Void)?
     private var loadMore: ((String) -> Void)?
     private var updating = false
+    private var query = ""
 
     override func loadView() {
         scrollView.hasVerticalScroller = true
@@ -68,22 +77,27 @@ struct NativeConversationList: NSViewControllerRepresentable {
         view = scrollView
     }
 
-    func update(sessions: [Session], selectedID: String?, select: @escaping (String?) -> Void,
+    func update(sessions: [Session], selectedID: String?, states: [String: ConversationListState] = [:], query: String = "", select: @escaping (String?) -> Void,
                 loadMore: @escaping (String) -> Void) {
         loadViewIfNeeded()
         self.select = select
         self.loadMore = loadMore
         updating = true
+        let queryChanged = self.query != query
+        self.query = query
         let previous = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let next = sessions.map { session -> Row in
             let id = session.id
-            if let cached = previous[id], cached.session == session { return cached }
-            return Row(session)
+            let state = states[id] ?? .init()
+            if !queryChanged, let cached = previous[id], cached.session == session, cached.state == state { return cached }
+            return Row(session, state: state, query: query)
         }
         let oldIDs = rows.map(\.id)
         let newIDs = next.map(\.id)
         let appended = newIDs.count >= oldIDs.count && newIDs.prefix(oldIDs.count).elementsEqual(oldIDs)
-        let changed = IndexSet(next.indices.filter { $0 < rows.count && next[$0].session != rows[$0].session })
+        let changed = IndexSet(next.indices.filter {
+            $0 < rows.count && (next[$0].session != rows[$0].session || next[$0].state != rows[$0].state || next[$0].preview != rows[$0].preview)
+        })
         let anchor = table.row(at: NSPoint(x: 0, y: scrollView.contentView.bounds.minY))
         let anchorID = rows.indices.contains(anchor) ? rows[anchor].id : nil
         let offset = anchor >= 0 ? scrollView.contentView.bounds.minY - table.rect(ofRow: anchor).minY : 0
@@ -111,7 +125,7 @@ struct NativeConversationList: NSViewControllerRepresentable {
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int { rows.count }
-    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].metadata == nil ? 68 : 84 }
+    func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat { rows[row].height }
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("conversation-cell")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? ConversationCell ?? ConversationCell()
@@ -138,19 +152,19 @@ struct NativeConversationList: NSViewControllerRepresentable {
     private let title = NSTextField(wrappingLabelWithString: "")
     private let preview = NSTextField(wrappingLabelWithString: "")
     private let metadata = NSTextField(labelWithString: "")
+    private let state = NSTextField(labelWithString: "")
     private let machineIcon = NSImageView()
+    private var previewHeight: CGFloat = 16
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        for field in [project, date, title, preview, metadata] {
+        for field in [project, date, title, preview, metadata, state] {
             field.font = .systemFont(ofSize: 11)
             field.textColor = .secondaryLabelColor
             field.lineBreakMode = .byTruncatingTail
             addSubview(field)
         }
-        project.font = .systemFont(ofSize: 12, weight: .semibold)
-        project.textColor = .labelColor
-        title.font = .systemFont(ofSize: 13)
+        title.font = .systemFont(ofSize: 13, weight: .semibold)
         title.textColor = .labelColor
         preview.font = .systemFont(ofSize: 12)
         for field in [title, preview] {
@@ -174,22 +188,32 @@ struct NativeConversationList: NSViewControllerRepresentable {
         date.stringValue = row.date
         title.stringValue = row.title
         preview.stringValue = row.preview
+        preview.toolTip = row.session.snippet
+        previewHeight = row.previewHeight
+        preview.maximumNumberOfLines = row.isSearchResult ? 2 : 1
+        preview.cell?.wraps = row.isSearchResult
+        preview.lineBreakMode = row.isSearchResult ? .byWordWrapping : .byTruncatingTail
         metadata.stringValue = row.metadata ?? ""
         metadata.isHidden = row.metadata == nil
         machineIcon.isHidden = row.session.machineID == "local"
-        setAccessibilityLabel([row.project, row.date, row.title, row.preview, row.metadata].compactMap { $0 }.joined(separator: ", "))
+        state.stringValue = row.state.label ?? ""
+        state.isHidden = row.state.label == nil
+        state.textColor = row.state.activity.map { NSColor($0.color) } ?? .secondaryLabelColor
+        setAccessibilityLabel([row.title, row.project, row.date, row.preview, row.metadata, row.state.label].compactMap { $0 }.joined(separator: ", "))
         needsLayout = true
     }
     override func layout() {
         super.layout()
         let width = max(0, bounds.width - 16)
         let dateWidth = min(width, ceil(date.intrinsicContentSize.width) + 4)
-        project.frame = NSRect(x: 8, y: 8, width: max(0, width - dateWidth - 6), height: 15)
+        title.frame = NSRect(x: 8, y: 7, width: max(0, width - dateWidth - 6), height: 17)
         date.frame = NSRect(x: 8 + width - dateWidth, y: 8, width: dateWidth, height: 15)
-        title.frame = NSRect(x: 8, y: 25, width: width, height: 17)
-        preview.frame = NSRect(x: 8, y: 43, width: width, height: 16)
-        machineIcon.frame = NSRect(x: 8, y: 62, width: 12, height: 12)
+        project.frame = NSRect(x: 8, y: 26, width: width, height: 15)
+        preview.frame = NSRect(x: 8, y: 44, width: width, height: previewHeight)
+        let metadataY = preview.frame.maxY + 2
+        machineIcon.frame = NSRect(x: 8, y: metadataY + 1, width: 12, height: 12)
         let iconWidth: CGFloat = machineIcon.isHidden ? 0 : 16
-        metadata.frame = NSRect(x: 8 + iconWidth, y: 61, width: max(0, width - iconWidth), height: 15)
+        metadata.frame = NSRect(x: 8 + iconWidth, y: metadataY, width: max(0, width - iconWidth), height: 15)
+        state.frame = NSRect(x: 8, y: metadataY + (metadata.isHidden ? 0 : 18), width: width, height: 15)
     }
 }

@@ -82,7 +82,6 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     private var notifiedWidth: CGFloat = 0
     private var textLayouts: [String: TranscriptTextLayout] = [:]
     private var richLayouts: [String: RichContentView] = [:]
-    private var findRecordBodies: [String: String] = [:]
     private var hasMore = false
     private var isLoading = false
     private var pageRequested = false
@@ -145,6 +144,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         var originalRecords: [TranscriptRecord] = []
         var originalBody: String { originalRecords.map { $0.rawTranscriptBody }.joined(separator: "\n\n") }
         var richContent: RichContentView?
+        var findRange: NSRange?
         var isLocalHost = false
         var hasBody: Bool { !body.isEmpty || richContent != nil }
     }
@@ -196,6 +196,13 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         self.sourcePath = sourcePath
         let changedQuery = self.findQuery != findQuery
         let changedFind = self.findQuery != findQuery || self.findHit != findHit || self.findGeneration != findGeneration
+        if changedFind {
+            let affected = Set([self.findHit?.recordID, findHit?.recordID].compactMap { $0 })
+            for row in rows where row.records.contains(where: { affected.contains($0.id) }) {
+                measurements.removeValue(forKey: row.id)
+                textLayouts.removeValue(forKey: row.id)
+            }
+        }
         self.findQuery = findQuery
         self.findHit = findHit
         self.findGeneration = findGeneration
@@ -248,7 +255,6 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             textLayouts.removeValue(forKey: last.id)
             richLayouts.removeValue(forKey: last.id)
         }
-        findRecordBodies.removeAll(keepingCapacity: true)
         self.sessionID = sessionID
         self.records = records
         self.provider = provider
@@ -318,40 +324,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         guard let row = rowIndex(for: hit.recordID) else { return }
         needsInitialPosition = false
         let value = measurement(at: row)
-        // Locate each record inside the displayed logical row. Input/Output
-        // labels added by pairing are not searchable transcript occurrences.
-        let rendered = value.attributedBody.string as NSString
-        var searchOffset = 0
-        selectedFindRange = nil
-        for record in rows[row].records {
-            let body: String
-            if rows[row].records.count == 1 {
-                body = value.attributedBody.string
-            } else if let cached = findRecordBodies[record.id] {
-                body = cached
-            } else {
-                body = record.record.isActivity && !record.record.isInstruction && record.record.role != "reasoning"
-                    ? ToolContentRenderer.render([record], raw: true).string
-                    : TranscriptTextLayout(text: ConversationMatcher.body(record), font: value.font).attributedText.string
-                findRecordBodies[record.id] = body
-            }
-            let section = rendered.range(of: body, options: .literal,
-                                         range: NSRange(location: searchOffset, length: rendered.length - searchOffset))
-            guard section.location != NSNotFound else { continue }
-            if record.id == hit.recordID {
-                let matches = ConversationMatcher.ranges(in: body, query: findQuery)
-                // Markdown can hide source matches (for example a link target).
-                // If occurrence counts differ, reveal the message rather than
-                // falsely selecting another visible occurrence of the same word.
-                let sourceCount = ConversationMatcher.ranges(in: ConversationMatcher.body(record), query: findQuery).count
-                if matches.count == sourceCount, matches.indices.contains(hit.occurrence) {
-                    let range = matches[hit.occurrence]
-                    selectedFindRange = NSRange(location: section.location + range.location, length: range.length)
-                }
-                break
-            }
-            searchOffset = NSMaxRange(section)
-        }
+        selectedFindRange = value.findRange
         table.scrollRowToVisible(row)
         if let cell = table.view(atColumn: 0, row: row, makeIfNecessary: true) as? TranscriptCell,
            let range = selectedFindRange {
@@ -492,7 +465,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 } else if case .activity(_, let nested) = row {
                     if case .activity(_, let wasNested)? = previous[row.id], nested != wasNested {
                         measurements.removeValue(forKey: row.id)
-                    } else if let measurement = measurements[row.id], measurement.contentX != (nested ? 50 : 30) {
+                    } else if let measurement = measurements[row.id],
+                              measurement.contentX != ConversationReadingLane.origin(in: max(200, table.bounds.width)) + (nested ? 20 : 0) {
                         measurements.removeValue(forKey: row.id)
                     }
                 }
@@ -693,11 +667,13 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         if rawMessage { fullText = row.records.map { $0.rawTranscriptBody }.joined(separator: "\n\n") }
         let body = fullText
         let font: NSFont = isTool ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 14)
-        let available = max(120, min(800, width - 60) - indent)
+        let laneWidth = ConversationReadingLane.width(in: width)
+        let laneX = ConversationReadingLane.origin(in: width)
+        let available = max(120, laneWidth - indent)
         let maximumContentWidth = isUser ? available * 0.77 : available
-        let showsRaw = rawMessage || rawTools.contains(row.id) || !findQuery.isEmpty
+        var showsRaw = rawMessage || rawTools.contains(row.id)
         let attachments = !showsRaw && !isTool ? row.records.flatMap { SourceContent.blocks($0.record) } : []
-        let textLayout: TranscriptTextLayout
+        var textLayout: TranscriptTextLayout
         var renderedTool: NSAttributedString?
         if body.isEmpty { textLayout = TranscriptTextLayout(text: "", font: font) }
         else if let cached = textLayouts[row.id] { textLayout = cached }
@@ -707,20 +683,36 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             let rendered = ToolContentRenderer.render(row.records, raw: showsRaw)
             renderedTool = rendered
             textLayout = TranscriptTextLayout(rendered: rendered, trimEdges: !showsRaw)
-        } else if !findQuery.isEmpty {
-            // Source-only matches (Markdown destinations and context wrappers)
-            // remain selectable at their exact occurrence in plain source text.
-            textLayout = TranscriptTextLayout(rendered: NSAttributedString(string: body, attributes: [.font: font, .foregroundColor: NSColor.labelColor]), trimEdges: false)
         } else { textLayout = TranscriptTextLayout(text: body, font: font) }
+        var findRange: NSRange?
+        if !findQuery.isEmpty, let hit = findHit, let record = row.records.first(where: { $0.id == hit.recordID }), !body.isEmpty {
+            let source = ConversationMatcher.body(record)
+            findRange = RenderedFindMapping.range(source: source, hit: hit.range, rendered: textLayout.attributedText.string) { token in
+                if isTool {
+                    return TranscriptTextLayout(rendered: ToolContentRenderer.render(row.records, raw: showsRaw, replacing: hit, with: token), trimEdges: !showsRaw).attributedText.string
+                }
+                guard row.records.count == 1, !rawMessage else { return "" }
+                let changed = (source as NSString).replacingCharacters(in: hit.range, with: token)
+                return TranscriptTextLayout(text: changed, font: font).attributedText.string
+            }
+            if findRange == nil {
+                // This exact source occurrence has no proven readable counterpart.
+                // Reveal that record verbatim, including hidden Markdown targets,
+                // JSON escapes, opaque payloads and matches across field boundaries.
+                showsRaw = true
+                textLayout = TranscriptTextLayout(rendered: NSAttributedString(string: source, attributes: [.font: font, .foregroundColor: NSColor.labelColor]), trimEdges: false)
+                findRange = hit.range
+            }
+        }
         if !body.isEmpty { textLayouts[row.id] = textLayout }
         let contentWidth = isUser && attachments.isEmpty
             ? min(maximumContentWidth, max(44, textLayout.width(for: maximumContentWidth - 24) + 24))
             : maximumContentWidth
-        let contentX = isUser ? width - 30 - contentWidth : 30 + indent
+        let contentX = isUser ? laneX + laneWidth - contentWidth : laneX + indent
         let bodyWidth = contentWidth - (isUser || isDisclosure ? 24 : 0)
         var richContent: RichContentView?
         let mayHaveRichBlocks = !PromptSections.hasOpeningSection(body) && (body.contains("```") || body.contains("~~~") || body.contains("![") || body.contains("](/") || body.contains("](file:"))
-        if !showsRaw && (!attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
+        if !showsRaw && findQuery.isEmpty && (!attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
             if let cached = richLayouts[row.id] { richContent = cached }
             else {
                 let view = RichContentView()
@@ -738,7 +730,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         let showsFullBody = fullBodies.contains(row.id) || !findQuery.isEmpty
         let textHeight = isLong && !showsFullBody ? 360 : fullTextHeight
         let hasBody = !body.isEmpty || richContent != nil
-        let showsRawControl = isTool && isExpanded && !body.isEmpty && !findQuery.isEmpty
+        let showsRawControl = isTool && isExpanded && !body.isEmpty && !findQuery.isEmpty && showsRaw
         let bodyY: CGFloat = isDisclosure ? (showsRawControl ? 74 : 44) : 16
         let bodyBottom = bodyY + textHeight + (isUser ? 16 : 0)
         let height: CGFloat = hasBody ? bodyBottom + (isLong ? 26 : 0) + (isDisclosure ? 12 : 0) + 4 + 18 + 10 : 38
@@ -761,6 +753,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         result.fullTextHeight = fullTextHeight
         result.originalRecords = row.records
         result.richContent = richContent
+        result.findRange = findRange
         result.isLocalHost = isLocalHost
         measurements[row.id] = result
         return result
@@ -870,7 +863,7 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
         showAll.isEnabled = !value.finding
         refreshActions()
         rawDisclosure.isHidden = !value.showsRawControl
-        rawDisclosure.title = value.finding ? "Raw content shown for Find" : (value.showsRaw ? "Show formatted content" : "Show raw content")
+        rawDisclosure.title = value.finding && value.showsRaw ? "Raw content shown for Find" : (value.showsRaw ? "Show formatted content" : "Show raw content")
         rawDisclosure.isEnabled = !value.finding
         message.setAccessibilityLabel(value.title)
         activityIcon.isHidden = value.isDisclosure || value.symbolName == nil

@@ -7,9 +7,23 @@ import SQACPUI
 /// supplies the session; SQACPUI owns the prompt, controls and request panels.
 struct ConversationComposer: View {
     @Bindable var conversation: LiveConversation
+    @State private var inspectedApproval: ConversationApproval?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if conversation.isOpenElsewhere {
+                Label("Close this conversation in the other Codex app or CLI to continue here.", systemImage: "lock")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let error = conversation.draftSaveError {
+                Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
+            ForEach(conversation.snapshot.approvals.filter { $0.detail?.nilIfBlank != nil }) { approval in
+                Button { inspectedApproval = approval } label: {
+                    Label("Inspect full request: \(approval.title)", systemImage: "doc.text.magnifyingglass")
+                }
+                .buttonStyle(.borderless).font(.caption)
+            }
             AcpComposerView(
                 text: $conversation.draft,
                 placeholder: "Ask the agent…",
@@ -61,7 +75,21 @@ struct ConversationComposer: View {
                 cancelButton: { AcpStopButton().accessibilityLabel("Stop") }
             )
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: ConversationReadingLane.maximumWidth)
+        .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .sheet(item: $inspectedApproval) { approval in
+            VStack(alignment: .leading, spacing: 12) {
+                Text(approval.title).font(.headline)
+                ScrollView([.horizontal, .vertical]) {
+                    Text(approval.detail ?? "").font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                HStack { Spacer(); Button("Done") { inspectedApproval = nil }.keyboardShortcut(.cancelAction) }
+            }
+            .padding(20).frame(minWidth: 520, idealWidth: 720, minHeight: 320, idealHeight: 520)
+        }
     }
 
 }

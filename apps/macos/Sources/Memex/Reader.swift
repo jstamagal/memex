@@ -26,7 +26,7 @@ struct ReaderView: View {
                         }
                     }
                     if let find, find.isOpen { findBar(find) }
-                    if let live = store.selectedLiveConversation, live.hasSnapshot {
+                    if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot {
                         NativeTranscript(sessionID: session.id + ":live", records: live.visibleRecords,
                                          provider: session.source, hasMore: false, isLoading: false, onLoadMore: {},
                                          hasEarlier: live.hasEarlierRecords, startsAtEnd: true, navigation: navigation,
@@ -61,6 +61,13 @@ struct ReaderView: View {
                     }
                     if let live = store.selectedLiveConversation {
                         ConversationComposer(conversation: live)
+                    } else {
+                        Label(InAppResumeTarget.unavailableReason(for: session)
+                              ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
+                            .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
+                            .frame(maxWidth: .infinity)
                     }
                 }
             } else {
@@ -83,21 +90,23 @@ struct ReaderView: View {
             find?.isOpen = true
             findFocused = true
         }
-        .onChange(of: store.selectedID) { _, _ in
+        .onChange(of: store.readerTranscriptKey) { _, _ in
             search()
         }
         .onChange(of: find?.query) { _, _ in search() }
-        .onChange(of: store.selectedLiveConversation?.revision) { _, _ in search() }
+        .onChange(of: store.selectedLiveConversation?.revision) { _, _ in
+            if store.readerUsesLiveSnapshot { search() }
+        }
         .task(id: find?.generation) {
             guard let hit = find?.selectedHit else { return }
-            if let live = store.selectedLiveConversation, live.hasSnapshot { live.revealRecord(hit.recordID) }
+            if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot { live.revealRecord(hit.recordID) }
             else { await store.revealRecord(hit.recordID, offset: hit.recordOffset) }
         }
         .onDisappear { find?.reset() }
     }
 
     private func search() {
-        if let live = store.selectedLiveConversation, live.hasSnapshot { find?.search(records: live.snapshot.records) }
+        if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot { find?.search(records: live.snapshot.records) }
         else { find?.search(in: store.selected) }
     }
 
@@ -143,7 +152,8 @@ struct ReaderView: View {
             }
             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
-        .padding(.horizontal, 30).padding(.vertical, 22)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
+        .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 18)
+        .frame(maxWidth: .infinity)
     }
 }

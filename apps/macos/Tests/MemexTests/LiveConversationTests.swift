@@ -30,6 +30,8 @@ private actor RecordingConversationRuntime: ConversationRuntime {
     var stopped = false
     var connections = 0
     var readyOnConnect = true
+    var holdPrompt = false
+    private var promptWaiter: CheckedContinuation<Void, Never>?
     private var receive: (@Sendable (Result<ConversationSnapshot, ConversationRuntimeError>) -> Void)?
 
     func connect(_ target: InAppResumeTarget,
@@ -38,13 +40,16 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         connections += 1
         receive(.success(ConversationSnapshot(connected: true, ready: readyOnConnect, canCancel: true)))
     }
-    func perform(_ command: ConversationCommand) throws {
+    func perform(_ command: ConversationCommand) async throws {
         commands.append(command)
+        if holdPrompt, command.action == .prompt { await withCheckedContinuation { promptWaiter = $0 } }
         if failSend { throw ConversationRuntimeError(message: "Acknowledgement lost") }
     }
     func disconnect() { stopped = true }
     func failNextSend() { failSend = true }
     func delayReadiness() { readyOnConnect = false }
+    func holdNextPrompt() { holdPrompt = true }
+    func acknowledgePrompt() { promptWaiter?.resume(); promptWaiter = nil }
     func emit(_ snapshot: ConversationSnapshot) { receive?(.success(snapshot)) }
     func rejectOwnership() {
         receive?(.failure(ConversationRuntimeError(message: "Open elsewhere", kind: .openElsewhere)))
@@ -60,6 +65,114 @@ private actor RecordingConversationRuntime: ConversationRuntime {
 }
 
 @Suite(.serialized) @MainActor struct LiveConversationTests {
+    @Test func draftPersistsBeforeDeliveryAndKeepsEditsMadeDuringSend() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let drafts = ConversationDraftStore(directory: directory)
+        let driver = RecordingConversationRuntime()
+        await driver.holdNextPrompt()
+        let session = liveSession()
+        let conversation = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: drafts)
+        conversation.draft = "Original prompt"
+        let send = Task { await conversation.send() }
+        try await waitFor { conversation.submitting }
+        await drafts.flush()
+        let restoredDrafts = ConversationDraftStore(directory: directory)
+        #expect(restoredDrafts.drafts[session.id] == .init(text: "Original prompt", deliveryUncertain: true))
+        let restored = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: restoredDrafts)
+        #expect(!restored.canSubmit)
+        #expect(restored.listState == .init(activity: .failed, hasDraft: true))
+        conversation.draft = "New unsent edit"
+        // Wait for the test transport to own the acknowledgement continuation.
+        while await driver.commands.isEmpty { await Task.yield() }
+        await driver.acknowledgePrompt()
+        await send.value
+        await drafts.flush()
+        #expect(conversation.draft == "New unsent edit")
+        #expect(ConversationDraftStore(directory: directory).drafts[session.id] == .init(text: "New unsent edit"))
+        #expect(await driver.commands.map(\.text) == ["Original prompt"])
+        await conversation.disconnect()
+    }
+
+    @Test func uncertainDraftRequiresExplicitReloadAndNeverReplays() async throws {
+        let drafts = ConversationDraftStore()
+        let driver = RecordingConversationRuntime()
+        let session = liveSession()
+        let conversation = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: drafts)
+        await driver.failNextSend()
+        conversation.draft = "Unconfirmed prompt"
+        await conversation.send()
+        #expect(drafts.drafts[session.id]?.deliveryUncertain == true)
+        await driver.emit(ConversationSnapshot(connected: true, ready: true))
+        try await waitFor { conversation.snapshot.ready }
+        #expect(drafts.drafts[session.id]?.deliveryUncertain == true)
+        let restored = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: drafts)
+        await restored.send()
+        #expect(await driver.commands.count == 1)
+        await restored.connect()
+        #expect(restored.canSubmit)
+        #expect(restored.draft == "Unconfirmed prompt")
+        #expect(drafts.drafts[session.id]?.deliveryUncertain == false)
+        #expect(await driver.commands.count == 1)
+        await restored.disconnect()
+        await conversation.disconnect()
+    }
+
+    @Test func retainedConversationStatusTracksWorkAttentionCompletionAndDraft() async throws {
+        let driver = RecordingConversationRuntime()
+        let conversation = LiveConversation(session: liveSession(), makeRuntime: { driver }, resolveTarget: fakeTarget)
+        #expect(conversation.listState.label == nil)
+        conversation.draft = "Prompt"
+        #expect(conversation.listState == .init(hasDraft: true))
+        await conversation.send()
+        #expect(conversation.listState == .init(activity: .working))
+        let approval = ConversationApproval(id: "approval", title: "Run", detail: "Full request", options: [])
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, running: true, approvals: [approval]))
+        try await waitFor { conversation.listState.activity == .approval }
+        let question = ConversationQuestion(id: "question", title: nil, prompt: "Which?", placeholder: nil, choices: [])
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, running: true, questions: [question]))
+        try await waitFor { conversation.listState.activity == .question }
+        await driver.emit(ConversationSnapshot(connected: true, ready: true))
+        try await waitFor { conversation.listState.activity == .completed }
+        conversation.draft = "Next prompt"
+        #expect(conversation.listState == .init(activity: .completed, hasDraft: true))
+        await conversation.disconnect()
+    }
+
+    #if canImport(SQACPHost)
+    @Test func indexedAnchorWinsOverUnrelatedLiveIDsUntilSearchIsCleared() async throws {
+        let driver = RecordingConversationRuntime()
+        let registry = LiveConversations { session, drafts in
+            LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: drafts)
+        }
+        var session = liveSession()
+        session.searchRecordID = "rid1:exact-source-hit"
+        registry.prepare(session)
+        let store = Store(liveConversations: registry)
+        store.sessions = [session]
+        store.selectedID = session.id
+        let conversation = try #require(store.selectedLiveConversation)
+        conversation.draft = "Retained draft"
+        await conversation.connect()
+        #expect(store.readerUsesLiveSnapshot)
+        store.query = "repeated text"
+        let key = store.readerTranscriptKey
+        #expect(!store.readerUsesLiveSnapshot)
+        #expect(store.readerAnchorID == "rid1:exact-source-hit")
+        await driver.emit(ConversationSnapshot(records: [.init(recordID: "runtime-unrelated", record: liveMessage("repeated text"))],
+                                              connected: true, ready: true, running: true))
+        try await waitFor { conversation.snapshot.running }
+        #expect(store.readerTranscriptKey == key)
+        #expect(!store.readerUsesLiveSnapshot)
+        #expect(conversation.draft == "Retained draft")
+        store.query = ""
+        #expect(store.readerUsesLiveSnapshot)
+        #expect(store.readerTranscriptKey != key)
+        #expect(await driver.commands.isEmpty)
+        await conversation.disconnect()
+    }
+    #endif
+
     @Test func externalOwnerBlocksLaunchThenUnlocksWithoutSendingTheDraft() async {
         let driver = RecordingConversationRuntime()
         var locked = true

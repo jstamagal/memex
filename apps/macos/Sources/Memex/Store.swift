@@ -3,7 +3,7 @@ import Observation
 
 @MainActor @Observable
 final class Store {
-    let liveConversations = LiveConversations()
+    let liveConversations: LiveConversations
     var sessions: [Session] = []
     var catalog: [Session] = []
     private(set) var projects: [ProjectSummary] = []
@@ -102,7 +102,9 @@ final class Store {
     private var readerGeneration = UUID()
     let client: MemexClient
 
-    init(client: MemexClient = MemexClient(), projectCatalog: ProjectCatalog? = nil, filterPreferences: UserDefaults? = nil) {
+    init(client: MemexClient = MemexClient(), projectCatalog: ProjectCatalog? = nil, filterPreferences: UserDefaults? = nil,
+         draftStore: ConversationDraftStore = ConversationDraftStore(), liveConversations: LiveConversations? = nil) {
+        self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore)
         self.client = client
         self.projectCatalog = projectCatalog ?? ProjectCatalog(client: client)
         self.filterPreferences = filterPreferences
@@ -152,6 +154,10 @@ final class Store {
     }
 
     var readerAnchorID: String? { query.nilIfBlank == nil ? nil : selected?.searchRecordID }
+    // An indexed hit names its original source record. Runtime entity/part IDs
+    // are a different namespace and cannot safely stand in for that evidence.
+    var readerUsesLiveSnapshot: Bool { readerAnchorID == nil && selectedLiveConversation?.hasSnapshot == true }
+    var readerTranscriptKey: String { readerUsesLiveSnapshot ? (selectedID ?? "") + ":live" : readerPositionKey }
     var readerStartsAtEnd: Bool { readerAnchorID == nil }
     var readerPositionKey: String {
         // Length-prefixed components avoid collisions with arbitrary query text.

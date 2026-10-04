@@ -76,8 +76,10 @@ struct HomeView: View {
                                     }
                                     .font(.caption).foregroundStyle(.secondary)
                                     if let snippet = session.snippet?.nilIfBlank {
-                                        Text(snippet).font(.callout).foregroundStyle(.secondary).lineLimit(2)
+                                        Text(ConversationExcerpt.text(snippet, query: store.query))
+                                            .font(.callout).foregroundStyle(.secondary).lineLimit(2).help(snippet)
                                     }
+                                    ConversationStateLabel(state: store.liveConversations.listState(for: session))
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 8)

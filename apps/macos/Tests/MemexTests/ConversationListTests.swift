@@ -3,6 +3,43 @@ import Testing
 @testable import Memex
 
 @MainActor @Suite(.serialized) struct ConversationListTests {
+    @Test func narrowSearchExcerptKeepsTheMatchNearItsStartWithoutChangingSource() {
+        let prefix = String(repeating: "context ", count: 10)
+        let snippet = prefix + "MEMEX_UI_TOOL_OK in the original result"
+        let excerpt = ConversationExcerpt.text(snippet, query: "\"MEMEX_UI_TOOL_OK\"")
+        #expect(excerpt.hasPrefix("…"))
+        #expect(excerpt.prefix(40).contains("MEMEX_UI_TOOL_OK"))
+        #expect(excerpt.hasSuffix("in the original result"))
+        #expect(ConversationExcerpt.text(snippet, query: "absent") == snippet)
+        #expect(ConversationExcerpt.text("🧪 Café café context needle", query: "needle").contains("needle"))
+    }
+
+    @Test func retainedStateRefreshesWithoutChangingSelectionAndSearchPreviewWraps() throws {
+        let controller = ConversationListController()
+        let session = Session(source: "codex", sessionID: "s", sourcePath: "/s", project: "memex", label: "The conversation title",
+                              snippet: "The matching passage remains visible across two lines", searchRecordID: "record")
+        controller.update(sessions: [session], selectedID: session.id, select: { _ in }, loadMore: { _ in })
+        let initialHeight = controller.tableView(controller.table, heightOfRow: 0)
+        let state = ConversationListState(activity: .approval, hasDraft: true)
+        controller.update(sessions: [session], selectedID: session.id, states: [session.id: state], select: { _ in }, loadMore: { _ in })
+        #expect(controller.rows[0].state == state)
+        #expect(controller.table.selectedRow == 0)
+        let height = controller.tableView(controller.table, heightOfRow: 0)
+        #expect(height > initialHeight)
+        let cell = ConversationCell()
+        cell.frame = NSRect(x: 0, y: 0, width: 280, height: height)
+        cell.configure(controller.rows[0])
+        cell.layoutSubtreeIfNeeded()
+        let fields = cell.subviews.compactMap { $0 as? NSTextField }.filter { !$0.isHidden }
+        let title = try #require(fields.first { $0.stringValue == session.title })
+        let project = try #require(fields.first { $0.stringValue == session.projectName })
+        let preview = try #require(fields.first { $0.stringValue == session.snippet })
+        #expect(title.frame.minY < project.frame.minY)
+        #expect(preview.maximumNumberOfLines == 2)
+        #expect(fields.allSatisfy { $0.frame.maxY <= height })
+        #expect(cell.accessibilityLabel()?.contains("Approval needed · Draft") == true)
+    }
+
     @Test func nativeCellsShowSubagentsAndKeepMetadataInsideTheRow() throws {
         let controller = ConversationListController()
         let cell = ConversationCell()

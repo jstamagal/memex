@@ -275,6 +275,9 @@ struct MemexClient: Sendable {
             offset = try await initialRecordOffset(for: session, anchor: anchor).offset
         }
         var page = try await recordPage(for: session, offset: offset)
+        if let anchor, !page.records.contains(where: { $0.id == anchor }) {
+            throw ClientError(message: "The matching message is no longer available. Clear search to read the latest messages.")
+        }
         if anchor == nil {
             let latestOffset = max(0, page.total - Self.pageSize)
             if latestOffset != page.offset {
@@ -352,7 +355,7 @@ struct MemexClient: Sendable {
                 return (max(0, offset + index - Self.pageSize / 2), page.total)
             }
             guard let next = page.nextOffset, next > offset else {
-                return (max(0, page.total - Self.pageSize), page.total)
+                throw ClientError(message: "The matching message is no longer available. Clear search to read the latest messages.")
             }
             offset = next
             page = try await recordMetadata(for: session, offset: offset, limit: 500)
