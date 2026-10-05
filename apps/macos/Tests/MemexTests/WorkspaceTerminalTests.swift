@@ -171,10 +171,10 @@ struct WorkspaceTerminalTests {
         #expect(second.terminalView === secondView)
     }
 
-    private func waitUntil(_ predicate: () -> Bool) async throws {
+    private func waitUntil(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(predicate())
+        #expect(predicate(), "Terminal state did not arrive before the deadline", sourceLocation: sourceLocation)
         guard predicate() else { throw WorkspaceChangesError(message: "Terminal test timed out.") }
     }
 }
