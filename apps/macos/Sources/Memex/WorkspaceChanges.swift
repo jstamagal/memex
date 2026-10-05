@@ -32,15 +32,30 @@ struct WorkspaceChangesError: LocalizedError {
 struct WorkspaceChangesClient: Sendable {
     static let outputLimit = 512 * 1024
 
+    /// Resolve the worktree without reading its status or index. Linked Git
+    /// worktrees deliberately remain distinct even when they share a gitdir.
+    func worktreeRoot(directory: URL) async throws -> URL? {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.readWorktreeRoot(directory)
+        }.value
+    }
+
+    private static func readWorktreeRoot(_ directory: URL) throws -> URL? {
+        let probe = try git(directory, ["rev-parse", "--show-toplevel"])
+        if probe.code != 0 {
+            if probe.error.contains("not a git repository") { return nil }
+            throw WorkspaceChangesError(message: probe.error)
+        }
+        let path = probe.text.hasSuffix("\n") ? String(probe.text.dropLast()) : probe.text
+        guard !path.isEmpty, !probe.truncated else {
+            throw WorkspaceChangesError(message: "Git returned an invalid workspace directory.")
+        }
+        return URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath().standardizedFileURL
+    }
+
     func snapshot(directory: URL) async throws -> WorkspaceChangesSnapshot? {
         try await Task.detached(priority: .userInitiated) {
-            let probe = try Self.git(directory, ["rev-parse", "--show-toplevel"])
-            if probe.code != 0 {
-                if probe.error.contains("not a git repository") { return nil }
-                throw WorkspaceChangesError(message: probe.error)
-            }
-            let rootPath = probe.text.hasSuffix("\n") ? String(probe.text.dropLast()) : probe.text
-            let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+            guard let root = try Self.readWorktreeRoot(directory) else { return nil }
             let status = try Self.git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"])
             try status.requireSuccess()
             guard !status.truncated else { throw WorkspaceChangesError(message: "Too many changed paths to display (status exceeds 512 KB). Narrow the workspace using Git outside Memex.") }

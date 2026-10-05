@@ -75,6 +75,19 @@ depend on the engine; see the [engine support table](../../README.md#engine-supp
 macOS may request Automation permission on first use. Ghostty needs its scripting
 API, and cmux needs socket access.
 
+## Workspace terminal
+
+Choose **Terminal** in the right workspace pane, or press **Command-J** to open
+the bottom terminal drawer. The dock button moves the same terminal between the
+right pane and drawer. Drag the drawer's top edge to resize it.
+
+Each local worktree has its own shell and scrollback. Chats in the same worktree
+share that terminal; switching chats or hiding the pane keeps it running. Shells
+start in the worktree root, or the chat's working folder when it is not a Git
+repository. The terminal menu can end a shell, and **Restart** opens a new one
+after it exits. Quitting Memex ends its terminals and asks before closing live
+shells.
+
 ## Multiple machines
 
 The machine selector offers **All Machines**, **This Mac**, and your configured

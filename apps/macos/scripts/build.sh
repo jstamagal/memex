@@ -69,6 +69,7 @@ if [[ -n "$CLAUDE_HELPER" ]]; then
   lipo "$CLAUDE_HELPER" -verify_arch "${ARCH_LIST[@]}"
 fi
 cp "$ROOT/bundle/Memex.icns" "$APP/Contents/Resources/Memex.icns"
+cp "$ROOT/bundle/TerminalNotices.txt" "$APP/Contents/Resources/TerminalNotices.txt"
 chmod u+w "$APP/Contents/Helpers/memex"
 shopt -s nullglob
 for resource in "$BIN_DIR/"*.bundle; do

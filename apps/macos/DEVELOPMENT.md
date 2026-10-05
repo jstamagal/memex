@@ -4,7 +4,7 @@
 
 ## Build and launch
 
-Requires macOS 14 or later, a Swift toolchain compatible with `Package.swift`,
+Requires macOS 14 or later, Swift 6.2 or later (including the terminal dependency),
 Apple command-line developer tools, and an installed Memex CLI. No Xcode project
 or Xcode GUI is needed. The developer tools supply `swift`, `codesign`, `otool`,
 and `plutil`.
@@ -56,6 +56,27 @@ MEMEX_DAEMON_TEST_CLI="$PWD/target/debug/memex" swift test --package-path apps/m
 
 This test starts and stops its own foreground daemon with a temporary data root
 and one synthetic transcript; it does not use your sources or service settings.
+
+## Workspace terminals
+
+The native terminal uses the pinned public `libghostty-spm` package and its
+checksummed Ghostty XCFramework. SwiftPM downloads the framework; the app build
+script includes the package's shell-integration and terminfo resource bundle.
+No local Ghostty installation, Zig toolchain, or private agent runtime is required.
+
+The terminal registry is keyed by the canonical Git worktree root, or the local
+working folder for a non-Git workspace. Each shell starts lazily when displayed.
+The registry retains its native view and surface when the user hides it, changes
+chats, or moves it between the inspector and the Command-J drawer. Distinct Git
+worktrees have distinct shells. Remote paths never create local terminals.
+Closing a terminal or quitting the app ends its shell; terminal processes do not
+survive an app quit or restart.
+
+Run the real-shell and presentation regressions with:
+
+```sh
+swift test --package-path apps/macos --filter WorkspaceTerminal
+```
 
 ## Local in-app agent runtime
 

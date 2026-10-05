@@ -6,7 +6,7 @@ struct WorkspacePanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             if let sessionID = store.selectedID {
-                WorkspacePanelTabs(selection: $store.workspacePanel,
+                WorkspacePanelTabs(selection: Binding(get: { store.workspacePanel }, set: store.selectWorkspacePanel),
                                    browser: store.workspaceBrowser.session(for: sessionID),
                                    close: { store.showingWorkspaceChanges = false })
             }
@@ -34,6 +34,9 @@ struct WorkspacePanelView: View {
                         .allowsHitTesting(store.workspacePanel == .browser)
                         .accessibilityHidden(store.workspacePanel != .browser)
                 }
+                if store.workspacePanel == .terminal && !store.showingTerminalDrawer {
+                    WorkspaceTerminalView(store: store, placement: .rightPane)
+                }
             }
         }
     }
@@ -47,7 +50,8 @@ private struct WorkspacePanelTabs: View {
     var body: some View {
         HStack(spacing: 4) {
             tab(.changes, title: "Changes", symbol: "doc.text.magnifyingglass")
-            tab(.browser, title: browser.title == "Browser" ? "Browser" : browser.title, symbol: "globe")
+            tab(.browser, title: browser.title, symbol: "globe")
+            tab(.terminal, title: "Terminal", symbol: "terminal")
             Spacer(minLength: 4)
             Button(action: close) { Image(systemName: "sidebar.right").frame(width: 28, height: 28) }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
@@ -63,14 +67,15 @@ private struct WorkspacePanelTabs: View {
                 .font(.system(size: 12, weight: selection == panel ? .medium : .regular))
                 .foregroundStyle(selection == panel ? .primary : .secondary)
                 .lineLimit(1).truncationMode(.tail)
-                .frame(minWidth: 74, maxWidth: panel == .changes ? 120 : 260, alignment: .leading)
+                .frame(minWidth: 66, maxWidth: panel == .browser ? 220 : 100, alignment: .leading)
                 .padding(.horizontal, 10).frame(height: 28)
                 .background(selection == panel ? Color.primary.opacity(0.08) : .clear,
                             in: RoundedRectangle(cornerRadius: 6))
                 .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .help(panel == .browser ? browser.currentURL?.absoluteString ?? "Browser" : "Uncommitted changes")
+        .help(panel == .browser ? browser.currentURL?.absoluteString ?? "Browser"
+              : panel == .terminal ? "Workspace terminal (⌘J for drawer)" : "Uncommitted changes")
         .accessibilityLabel(panel.title)
         .accessibilityValue(selection == panel ? "Selected" : "")
         .accessibilityAddTraits(selection == panel ? .isSelected : [])

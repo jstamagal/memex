@@ -8,8 +8,14 @@ let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
 let runtimeRoot = ProcessInfo.processInfo.environment["MEMEX_AGENT_RUNTIME_ROOT"]
     ?? (try? String(contentsOf: root.appendingPathComponent(".local-runtime-root"), encoding: .utf8))?
         .trimmingCharacters(in: .whitespacesAndNewlines)
-var dependencies: [Package.Dependency] = [.package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0")]
-var appDependencies: [Target.Dependency] = [.product(name: "Markdown", package: "swift-markdown")]
+var dependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.8.0"),
+    .package(url: "https://github.com/Lakr233/libghostty-spm.git", exact: "2.2.2026100303"),
+]
+var appDependencies: [Target.Dependency] = [
+    .product(name: "Markdown", package: "swift-markdown"),
+    .product(name: "GhosttyTerminal", package: "libghostty-spm"),
+]
 var linkerSettings: [LinkerSetting] = []
 if let runtimeRoot, !runtimeRoot.isEmpty {
     dependencies.append(.package(path: runtimeRoot + "/packages/sq-acp"))

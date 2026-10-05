@@ -9,6 +9,7 @@ final class Store {
     let newConversationDraft: NewConversationDraft
     let workspaceClient: ConversationWorkspaceClient
     @ObservationIgnored let workspaceBrowser = WorkspaceBrowserStore()
+    @ObservationIgnored let workspaceTerminals = WorkspaceTerminalStore()
     @ObservationIgnored let makeConversation: @Sendable (NewConversationRequest) async throws -> CreatedConversation
     var sessions: [Session] = []
     var catalog: [Session] = []
@@ -40,6 +41,8 @@ final class Store {
     var newConversationError: String?
     var showingWorkspaceChanges = false
     var workspacePanel = WorkspacePanel.changes
+    var showingTerminalDrawer = false
+    private(set) var terminalFocusRequest = 0
     private(set) var workspaceChangeReviewRequest = UUID()
     private var workspaceChangeSelections: [String: String] = [:]
     var selectedID: String?
@@ -165,9 +168,11 @@ final class Store {
     }
 
     enum WorkspacePanel: String, CaseIterable, Identifiable {
-        case changes, browser
+        case changes, browser, terminal
         var id: String { rawValue }
-        var title: String { self == .changes ? "Changes" : "Browser" }
+        var title: String {
+            switch self { case .changes: "Changes"; case .browser: "Browser"; case .terminal: "Terminal" }
+        }
     }
 
     var selected: Session? { sessions.first { $0.id == selectedID } }
@@ -191,6 +196,41 @@ final class Store {
     func showWorkspaceBrowser() {
         workspacePanel = .browser
         showingWorkspaceChanges = true
+    }
+
+    func selectWorkspacePanel(_ panel: WorkspacePanel) {
+        workspacePanel = panel
+        if panel == .terminal {
+            showingTerminalDrawer = false
+            terminalFocusRequest += 1
+        }
+    }
+
+    func toggleWorkspacePanel() {
+        showingWorkspaceChanges.toggle()
+        if showingWorkspaceChanges && workspacePanel == .terminal {
+            showingTerminalDrawer = false
+            terminalFocusRequest += 1
+        }
+    }
+
+    func showWorkspaceTerminal() {
+        guard selectedWorkspace != nil else { return }
+        selectWorkspacePanel(.terminal)
+        showingWorkspaceChanges = true
+    }
+
+    func toggleTerminalDrawer() {
+        if showingTerminalDrawer {
+            showingTerminalDrawer = false
+        } else {
+            guard selectedWorkspace != nil else { return }
+            // A terminal has one native surface. Move it out of the inspector
+            // rather than hosting the same shell in two places at once.
+            if workspacePanel == .terminal { showingWorkspaceChanges = false }
+            showingTerminalDrawer = true
+            terminalFocusRequest += 1
+        }
     }
 
     func beginNewConversation(project: LocalProject? = nil) {

@@ -28,6 +28,9 @@ struct MemexApp: App {
                     Button("Browser") { delegate.store.showWorkspaceBrowser() }
                         .keyboardShortcut("b", modifiers: [.command, .shift])
                         .disabled(delegate.store.selected == nil)
+                    Button("Toggle Terminal Drawer") { delegate.store.toggleTerminalDrawer() }
+                        .keyboardShortcut("j")
+                        .disabled(delegate.store.selectedWorkspace == nil && !delegate.store.showingTerminalDrawer)
                     Button("Add New Project") { delegate.store.addNewProject() }
                 }
             }
@@ -42,8 +45,17 @@ struct MemexApp: App {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
+        if store.workspaceTerminals.needsCloseConfirmation {
+            let alert = NSAlert()
+            alert.messageText = "Quit Memex?"
+            alert.informativeText = "Quitting ends your workspace terminals and any processes running in them."
+            alert.addButton(withTitle: "Quit and End Terminals")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+        }
         terminating = true
         Task {
+            store.workspaceTerminals.shutdown()
             await store.newConversationDraft.flush()
             await store.liveConversations.disconnectAll()
             sender.reply(toApplicationShouldTerminate: true)
@@ -98,9 +110,11 @@ private struct BrowserReader: View {
     @Bindable var store: Store
 
     var body: some View {
-        Group {
-            if store.scope == .home { HomeView(store: store) }
-            else { ReaderView(store: store) }
+        WorkspaceTerminalDrawer(store: store) {
+            Group {
+                if store.scope == .home { HomeView(store: store) }
+                else { ReaderView(store: store) }
+            }
         }
         .sheet(isPresented: $store.showingProjectSetup) { ProjectSetupView(store: store) }
         .inspector(isPresented: $store.showingWorkspaceChanges) {
@@ -110,10 +124,16 @@ private struct BrowserReader: View {
             }
         }
         .onChange(of: store.scope) { _, scope in
-            if scope == .home { store.showingWorkspaceChanges = false }
+            if scope == .home {
+                store.showingWorkspaceChanges = false
+                store.showingTerminalDrawer = false
+            }
         }
         .onChange(of: store.selectedID) { _, selectedID in
-            if selectedID == nil { store.showingWorkspaceChanges = false }
+            if selectedID == nil {
+                store.showingWorkspaceChanges = false
+                store.showingTerminalDrawer = false
+            }
         }
         .task(id: store.requestID) { await store.loadSessions() }
         .task(id: store.sessionCountRequestID) { await store.loadSessionCount() }

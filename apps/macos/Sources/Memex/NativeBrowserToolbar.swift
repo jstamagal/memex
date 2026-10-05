@@ -248,7 +248,7 @@ import SwiftUI
     }
     @objc func refresh() { Task { await store.refresh() } }
     @objc func newConversation() { store.beginNewConversation() }
-    @objc func toggleWorkspaceChanges() { store.showingWorkspaceChanges.toggle() }
+    @objc func toggleWorkspaceChanges() { store.toggleWorkspacePanel() }
     @objc func find() { store.findConversationRequest += 1 }
     @objc func copySessionID() {
         guard let session = store.selected else { return }
