@@ -10,7 +10,9 @@ struct BrowserToolbarTests {
         defer { window.close() }
         let new = try item(BrowserToolbarController.newConversation, in: controller)
         #expect(NSApplication.shared.sendAction(try #require(new.action), to: new.target, from: new))
-        #expect(controller.store.showingNewConversation)
+        #expect(controller.store.scope == .home)
+        #expect(controller.store.newConversationDraft.focusRequest == 1)
+        controller.store.scope = .all
         let changes = try item(BrowserToolbarController.workspaceChanges, in: controller)
         #expect(!changes.isEnabled)
         var session = Session(source: "codex", sessionID: "local-workspace", sourcePath: "/fixture", project: "project", cwd: "/tmp/project")
@@ -24,7 +26,7 @@ struct BrowserToolbarTests {
         controller.store.sessions = [session]
         controller.store.selectedID = session.id
         controller.update()
-        #expect(!changes.isEnabled)
+        #expect(changes.isEnabled) // Remote chats can still use the browser pane.
         controller.store.scope = .home
         controller.update()
         #expect(controller.toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.newConversation })

@@ -149,7 +149,13 @@ struct ReaderView: View {
             HStack(spacing: 8) {
                 Text(session.source)
                 Text("·")
-                Text(session.projectName)
+                Text(store.projectName(for: session))
+                if let workspace = store.createdConversations.contexts[session.id]?.workspace,
+                   let branch = workspace.branch {
+                    Text("·")
+                    Label(branch, systemImage: "arrow.triangle.branch")
+                        .truncationMode(.middle).help(workspace.workingDirectory.path)
+                }
                 if session.machineID != "local" {
                     Text("·")
                     Label(session.machineID, systemImage: "desktopcomputer")

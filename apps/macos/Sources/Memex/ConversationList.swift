@@ -5,13 +5,15 @@ struct NativeConversationList: NSViewControllerRepresentable {
     let sessions: [Session]
     let selectedID: String?
     var states: [String: ConversationListState] = [:]
+    var projectNames: [String: String] = [:]
     var query = ""
     let select: (String?) -> Void
     let loadMore: (String) -> Void
 
     func makeNSViewController(context: Context) -> ConversationListController { ConversationListController() }
     func updateNSViewController(_ controller: ConversationListController, context: Context) {
-        controller.update(sessions: sessions, selectedID: selectedID, states: states, query: query, select: select, loadMore: loadMore)
+        controller.update(sessions: sessions, selectedID: selectedID, states: states, projectNames: projectNames,
+                          query: query, select: select, loadMore: loadMore)
     }
 }
 
@@ -29,16 +31,16 @@ struct NativeConversationList: NSViewControllerRepresentable {
         var previewHeight: CGFloat { preview.isEmpty ? 0 : (isSearchResult ? 34 : 16) }
         // Reserve two title lines and a single metadata line, independent of activity.
         var height: CGFloat { 62 + (previewHeight == 0 ? 0 : previewHeight + 3) }
-        init(_ session: Session, state: ConversationListState = .init(), query: String = "") {
+        init(_ session: Session, state: ConversationListState = .init(), projectName: String? = nil, query: String = "") {
             self.session = session
             self.state = state
             isSearchResult = session.searchRecordID != nil
             id = session.id
-            project = session.projectName
+            project = projectName ?? session.projectName
             title = session.title
             preview = ConversationExcerpt.text(session.snippet?.nilIfBlank ?? "", query: query)
             date = session.date?.formatted(.dateTime.month(.abbreviated).day()) ?? ""
-            metadata = [session.projectName, session.source,
+            metadata = [project, session.source,
                         session.machineID == "local" ? nil : session.machineID,
                         session.isSubagent ? "Subagent" : nil]
                 .compactMap { $0 }.joined(separator: " · ")
@@ -79,7 +81,8 @@ struct NativeConversationList: NSViewControllerRepresentable {
         view = scrollView
     }
 
-    func update(sessions: [Session], selectedID: String?, states: [String: ConversationListState] = [:], query: String = "", select: @escaping (String?) -> Void,
+    func update(sessions: [Session], selectedID: String?, states: [String: ConversationListState] = [:],
+                projectNames: [String: String] = [:], query: String = "", select: @escaping (String?) -> Void,
                 loadMore: @escaping (String) -> Void) {
         loadViewIfNeeded()
         self.select = select
@@ -91,14 +94,17 @@ struct NativeConversationList: NSViewControllerRepresentable {
         let next = sessions.map { session -> Row in
             let id = session.id
             let state = states[id] ?? .init()
-            if !queryChanged, let cached = previous[id], cached.session == session, cached.state == state { return cached }
-            return Row(session, state: state, query: query)
+            let projectName = projectNames[id] ?? session.projectName
+            if !queryChanged, let cached = previous[id], cached.session == session,
+               cached.state == state, cached.project == projectName { return cached }
+            return Row(session, state: state, projectName: projectName, query: query)
         }
         let oldIDs = rows.map(\.id)
         let newIDs = next.map(\.id)
         let appended = newIDs.count >= oldIDs.count && newIDs.prefix(oldIDs.count).elementsEqual(oldIDs)
         let changed = IndexSet(next.indices.filter {
-            $0 < rows.count && (next[$0].session != rows[$0].session || next[$0].state != rows[$0].state || next[$0].preview != rows[$0].preview)
+            $0 < rows.count && (next[$0].session != rows[$0].session || next[$0].state != rows[$0].state
+                || next[$0].preview != rows[$0].preview || next[$0].project != rows[$0].project)
         })
         let resized = IndexSet(changed.filter { next[$0].height != rows[$0].height })
         let anchor = table.row(at: NSPoint(x: 0, y: scrollView.contentView.bounds.minY))

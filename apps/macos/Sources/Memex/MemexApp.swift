@@ -11,7 +11,7 @@ struct MemexApp: App {
                 CommandGroup(replacing: .newItem) {
                     Button("New Conversation") {
                         delegate.showBrowser()
-                        delegate.store.showingNewConversation = true
+                        delegate.store.beginNewConversation()
                     }
                         .keyboardShortcut("n")
                         .disabled(!InAppAgentRuntime.isAvailable)
@@ -22,16 +22,21 @@ struct MemexApp: App {
                     Button("Find in Conversation") { delegate.store.findConversationRequest += 1 }
                         .keyboardShortcut("f")
                         .disabled(delegate.store.selected == nil)
-                    Button("Workspace Changes") { delegate.store.showingWorkspaceChanges.toggle() }
+                    Button("Workspace Changes") { delegate.store.reviewWorkspaceChange(nil) }
                         .keyboardShortcut("d", modifiers: [.command, .shift])
                         .disabled(delegate.store.selectedWorkspace == nil)
+                    Button("Browser") { delegate.store.showWorkspaceBrowser() }
+                        .keyboardShortcut("b", modifiers: [.command, .shift])
+                        .disabled(delegate.store.selected == nil)
+                    Button("Set Up Projects…") { delegate.store.showingProjectSetup = true }
                 }
             }
     }
 }
 
 @MainActor final class MemexApplicationDelegate: NSObject, NSApplicationDelegate {
-    let store = Store(filterPreferences: .standard, draftStore: .persistent(), createdConversations: .persistent())
+    let store = Store(filterPreferences: .standard, draftStore: .persistent(), createdConversations: .persistent(),
+                      localProjects: .persistent(), newConversationDraft: .persistent())
     private var browser: NSWindowController?
     private var terminating = false
 
@@ -39,6 +44,7 @@ struct MemexApp: App {
         guard !terminating else { return .terminateLater }
         terminating = true
         Task {
+            await store.newConversationDraft.flush()
             await store.liveConversations.disconnectAll()
             sender.reply(toApplicationShouldTerminate: true)
         }
@@ -98,22 +104,18 @@ private struct BrowserReader: View {
             if store.scope == .home { HomeView(store: store) }
             else { ReaderView(store: store) }
         }
-        .sheet(isPresented: $store.showingNewConversation) { NewConversationView(store: store) }
+        .sheet(isPresented: $store.showingProjectSetup) { ProjectSetupView(store: store) }
         .inspector(isPresented: $store.showingWorkspaceChanges) {
-            if store.showingWorkspaceChanges, let directory = store.selectedWorkspace, store.scope != .home {
-                WorkspaceChangesView(directory: directory, isWorking: store.selectedLiveConversation?.isWorking == true,
-                                     initialSelectedPath: store.selectedWorkspaceChange,
-                                     reviewRequest: store.workspaceChangeReviewRequest) {
-                    store.showingWorkspaceChanges = false
-                }
+            if store.showingWorkspaceChanges, store.selected != nil, store.scope != .home {
+                WorkspacePanelView(store: store)
                     .inspectorColumnWidth(min: 430, ideal: 620, max: 1000)
             }
         }
         .onChange(of: store.scope) { _, scope in
             if scope == .home { store.showingWorkspaceChanges = false }
         }
-        .onChange(of: store.selectedWorkspace) { _, directory in
-            if directory == nil { store.showingWorkspaceChanges = false }
+        .onChange(of: store.selectedID) { _, selectedID in
+            if selectedID == nil { store.showingWorkspaceChanges = false }
         }
         .task(id: store.requestID) { await store.loadSessions() }
         .task(id: store.sessionCountRequestID) { await store.loadSessionCount() }
@@ -183,6 +185,21 @@ private struct BrowserSidebar: View {
                 Label("All conversations", systemImage: "bubble.left.and.bubble.right")
                     .tag(Store.Scope.all)
             }
+            if !store.localProjects.projects.isEmpty {
+                Section("Saved projects") {
+                    ForEach(store.localProjects.projects) { project in
+                        Button { store.beginNewConversation(project: project) } label: {
+                            Label(project.name, systemImage: "folder").lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Start a conversation in \(project.directoryPath)")
+                        .contextMenu {
+                            Button("New conversation") { store.beginNewConversation(project: project) }
+                            Button("Manage projects…") { store.showingProjectSetup = true }
+                        }
+                    }
+                }
+            }
             Section {
                 ForEach(store.projects) { project in
                     HStack {
@@ -207,6 +224,8 @@ private struct BrowserSidebar: View {
                         .accessibilityLabel("Retry loading projects")
                     }
                     Menu {
+                        Button("Set up projects…") { store.showingProjectSetup = true }
+                        Divider()
                         Picker("Sort by", selection: Binding(get: { store.projectSort }, set: { store.setProjectSort($0) })) {
                             ForEach(ProjectSort.allCases, id: \.self) { sort in
                                 Text(sort.title).tag(sort)
@@ -253,6 +272,7 @@ private struct BrowserConversationList: View {
             }
             NativeConversationList(sessions: store.sessions, selectedID: store.selectedID,
                 states: Dictionary(uniqueKeysWithValues: store.sessions.map { ($0.id, store.liveConversations.listState(for: $0)) }),
+                projectNames: store.conversationProjectNames,
                 query: store.query,
                 select: { store.selectedID = $0 },
                 loadMore: { store.loadMoreSessionsIfNeeded(visibleID: $0) })

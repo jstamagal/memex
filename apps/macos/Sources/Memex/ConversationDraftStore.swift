@@ -66,6 +66,15 @@ final class ConversationDraftStore {
             && !draft.deliveryUncertain ? nil : draft
         guard drafts[sessionID] != value else { return }
         drafts[sessionID] = value
+        persist()
+    }
+
+    func retrySave() async {
+        persist()
+        await flush()
+    }
+
+    private func persist() {
         guard canWrite, let writer else { return }
         revision += 1
         let revision = revision

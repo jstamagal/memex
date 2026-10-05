@@ -11,6 +11,7 @@ struct HomeView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
+                if InAppAgentRuntime.isAvailable { HomeConversationComposer(store: store) }
                 HomeActivityView(store: store)
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -35,7 +36,7 @@ struct HomeView: View {
                         Text(store.query.isEmpty ? "Recent conversations" : "Matching conversations").font(.title2.weight(.semibold))
                         Spacer()
                         if InAppAgentRuntime.isAvailable {
-                            Button { store.showingNewConversation = true } label: {
+                            Button { store.beginNewConversation() } label: {
                                 Label("New conversation", systemImage: "square.and.pencil")
                             }
                         }
@@ -73,7 +74,7 @@ struct HomeView: View {
                                         }
                                     }
                                     HStack(spacing: 6) {
-                                        Text([session.projectName, session.source, session.machineID].joined(separator: " · "))
+                                        Text([store.projectName(for: session), session.source, session.machineID].joined(separator: " · "))
                                         if session.isSubagent {
                                             Text("·")
                                             Text("Subagent")
@@ -110,7 +111,10 @@ struct HomeView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { searchFocused = true }
+        .onAppear {
+            if InAppAgentRuntime.isAvailable { store.newConversationDraft.focusRequest += 1 }
+            else { searchFocused = true }
+        }
         .onChange(of: store.loadingSessions) { _, loading in
             if !loading { loadNextPageIfNeeded() }
         }

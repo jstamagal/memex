@@ -5,6 +5,11 @@ import Observation
 final class Store {
     let liveConversations: LiveConversations
     let createdConversations: CreatedConversationCatalog
+    let localProjects: LocalProjects
+    let newConversationDraft: NewConversationDraft
+    let workspaceClient: ConversationWorkspaceClient
+    @ObservationIgnored let workspaceBrowser = WorkspaceBrowserStore()
+    @ObservationIgnored let makeConversation: @Sendable (NewConversationRequest) async throws -> CreatedConversation
     var sessions: [Session] = []
     var catalog: [Session] = []
     private(set) var projects: [ProjectSummary] = []
@@ -26,8 +31,11 @@ final class Store {
     var machineError: String?
     var loadingMachines = false
     var findConversationRequest = 0
-    var showingNewConversation = false
+    var showingProjectSetup = false
+    var startingConversation = false
+    var newConversationError: String?
     var showingWorkspaceChanges = false
+    var workspacePanel = WorkspacePanel.changes
     private(set) var workspaceChangeReviewRequest = UUID()
     private var workspaceChangeSelections: [String: String] = [:]
     var selectedID: String?
@@ -109,9 +117,16 @@ final class Store {
 
     init(client: MemexClient = MemexClient(), projectCatalog: ProjectCatalog? = nil, filterPreferences: UserDefaults? = nil,
          draftStore: ConversationDraftStore = ConversationDraftStore(), liveConversations: LiveConversations? = nil,
-         createdConversations: CreatedConversationCatalog = CreatedConversationCatalog()) {
+         createdConversations: CreatedConversationCatalog = CreatedConversationCatalog(),
+         localProjects: LocalProjects = LocalProjects(), newConversationDraft: NewConversationDraft = NewConversationDraft(),
+         workspaceClient: ConversationWorkspaceClient = ConversationWorkspaceClient(),
+         makeConversation: @escaping @Sendable (NewConversationRequest) async throws -> CreatedConversation = { try await NewConversationRuntime.create($0) }) {
         self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore)
         self.createdConversations = createdConversations
+        self.localProjects = localProjects
+        self.newConversationDraft = newConversationDraft
+        self.workspaceClient = workspaceClient
+        self.makeConversation = makeConversation
         self.client = client
         self.projectCatalog = projectCatalog ?? ProjectCatalog(client: client)
         self.filterPreferences = filterPreferences
@@ -125,6 +140,12 @@ final class Store {
             switch self { case .home: "Home"; case .all: "All conversations"; case .project(let value): value }
         }
         var project: String? { if case .project(let value) = self { value } else { nil } }
+    }
+
+    enum WorkspacePanel: String, CaseIterable, Identifiable {
+        case changes, browser
+        var id: String { rawValue }
+        var title: String { self == .changes ? "Changes" : "Browser" }
     }
 
     var selected: Session? { sessions.first { $0.id == selectedID } }
@@ -141,7 +162,20 @@ final class Store {
         guard let directory = selectedWorkspace else { return }
         if let path { workspaceChangeSelections[directory.path] = path }
         workspaceChangeReviewRequest = UUID()
+        workspacePanel = .changes
         showingWorkspaceChanges = true
+    }
+
+    func showWorkspaceBrowser() {
+        workspacePanel = .browser
+        showingWorkspaceChanges = true
+    }
+
+    func beginNewConversation(project: LocalProject? = nil) {
+        if let project { newConversationDraft.selectProject(project) }
+        scope = .home
+        query = ""
+        newConversationDraft.focusRequest += 1
     }
     var selectedMachineIDs: [String] {
         switch machineSelection {
@@ -191,13 +225,30 @@ final class Store {
         selectedID = session.id
     }
 
-    func createConversation(_ request: NewConversationRequest) async throws {
+    @discardableResult
+    func createConversation(_ request: NewConversationRequest,
+                            context: CreatedConversationCatalog.Context? = nil,
+                            initialText: String? = nil, navigate: Bool = true) async throws -> LiveConversation {
         if let error = createdConversations.error { throw ConversationRuntimeError(message: error) }
-        let created = try await NewConversationRuntime.create(request)
+        let created = try await makeConversation(request)
         // Once creation succeeds, retain its native identity even if adoption or
         // local persistence fails. Retrying Create would create a different chat.
-        createdConversations.save(created.session)
+        createdConversations.save(created.session, context: context)
+        if let initialText {
+            newConversationDraft.value.createdSessionID = created.session.id
+            await newConversationDraft.flush()
+            liveConversations.drafts.set(.init(text: initialText), for: created.session.id)
+            await liveConversations.drafts.flush()
+        }
         let conversation = await liveConversations.adopt(created)
+        if navigate {
+            revealCreatedConversation(created.session)
+            conversation.focus()
+        }
+        return conversation
+    }
+
+    func revealCreatedConversation(_ session: Session) {
         query = ""
         filters = .defaults
         scope = .all
@@ -205,12 +256,11 @@ final class Store {
         sessionMachineScope = machineRequestID
         listGeneration = UUID()
         sessionBatchesCriteria = nil
-        sessions.removeAll { $0.id == created.session.id }
-        sessions.insert(created.session, at: 0)
-        catalog.removeAll { $0.id == created.session.id }
-        catalog.append(created.session)
-        selectedID = created.session.id
-        conversation.focus()
+        sessions.removeAll { $0.id == session.id }
+        sessions.insert(session, at: 0)
+        catalog.removeAll { $0.id == session.id }
+        catalog.append(session)
+        selectedID = session.id
     }
 
     func updateCreatedConversationTitle() {

@@ -81,7 +81,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     private var measuredWidth: CGFloat = 0
     private var notifiedWidth: CGFloat = 0
     private var textLayouts: [String: TranscriptTextLayout] = [:]
-    private var richLayouts: [String: RichContentView] = [:]
+    private var richLayouts: [String: RichContentLayout] = [:]
     private var hasMore = false
     private var isLoading = false
     private var pageRequested = false
@@ -143,10 +143,13 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         var fullTextHeight: CGFloat = 0
         var originalRecords: [TranscriptRecord] = []
         var originalBody: String { originalRecords.map { $0.rawTranscriptBody }.joined(separator: "\n\n") }
-        var richContent: RichContentView?
+        var richLayout: RichContentLayout?
+        // Materialize only when a cell (or an explicit caller) needs the view.
+        // Height calculation and cached measurements retain no view hierarchy.
+        @MainActor var richContent: RichContentView? { richLayout?.view() }
         var findRange: NSRange?
         var isLocalHost = false
-        var hasBody: Bool { !body.isEmpty || richContent != nil }
+        var hasBody: Bool { !body.isEmpty || richLayout != nil }
     }
 
     override func loadView() {
@@ -526,7 +529,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         measurements.removeValue(forKey: id)
         if resetText { textLayouts.removeValue(forKey: id) }
         // A tool's formatted contents do not change when hidden or shown. Keep
-        // its rich view, and refresh only this row unless a group changes membership.
+        // its rich layout, and refresh only this row unless a group changes membership.
         if case .group = rows[row] {
             rebuildRows(regroup: false)
         } else {
@@ -722,26 +725,27 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             : maximumContentWidth
         let contentX = isUser ? laneX + laneWidth - contentWidth : laneX + indent
         let bodyWidth = contentWidth - (isUser || isDisclosure ? 24 : 0)
-        var richContent: RichContentView?
+        var richLayout: RichContentLayout?
         let mayHaveRichBlocks = !PromptSections.hasOpeningSection(body) && (body.contains("```") || body.contains("~~~") || body.contains("![") || body.contains("](/") || body.contains("](file:"))
         if !showsRaw && findQuery.isEmpty && (!attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
-            if let cached = richLayouts[row.id] { richContent = cached }
+            if let cached = richLayouts[row.id] { richLayout = cached }
             else {
-                let view = RichContentView()
+                let blocks: [RichContentBlock]
                 if isTool {
-                    view.configure(blocks: ToolContentRenderer.richBlocks(row.records, rendered: renderedTool), font: font, context: RichContentContext(isLocalHost: isLocalHost))
+                    blocks = ToolContentRenderer.richBlocks(row.records, rendered: renderedTool)
                 } else {
-                    view.configure(blocks: RichContentDocument(body).blocks + attachments, font: font, context: RichContentContext(isLocalHost: isLocalHost))
+                    blocks = RichContentDocument(body).blocks + attachments
                 }
-                richLayouts[row.id] = view
-                richContent = view
+                let layout = RichContentLayout(blocks: blocks, font: font, context: RichContentContext(isLocalHost: isLocalHost))
+                richLayouts[row.id] = layout
+                richLayout = layout
             }
         }
-        let fullTextHeight = richContent?.height(for: bodyWidth) ?? textLayout.height(for: bodyWidth)
+        let fullTextHeight = richLayout?.height(for: bodyWidth) ?? textLayout.height(for: bodyWidth)
         let isLong = fullTextHeight > 440
         let showsFullBody = fullBodies.contains(row.id) || !findQuery.isEmpty
         let textHeight = isLong && !showsFullBody ? 360 : fullTextHeight
-        let hasBody = !body.isEmpty || richContent != nil
+        let hasBody = !body.isEmpty || richLayout != nil
         let showsRawControl = isTool && isExpanded && !body.isEmpty && !findQuery.isEmpty && showsRaw
         let bodyY: CGFloat = isDisclosure ? (showsRawControl ? 74 : 44) : 8
         let bodyBottom = bodyY + textHeight + (isUser ? 16 : 0)
@@ -764,7 +768,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         result.showsFullBody = showsFullBody
         result.fullTextHeight = fullTextHeight
         result.originalRecords = row.records
-        result.richContent = richContent
+        result.richLayout = richLayout
         result.findRange = findRange
         result.isLocalHost = isLocalHost
         measurements[row.id] = result
@@ -902,13 +906,14 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
             message.setSelectedRange(NSRange(location: 0, length: 0))
             displayedText = value.attributedBody
         }
-        if installedRichContent !== value.richContent {
+        let richContent = value.richContent
+        if installedRichContent !== richContent {
             installedRichContent?.removeFromSuperview()
-            if let rich = value.richContent { richClip.addSubview(rich) }
-            installedRichContent = value.richContent
+            if let richContent { richClip.addSubview(richContent) }
+            installedRichContent = richContent
         }
-        richClip.isHidden = value.richContent == nil
-        message.isHidden = !value.hasBody || value.richContent != nil
+        richClip.isHidden = richContent == nil
+        message.isHidden = !value.hasBody || richContent != nil
         bubble.isHidden = !value.isUser || !value.hasBody
         updateBubbleColor()
         needsLayout = true
@@ -949,7 +954,7 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
         detailPanel.frame = NSRect(x: x, y: 32, width: width, height: max(0, footerY - 4 - 32))
         showAll.frame = NSRect(x: x + inset, y: bodyBottom + 4, width: 100, height: 22)
         let actionY = value.hasBody ? footerY : 10
-        copyButton.frame = NSRect(x: x + width - 24, y: actionY - 3, width: 24, height: 24)
+        copyButton.frame = NSRect(x: x + width - 24, y: actionY - 4, width: 24, height: 24)
         refreshActions()
     }
 

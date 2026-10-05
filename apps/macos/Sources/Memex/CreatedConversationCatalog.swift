@@ -5,7 +5,14 @@ import Observation
 /// after the provider returns its native session identity and transcript path.
 @MainActor @Observable
 final class CreatedConversationCatalog {
+    struct Context: Codable, Equatable, Sendable {
+        let projectID: String
+        let projectName: String
+        let workspace: ConversationWorkspace
+    }
+
     private(set) var sessions: [Session] = []
+    private(set) var contexts: [String: Context] = [:]
     private(set) var error: String?
     @ObservationIgnored private let directory: URL?
     @ObservationIgnored private var canWrite = true
@@ -13,6 +20,7 @@ final class CreatedConversationCatalog {
     private struct Saved: Codable {
         let version: Int
         let sessions: [Session]
+        var contexts: [String: Context]?
     }
 
     init(directory: URL? = nil) {
@@ -23,6 +31,7 @@ final class CreatedConversationCatalog {
             let saved = try JSONDecoder().decode(Saved.self, from: data)
             guard saved.version == 1 else { throw CocoaError(.fileReadCorruptFile) }
             sessions = saved.sessions
+            contexts = saved.contexts ?? [:]
         } catch let failure as CocoaError where failure.code == .fileReadNoSuchFile {
         } catch {
             canWrite = false
@@ -37,9 +46,11 @@ final class CreatedConversationCatalog {
 
     func contains(_ session: Session) -> Bool { sessions.contains { $0.id == session.id } }
 
-    func save(_ session: Session) {
+    func save(_ session: Session, context: Context? = nil) {
+        let contextChanged = context != nil && contexts[session.id] != context
+        if let context { contexts[session.id] = context }
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
-            guard sessions[index] != session || error != nil else { return }
+            guard sessions[index] != session || contextChanged || error != nil else { return }
             sessions[index] = session
         } else { sessions.insert(session, at: 0) }
         retrySave()
@@ -51,7 +62,7 @@ final class CreatedConversationCatalog {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                                     attributes: [.posixPermissions: 0o700])
             let file = directory.appendingPathComponent("conversations.json")
-            try JSONEncoder().encode(Saved(version: 1, sessions: sessions)).write(to: file, options: .atomic)
+            try JSONEncoder().encode(Saved(version: 1, sessions: sessions, contexts: contexts)).write(to: file, options: .atomic)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
             error = nil
         } catch {

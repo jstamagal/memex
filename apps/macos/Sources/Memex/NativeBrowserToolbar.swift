@@ -189,7 +189,7 @@ import SwiftUI
             actionItems[id] = item
             return item
         case Self.newConversation: return action(id, title: "New conversation (⌘N)", symbol: "square.and.pencil", selector: #selector(newConversation))
-        case Self.workspaceChanges: return action(id, title: "Workspace changes", symbol: "sidebar.right", selector: #selector(toggleWorkspaceChanges))
+        case Self.workspaceChanges: return action(id, title: "Workspace panel", symbol: "sidebar.right", selector: #selector(toggleWorkspaceChanges))
         case .toggleSidebar:
             let item = action(id, title: "Toggle sidebar", symbol: "sidebar.left", selector: #selector(toggleSidebar))
             item.isNavigational = true
@@ -238,7 +238,7 @@ import SwiftUI
                 ? store.selected?.machineID == "local" : store.selected != nil
         }
         actionItems[Self.newConversation]?.isEnabled = InAppAgentRuntime.isAvailable
-        actionItems[Self.workspaceChanges]?.isEnabled = store.selectedWorkspace != nil
+        actionItems[Self.workspaceChanges]?.isEnabled = store.selected != nil
         if let field = searchItem?.searchField, field.stringValue != store.query { field.stringValue = store.query }
     }
     func controlTextDidChange(_ notification: Notification) {
@@ -266,7 +266,7 @@ import SwiftUI
         update()
     }
     @objc func refresh() { Task { await store.refresh() } }
-    @objc func newConversation() { store.showingNewConversation = true }
+    @objc func newConversation() { store.beginNewConversation() }
     @objc func toggleWorkspaceChanges() { store.showingWorkspaceChanges.toggle() }
     @objc func find() { store.findConversationRequest += 1 }
     @objc func copySessionID() {
