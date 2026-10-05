@@ -23,23 +23,22 @@ struct WorkspaceChangesView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Uncommitted changes").font(.headline)
-                    Text(displayedRoot)
-                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        .help(displayedRoot)
-                }
+            HStack(spacing: 8) {
+                Label(displayedRoot, systemImage: "folder")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    .help(displayedRoot)
                 Spacer()
                 if state.loading { ProgressView().controlSize(.small).help("Refreshing workspace changes") }
                 if let close {
                     Button(action: close) { Image(systemName: "xmark") }
                         .help("Close workspace changes").accessibilityLabel("Close workspace changes")
                 }
-                Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise") }
+                Button { refreshID = UUID() } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
                     .help("Refresh workspace changes").accessibilityLabel("Refresh workspace changes")
                     .disabled(state.loading)
-            }.padding(12)
+            }
+            .buttonStyle(.plain).font(.system(size: 11))
+            .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
             Divider()
             if state.directory != directory {
                 ProgressView("Reading workspace changes…").frame(maxWidth: .infinity, maxHeight: .infinity)

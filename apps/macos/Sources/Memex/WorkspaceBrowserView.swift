@@ -3,31 +3,40 @@ import WebKit
 
 struct WorkspaceBrowserView: View {
     @ObservedObject var session: WorkspaceBrowserSession
+    var isActive = true
     @FocusState private var addressFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Button(action: session.goBack) { Image(systemName: "chevron.left") }
-                    .disabled(!session.canGoBack).help("Back").accessibilityLabel("Back")
-                Button(action: session.goForward) { Image(systemName: "chevron.right") }
-                    .disabled(!session.canGoForward).help("Forward").accessibilityLabel("Forward")
-                Button {
-                    if session.isLoading { session.stopLoading() } else { session.reload() }
-                } label: {
-                    Image(systemName: session.isLoading ? "xmark" : "arrow.clockwise")
+            HStack(spacing: 8) {
+                HStack(spacing: 0) {
+                    Button(action: session.goBack) { Image(systemName: "chevron.left").frame(width: 26, height: 28) }
+                        .disabled(!session.canGoBack).help("Back").accessibilityLabel("Back")
+                    Button(action: session.goForward) { Image(systemName: "chevron.right").frame(width: 26, height: 28) }
+                        .disabled(!session.canGoForward).help("Forward").accessibilityLabel("Forward")
+                    Button {
+                        if session.isLoading { session.stopLoading() } else { session.reload() }
+                    } label: {
+                        Image(systemName: session.isLoading ? "xmark" : "arrow.clockwise").frame(width: 26, height: 28)
+                    }
+                    .disabled(session.requestedURL == nil && session.currentURL == nil)
+                    .help(session.isLoading ? "Stop loading" : "Reload")
+                    .accessibilityLabel(session.isLoading ? "Stop loading" : "Reload")
                 }
-                .disabled(session.requestedURL == nil && session.currentURL == nil)
-                .help(session.isLoading ? "Stop loading" : "Reload")
-                .accessibilityLabel(session.isLoading ? "Stop loading" : "Reload")
-                TextField("Enter URL or localhost:4000", text: $session.addressText)
-                    .textFieldStyle(.roundedBorder)
+                .buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(.secondary)
+                .padding(.horizontal, 3).background(.quaternary.opacity(0.5), in: Capsule())
+                TextField("Enter a URL", text: $session.addressText)
+                    .textFieldStyle(.plain).font(.system(size: 12))
+                    .padding(.horizontal, 12).frame(height: 28)
+                    .background(.quaternary.opacity(0.5), in: Capsule())
+                    .overlay(Capsule().strokeBorder(addressFocused ? Color.accentColor.opacity(0.6) : .clear, lineWidth: 1))
                     .focused($addressFocused)
                     .accessibilityLabel("Browser address")
                     .onSubmit {
                         if session.submitAddress() { addressFocused = false }
                     }
-            }.padding(10)
+            }.padding(.horizontal, 8).padding(.vertical, 6)
+                .background(.bar)
             if session.isLoading {
                 ProgressView(value: session.estimatedProgress).progressViewStyle(.linear)
                     .accessibilityLabel("Loading page")
@@ -54,6 +63,17 @@ struct WorkspaceBrowserView: View {
                             .allowsHitTesting(false)
                     }
                 }
+        }
+        .onChange(of: isActive) { _, active in
+            addressFocused = active && session.currentURL == nil && session.requestedURL == nil
+            // Invisible WebKit content must not keep receiving keyboard input.
+            if let window = session.webView.window {
+                if active && !addressFocused { window.makeFirstResponder(session.webView) }
+                else if !active, let responder = window.firstResponder as? NSView,
+                        responder.isDescendant(of: session.webView) {
+                    window.makeFirstResponder(nil)
+                }
+            }
         }
         .onChange(of: addressFocused) { _, focused in session.isEditingAddress = focused }
         .onChange(of: session) { previous, next in

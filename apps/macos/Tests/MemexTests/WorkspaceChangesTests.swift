@@ -22,6 +22,65 @@ private struct WorkspaceFixture {
     func clean() { try? FileManager.default.removeItem(at: root) }
 }
 
+@MainActor @Test func workspaceTabsKeepTheSelectedDiffAndNativeReadingPosition() async throws {
+    let fixture = try WorkspaceFixture()
+    defer { fixture.clean() }
+    try fixture.write("a.txt", "Another file\n")
+    try fixture.write("b.txt", (0..<200).map { "line \($0)" }.joined(separator: "\n"))
+    let session = Session(source: "codex", sessionID: "workspace-tabs", sourcePath: "/fixture/sessions/tabs.jsonl",
+                          project: "fixture", cwd: fixture.root.path, machine: "local")
+    let store = Store()
+    store.scope = .all
+    store.sessions = [session]
+    store.selectedID = session.id
+    store.reviewWorkspaceChange("b.txt")
+    let host = NSHostingView(rootView: WorkspacePanelView(store: store))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+
+    func descendants<T: NSView>(of view: NSView, as type: T.Type) -> [T] {
+        ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { descendants(of: $0, as: type) }
+    }
+    func diffView() -> NSTextView? {
+        descendants(of: host, as: NSTextView.self).first { $0.string.contains("+line 199") }
+    }
+    let deadline = Date().addingTimeInterval(5)
+    while diffView() == nil, Date() < deadline {
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(20))
+    }
+    let diff = try #require(diffView())
+    let scroll = try #require(diff.enclosingScrollView)
+    diff.setSelectedRange(NSRange(location: 20, length: 8))
+    scroll.contentView.scroll(to: NSPoint(x: 0, y: 240))
+    scroll.reflectScrolledClipView(scroll.contentView)
+    let origin = scroll.contentView.bounds.origin
+    let selection = diff.selectedRange()
+    #expect(origin.y > 0)
+    let browser = store.workspaceBrowser.session(for: session.id)
+    browser.addressText = "localhost:4000/unfinished"
+    for panel in [Store.WorkspacePanel.browser, .changes, .browser, .changes] {
+        store.workspacePanel = panel
+        try await Task.sleep(for: .milliseconds(30))
+        host.layoutSubtreeIfNeeded()
+        #expect(diffView() === diff)
+        #expect(scroll.contentView.bounds.origin == origin)
+        #expect(diff.selectedRange() == selection)
+        #expect(browser.addressText == "localhost:4000/unfinished")
+        #expect(browser.requestedURL == nil)
+    }
+    // The inspector's minimum width must fit the tabs and both native panes.
+    window.setContentSize(NSSize(width: 430, height: 560))
+    host.layoutSubtreeIfNeeded()
+    #expect(host.bounds.width == 430)
+    #expect(scroll.convert(scroll.bounds, to: host).maxX <= 431)
+    #expect(browser.webView.convert(browser.webView.bounds, to: host).maxX <= 431)
+    #expect(!window.isVisible)
+}
+
 @Test func workspaceChangesPreserveStagedAndUnstagedEditsAndUntrackedPaths() async throws {
     let fixture = try WorkspaceFixture()
     defer { fixture.clean() }

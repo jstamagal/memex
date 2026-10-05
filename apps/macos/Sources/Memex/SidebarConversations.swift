@@ -162,17 +162,25 @@ struct BrowserSidebar: View {
     }
 
     private func row(_ session: Session, showsProject: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        let state = store.liveConversations.listState(for: session)
+        return VStack(alignment: .leading, spacing: 4) {
             Text(session.title).font(.system(size: 13)).lineLimit(2)
             HStack(spacing: 4) {
                 Text(showsProject ? store.projectName(for: session) : session.source).lineLimit(1)
                 if session.machineID != "local" { Text("· \(session.machineID)").lineLimit(1) }
                 Spacer(minLength: 2)
+                if state.activity == .openElsewhere {
+                    Image(systemName: "lock")
+                        .font(.system(size: 10))
+                        .help("Open elsewhere")
+                        .accessibilityLabel("Open elsewhere")
+                }
                 if let date = session.date {
                     Text(date, format: .dateTime.month(.abbreviated).day()).fixedSize()
                 }
             }.font(.caption).foregroundStyle(.secondary)
-            ConversationStateLabel(state: store.liveConversations.listState(for: session))
+            ConversationStateLabel(state: .init(activity: state.activity == .openElsewhere ? nil : state.activity,
+                                               hasDraft: state.hasDraft))
         }
         .padding(.vertical, 3)
         .tag(Selection.conversation(session.id))
