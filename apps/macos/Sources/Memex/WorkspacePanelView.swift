@@ -6,7 +6,7 @@ struct WorkspacePanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             if store.selectedID != nil {
-                WorkspacePanelTabs(selection: Binding(get: { store.workspacePanel }, set: store.selectWorkspacePanel),
+                WorkspacePanelTabs(selection: Binding(get: { store.workspacePanel }, set: { store.selectWorkspacePanel($0) }),
                                    close: { store.showingWorkspaceChanges = false })
             }
             Divider()
