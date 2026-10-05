@@ -25,6 +25,7 @@ struct NativeTranscript: NSViewControllerRepresentable {
     var requestedRecordID: String?
     var requestGeneration = 0
     var followLatest = false
+    var bottomInset: CGFloat = 0
 
     func makeNSViewController(context: Context) -> TranscriptController { TranscriptController() }
     func updateNSViewController(_ controller: TranscriptController, context: Context) {
@@ -35,7 +36,7 @@ struct NativeTranscript: NSViewControllerRepresentable {
                           findQuery: findQuery, findHit: findHit, findGeneration: findGeneration,
                           rawTranscript: rawTranscript, isLocalHost: isLocalHost, sourcePath: sourcePath,
                           requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
-                          followLatest: followLatest)
+                          followLatest: followLatest, bottomInset: bottomInset)
     }
 }
 
@@ -93,6 +94,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     private var anchorID: String?
     private var navigation = TranscriptNavigationState()
     private var needsInitialPosition = true
+    private var bottomInset: CGFloat = 0
     private var findQuery = ""
     private var findHit: ConversationFindHit?
     private var findGeneration = 0
@@ -156,6 +158,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.drawsBackground = false
+        scrollView.automaticallyAdjustsContentInsets = false
         table.headerView = nil
         table.backgroundColor = .clear
         table.intercellSpacing = .zero
@@ -188,11 +191,19 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 navigation: TranscriptNavigationState? = nil, onLoadEarlier: (() -> Void)? = nil,
                 findQuery: String = "", findHit: ConversationFindHit? = nil, findGeneration: Int = 0,
                 rawTranscript: Bool = false, isLocalHost: Bool = false, sourcePath: String = "",
-                requestedRecordID: String? = nil, requestGeneration: Int = 0, followLatest: Bool = false) {
+                requestedRecordID: String? = nil, requestGeneration: Int = 0, followLatest: Bool = false,
+                bottomInset: CGFloat = 0) {
         _ = view
         let changedSession = self.sessionID != sessionID
-        let shouldFollow = followLatest && !changedSession && findQuery.isEmpty && !rows.isEmpty
-            && table.rect(ofRow: rows.count - 1).maxY - scrollView.contentView.bounds.maxY < 60
+        let wasAtEnd = !rows.isEmpty && table.rect(ofRow: rows.count - 1).maxY
+            - (scrollView.contentView.bounds.maxY - self.bottomInset) < 60
+        let changedInset = self.bottomInset != bottomInset
+        let shouldFollow = (followLatest || changedInset) && !changedSession && findQuery.isEmpty && wasAtEnd
+        if changedInset {
+            self.bottomInset = max(0, bottomInset)
+            scrollView.contentInsets.bottom = self.bottomInset
+            scrollView.scrollerInsets.bottom = self.bottomInset
+        }
         let changedMode = self.rawTranscript != rawTranscript
         self.rawTranscript = rawTranscript
         self.isLocalHost = isLocalHost
@@ -242,6 +253,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         self.isLoading = isLoading
         self.onLoadMore = onLoadMore
         guard changedSession || changedMode || changedFind || self.records != records || self.provider != provider else {
+            if shouldFollow { scrollToEnd() }
             if changedQuery { table.reloadData() }
             return
         }
@@ -276,9 +288,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         if needsInitialPosition {
             applyInitialPosition()
         } else if shouldFollow, !rows.isEmpty {
-            let end = table.rect(ofRow: rows.count - 1).maxY
-            scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, end - scrollView.contentView.bounds.height)))
-            scrollView.reflectScrolledClipView(scrollView.contentView)
+            scrollToEnd()
         } else if let visiblePosition {
             restore(visiblePosition)
         } else {
@@ -382,11 +392,17 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         } else if let anchorID, let row = rowIndex(for: anchorID) {
             scrollView.contentView.scroll(to: NSPoint(x: 0, y: table.rect(ofRow: row).minY))
         } else if startsAtEnd {
-            let end = table.rect(ofRow: rows.count - 1).maxY
-            scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, end - scrollView.contentView.bounds.height)))
+            scrollToEnd()
         } else {
             scrollView.contentView.scroll(to: .zero)
         }
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    private func scrollToEnd() {
+        guard !rows.isEmpty else { return }
+        let end = table.rect(ofRow: rows.count - 1).maxY + bottomInset
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: max(0, end - scrollView.contentView.bounds.height)))
         scrollView.reflectScrolledClipView(scrollView.contentView)
     }
 

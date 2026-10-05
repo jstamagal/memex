@@ -58,8 +58,18 @@ final class NewConversationDraft {
         value = next
     }
 
-    func selectWorkspace(_ mode: ConversationWorkspaceMode, baseRef: String?) {
+    func selectNoProject() {
         guard value.createdSessionID == nil else { return }
+        var next = value
+        next.projectID = nil
+        next.workspaceMode = .existingDirectory
+        next.baseRef = nil
+        next.preparedWorkspace = nil
+        value = next
+    }
+
+    func selectWorkspace(_ mode: ConversationWorkspaceMode, baseRef: String?) {
+        guard value.createdSessionID == nil, value.projectID != nil else { return }
         var next = value
         next.workspaceMode = mode
         next.baseRef = baseRef

@@ -34,7 +34,7 @@ private actor PanelFixtureRuntime: ConversationRuntime {
         }
         """, options: [.init(id: "allow", title: "Allow once", kind: "allow_once"),
                        .init(id: "deny", title: "Decline", kind: "reject_once")])
-    for mode in ["approval", "sign-in", "uncertain"] {
+    for mode in ["approval", "sign-in", "uncertain", "open-elsewhere"] {
         let runtime = PanelFixtureRuntime(
             snapshot: .init(connected: true, ready: true, approvals: mode == "approval" ? [approval] : []),
             failure: mode == "sign-in" ? "OAuth token expired. Sign in again." : nil)
@@ -43,7 +43,7 @@ private actor PanelFixtureRuntime: ConversationRuntime {
                 workingDirectory: URL(fileURLWithPath: "/fixture"), providerHome: URL(fileURLWithPath: "/fixture"),
                 executableURL: URL(fileURLWithPath: "/bin/echo"), helperURL: nil,
                 storageURL: URL(fileURLWithPath: "/fixture/runtime"))
-        }, checkOwnership: { _ in false })
+        }, checkOwnership: { _ in mode == "open-elsewhere" })
         await conversation.connect()
         conversation.draft = "Keep this draft while the request needs attention."
         if mode == "uncertain" { await conversation.send() }
@@ -76,6 +76,36 @@ private actor PanelFixtureRuntime: ConversationRuntime {
             window.close()
         }
         await conversation.disconnect()
+    }
+}
+
+@MainActor @Test func ownedElsewhereDisablesEditorAndRestoresSavedDraftOnUnlock() async throws {
+    let session = Session(source: "codex", sessionID: "locked-composer", sourcePath: "/fixture/sessions/native.jsonl",
+                          project: "fixture", cwd: "/fixture", machine: "local")
+    var locked = false
+    let runtime = PanelFixtureRuntime()
+    let conversation = LiveConversation(session: session, makeRuntime: { runtime }, checkOwnership: { _ in locked })
+    conversation.draft = "My unsent draft"
+    let host = NSHostingView(rootView: ConversationComposer(conversation: conversation).frame(width: 480))
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
+                          styleMask: [.titled], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.contentView = host
+    defer { window.close() }
+
+    func editors(in view: NSView) -> [NSTextField] {
+        ((view as? NSTextField).map { [$0] } ?? []) + view.subviews.flatMap { editors(in: $0) }
+    }
+    for isLocked in [false, true, false] {
+        locked = isLocked
+        conversation.refreshOwnership()
+        host.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(30))
+        host.layoutSubtreeIfNeeded()
+        let editor = try #require(editors(in: host).first)
+        #expect((editor.isEditable && editor.isEnabled) == !isLocked)
+        #expect(editor.stringValue == (isLocked ? "" : "My unsent draft"))
+        #expect(conversation.draft == "My unsent draft")
     }
 }
 #endif

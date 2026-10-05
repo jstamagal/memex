@@ -47,20 +47,20 @@ struct HomeConversationComposer: View {
                 }.font(.caption).foregroundStyle(.secondary)
             }
             if let workspace = draft.value.preparedWorkspace, workspace.state == .ready {
-                Text("Prepared worktree: \(workspace.workingDirectory.path)")
+                Text("Prepared folder: \(workspace.workingDirectory.path)")
                     .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
             }
             if let workspace = draft.value.preparedWorkspace, workspace.state == .failed {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Worktree preparation failed. Its files were retained at \(workspace.worktreeRoot?.path ?? workspace.workingDirectory.path).")
+                    Text("Folder preparation failed. Its files were retained at \(workspace.worktreeRoot?.path ?? workspace.workingDirectory.path).")
                         .textSelection(.enabled)
-                    Button("Prepare another worktree") {
+                    Button("Prepare another folder") {
                         draft.value.preparedWorkspace = nil
                         store.newConversationError = nil
                     }
                 }.font(.caption).foregroundStyle(.secondary)
             }
-            if let error = store.newConversationError ?? draft.error ?? store.localProjects.error ?? workspaceError {
+            if let error = store.newConversationError ?? draft.error ?? (draft.value.projectID == nil ? nil : store.localProjects.error) ?? workspaceError {
                 Text(error).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
             }
             if draft.error != nil {
@@ -89,6 +89,14 @@ struct HomeConversationComposer: View {
             }
             .help("Uses this provider’s configured defaults. Model and permissions are available in the conversation.")
             Menu {
+                Button {
+                    draft.selectNoProject()
+                    store.newConversationError = nil
+                } label: {
+                    if draft.value.projectID == nil { Label("Don't work in a project", systemImage: "checkmark") }
+                    else { Text("Don't work in a project") }
+                }
+                Divider()
                 ForEach(store.localProjects.projects) { project in
                     Button {
                         draft.selectProject(project)
@@ -99,24 +107,25 @@ struct HomeConversationComposer: View {
                     }
                 }
                 if !store.localProjects.projects.isEmpty { Divider() }
-                Button("Set up projects…") { store.showingProjectSetup = true }
+                Button("Add New Project") { store.addNewProject() }
             } label: {
-                Label(store.newConversationProject?.name ?? "Choose project", systemImage: "folder")
+                Label(store.newConversationProject?.name ?? (draft.value.projectID == nil ? "No project" : "Missing project"), systemImage: "folder")
                     .lineLimit(1)
             }
-            .help(store.newConversationProject?.directoryPath ?? "Save a local folder to start a conversation.")
-            Menu {
-                Button("Existing folder") { draft.selectWorkspace(.existingDirectory, baseRef: draft.value.baseRef) }
-                Button("New worktree") {
-                    draft.selectWorkspace(.newWorktree, baseRef: draft.value.baseRef ?? repository?.defaultBaseRef)
-                }.disabled(repository == nil || inspecting)
-            } label: {
-                Label(draft.value.workspaceMode == .newWorktree ? "New worktree" : "Existing folder",
-                      systemImage: draft.value.workspaceMode == .newWorktree ? "arrow.triangle.branch" : "folder")
+            .help(store.newConversationProject?.directoryPath ?? "This chat gets its own folder, kept for later use.")
+            if store.newConversationProject != nil {
+                Menu {
+                    Button("Existing folder") { draft.selectWorkspace(.existingDirectory, baseRef: draft.value.baseRef) }
+                    Button("New worktree") {
+                        draft.selectWorkspace(.newWorktree, baseRef: draft.value.baseRef ?? repository?.defaultBaseRef)
+                    }.disabled(repository == nil || inspecting)
+                } label: {
+                    Label(draft.value.workspaceMode == .newWorktree ? "New worktree" : "Existing folder",
+                          systemImage: draft.value.workspaceMode == .newWorktree ? "arrow.triangle.branch" : "folder")
+                }
+                .help(repository == nil ? "A Git repository is required to create a worktree." : "Choose where this conversation will work.")
             }
-            .disabled(store.newConversationProject == nil)
-            .help(repository == nil ? "A Git repository is required to create a worktree." : "Choose where this conversation will work.")
-            if draft.value.workspaceMode == .newWorktree {
+            if store.newConversationProject != nil && draft.value.workspaceMode == .newWorktree {
                 Menu {
                     ForEach(baseRefs, id: \.self) { ref in
                         Button(ref) { draft.selectWorkspace(.newWorktree, baseRef: ref) }

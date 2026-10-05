@@ -28,12 +28,14 @@ struct WorkspaceChangeSummary: View {
                     Button("Review changes") { review(nil) }.buttonStyle(.borderless)
                 }
                 .font(.caption).foregroundStyle(.secondary)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 .help(error ?? "Current staged, unstaged and untracked changes across this Git worktree.")
             } else if loadedDirectory == directory, let error {
                 Button("Workspace changes unavailable") { review(nil) }
                     .buttonStyle(.borderless).font(.caption).foregroundStyle(.secondary).help(error)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, 8).padding(.vertical, 6)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
         .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)

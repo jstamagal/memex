@@ -63,8 +63,7 @@ struct BrowserToolbarTests {
         _ = NSApplication.shared
         let store = Store()
         store.scope = .all
-        let controller = BrowserColumnsController(store: store, sidebar: Text("Sidebar"),
-            conversations: Text("Conversations"), reader: Text("Reader"))
+        let controller = BrowserColumnsController(store: store, sidebar: Text("Sidebar"), reader: Text("Reader"))
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 1380, height: 700),
                               styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -89,8 +88,8 @@ struct BrowserToolbarTests {
         let sidebar = try #require(split.arrangedSubviews.first)
         #expect(abs(sidebar.convert(sidebar.bounds, to: nil).maxY - content.convert(content.bounds, to: nil).maxY) < 1)
         let originalSeparators = toolbar.items.compactMap { $0 as? NSTrackingSeparatorToolbarItem }
-        #expect(originalSeparators.count == 2)
-        #expect(originalSeparators.map(\.dividerIndex) == [0, 1])
+        #expect(originalSeparators.count == 1)
+        #expect(originalSeparators.map(\.dividerIndex) == [0])
         #expect(originalSeparators.allSatisfy { $0.splitView === split })
         var session = Session(source: "codex", sessionID: "native-root", sourcePath: "/fixture", project: "memex")
         store.sessions = [session]
@@ -102,7 +101,6 @@ struct BrowserToolbarTests {
         for revision in 1...3 {
             store.query = "query \(revision)"
             controller.sidebarHost.rootView = Text("Sidebar \(revision)")
-            controller.conversationsHost.rootView = Text("Conversations \(revision)")
             controller.readerHost.rootView = Text("Reader \(revision)")
             store.loadingSessions = revision.isMultiple(of: 2)
             window.setContentSize(NSSize(width: CGFloat(1200 + revision * 100), height: 700))
@@ -111,8 +109,8 @@ struct BrowserToolbarTests {
             let currentSplit = controller.splitView
             #expect(currentSplit === split)
             let separators = toolbar.items.compactMap { $0 as? NSTrackingSeparatorToolbarItem }
-            #expect(separators.count == 2)
-            #expect(separators.map(\.dividerIndex) == [0, 1])
+            #expect(separators.count == 1)
+            #expect(separators.map(\.dividerIndex) == [0])
             #expect(separators.allSatisfy { $0.splitView === currentSplit && $0.splitView.window === window })
             let search = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.search } as? NSSearchToolbarItem)
             #expect(search.searchField.stringValue == store.query)
@@ -121,14 +119,12 @@ struct BrowserToolbarTests {
             let filter = try filterView(in: window)
             #expect(filter.frame.width >= 28)
             #expect(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.filters }?.view == nil)
-            split.setPosition(CGFloat(200 + revision * 10), ofDividerAt: 0)
-            split.setPosition(CGFloat(530 + revision * 20), ofDividerAt: 1)
+            split.setPosition(CGFloat(290 + revision * 10), ofDividerAt: 0)
             await pumpNative(window)
             let title = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.title }?.view)
             let firstDivider = split.convert(NSPoint(x: split.arrangedSubviews[0].frame.maxX, y: 0), to: nil).x
-            let secondDivider = split.convert(NSPoint(x: split.arrangedSubviews[1].frame.maxX, y: 0), to: nil).x
             #expect((0...40).contains(title.convert(title.bounds, to: nil).minX - firstDivider))
-            #expect((0...40).contains(secondDivider - filter.convert(filter.bounds, to: nil).maxX))
+            #expect((0...40).contains(firstDivider - filter.convert(filter.bounds, to: nil).maxX))
             #expect(abs(sidebar.convert(sidebar.bounds, to: nil).maxY - content.convert(content.bounds, to: nil).maxY) < 1)
         }
         // Replacing selected metadata must also invalidate native action state.
@@ -151,43 +147,27 @@ struct BrowserToolbarTests {
         pump(window)
     }
 
-    @Test func toolbarSectionsFollowBothDividersAndWindowResize() throws {
+    @Test func toolbarTracksTheSidebarDividerThroughWindowResize() throws {
         let (window, split, controller) = fixture()
         defer { window.close() }
         let separators = controller.toolbar.items.compactMap { $0 as? NSTrackingSeparatorToolbarItem }
-        #expect(separators.count == 2)
-        #expect(separators.allSatisfy { $0.splitView === split })
-        #expect(separators.map(\.dividerIndex) == [0, 1])
-
-        // Native separator views have no public frame API. Measure the actual
-        // custom controls immediately inside each tracked boundary instead.
+        #expect(separators.count == 1)
+        #expect(separators.allSatisfy { $0.splitView === split && $0.dividerIndex == 0 })
         let title = try #require(item(BrowserToolbarController.title, in: controller).view)
         let filters = try filterView(in: window)
-        #expect(filters.frame.width >= 28)
-        #expect(try item(BrowserToolbarController.filters, in: controller).view == nil)
-        var firstOffsets: (CGFloat, CGFloat)?
-        for (width, left, right) in [(1380.0, 210.0, 540.0), (1380, 270, 540),
-                                     (1380, 270, 660), (1600, 230, 590), (1200, 200, 530)] {
+        var firstOffset: CGFloat?
+        for (width, left) in [(1380.0, 300.0), (1380, 360), (1600, 320), (1200, 300)] {
             window.setContentSize(NSSize(width: width, height: 700))
             split.setPosition(left, ofDividerAt: 0)
-            split.setPosition(right, ofDividerAt: 1)
             pump(window)
-            let firstDivider = split.convert(NSPoint(x: split.arrangedSubviews[0].frame.maxX, y: 0), to: nil).x
-            let secondDivider = split.convert(NSPoint(x: split.arrangedSubviews[1].frame.maxX, y: 0), to: nil).x
-            #expect(abs(firstDivider - left) < 1)
-            #expect(abs(secondDivider - right) < 1)
-            #expect(title.window === window)
-            #expect(filters.window === window)
-            let titleOffset = title.convert(title.bounds, to: nil).minX - firstDivider
-            let filterOffset = secondDivider - filters.convert(filters.bounds, to: nil).maxX
-            #expect((0...40).contains(titleOffset))
-            #expect((0...40).contains(filterOffset))
-            if let firstOffsets {
-                #expect(abs(titleOffset - firstOffsets.0) < 1)
-                #expect(abs(filterOffset - firstOffsets.1) < 1)
-            } else {
-                firstOffsets = (titleOffset, filterOffset)
-            }
+            let divider = split.convert(NSPoint(x: split.arrangedSubviews[0].frame.maxX, y: 0), to: nil).x
+            #expect(abs(divider - left) < 1)
+            #expect(title.window === window && filters.window === window)
+            #expect((0...40).contains(title.convert(title.bounds, to: nil).minX - divider))
+            let offset = divider - filters.convert(filters.bounds, to: nil).maxX
+            #expect((0...40).contains(offset))
+            if let firstOffset { #expect(abs(offset - firstOffset) < 1) }
+            else { firstOffset = offset }
         }
         #expect(!window.isVisible)
     }
@@ -300,7 +280,7 @@ struct BrowserToolbarTests {
         split.isVertical = true
         split.dividerStyle = .thin
         split.autoresizingMask = [.width, .height]
-        for _ in 0..<3 { split.addArrangedSubview(NSView()) }
+        for _ in 0..<2 { split.addArrangedSubview(NSView()) }
         window.contentView = split
         split.adjustSubviews()
         let store = Store()

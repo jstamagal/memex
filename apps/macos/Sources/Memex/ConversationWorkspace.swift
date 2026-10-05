@@ -35,12 +35,54 @@ struct ConversationWorkspacePreparationError: LocalizedError, Sendable {
 
 struct ConversationWorkspaceClient: Sendable {
     let managedRoot: URL
+    let temporaryRoot: URL
     private let makeID: @Sendable () -> UUID
 
-    init(managedRoot: URL? = nil, makeID: @escaping @Sendable () -> UUID = { UUID() }) {
+    init(managedRoot: URL? = nil, temporaryRoot: URL? = nil, makeID: @escaping @Sendable () -> UUID = { UUID() }) {
         self.managedRoot = managedRoot ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/dev.memex.app/Worktrees", isDirectory: true)
+        self.temporaryRoot = temporaryRoot ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/dev.memex.app/ProjectlessChats", isDirectory: true)
         self.makeID = makeID
+    }
+
+    /// A chat without a saved project still owns a durable working folder.
+    /// Keep it after completion or failure: provider history can resume here and
+    /// generated files must not disappear through OS temporary-directory cleanup.
+    func prepareTemporaryDirectory() async throws -> ConversationWorkspace {
+        try Task.checkCancellation()
+        return try await Task.detached(priority: .userInitiated) {
+            guard temporaryRoot.isFileURL, temporaryRoot.path.hasPrefix("/"), !temporaryRoot.path.contains("\0") else {
+                throw ConversationWorkspacePreparationError(message: "The chat workspace folder must be a local absolute path.")
+            }
+            let manager = FileManager.default
+            try manager.createDirectory(at: temporaryRoot, withIntermediateDirectories: true,
+                                        attributes: [.posixPermissions: 0o700])
+            let id = makeID().uuidString.lowercased()
+            let reservation = temporaryRoot.appendingPathComponent(id, isDirectory: true)
+            guard reservation.path.withCString({ mkdir($0, 0o700) }) == 0 else {
+                throw ConversationWorkspacePreparationError(message: "Could not reserve a chat folder at \(reservation.path): \(String(cString: strerror(errno)))")
+            }
+            let directory = reservation.appendingPathComponent("files", isDirectory: true)
+            var workspace = ConversationWorkspace(id: id, workingDirectory: directory,
+                sourceDirectory: directory, repositoryRoot: nil, baseRef: nil, baseCommit: nil,
+                branch: nil, worktreeRoot: nil, metadataURL: reservation.appendingPathComponent("workspace.json"), state: .preparing)
+            do {
+                try Self.persist(workspace)
+                try manager.createDirectory(at: directory, withIntermediateDirectories: false,
+                                            attributes: [.posixPermissions: 0o700])
+                workspace.state = .ready
+                try Self.persist(workspace)
+                return workspace
+            } catch {
+                workspace.state = .failed
+                workspace.failure = error.localizedDescription
+                var message = "The chat folder could not be prepared: \(error.localizedDescription)"
+                do { try Self.persist(workspace) }
+                catch { message += " The recovery record could not be saved: \(error.localizedDescription)" }
+                throw ConversationWorkspacePreparationError(message: message, retainedWorkspace: workspace)
+            }
+        }.value
     }
 
     func inspect(directory: URL) async throws -> ConversationWorkspaceRepository? {

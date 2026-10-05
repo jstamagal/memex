@@ -3,6 +3,43 @@ import Testing
 @testable import Memex
 
 @Suite(.serialized) @MainActor struct ReaderEnhancementTests {
+    @Test func floatingComposerInsetKeepsLatestVisibleAndHistoryPositionStable() {
+        let records = (0..<40).map { record("\($0)", "assistant", "Message \($0)") }
+        let reader = TranscriptController()
+        reader.view.frame = NSRect(x: 0, y: 0, width: 700, height: 500)
+        reader.update(sessionID: "glass", records: records, provider: "codex", startsAtEnd: true,
+                      followLatest: true, bottomInset: 120)
+        reader.view.layoutSubtreeIfNeeded()
+        let clipHeight = reader.scrollView.contentView.bounds.height
+        #expect(clipHeight == 500) // Content remains behind the floating composer.
+        let end = reader.table.rect(ofRow: reader.rows.count - 1).maxY
+        #expect(abs(end - (reader.scrollView.contentView.bounds.maxY - 120)) < 1)
+        reader.update(sessionID: "glass", records: records, provider: "codex", startsAtEnd: true,
+                      followLatest: true, bottomInset: 180)
+        #expect(abs(end - (reader.scrollView.contentView.bounds.maxY - 180)) < 1)
+        reader.scrollView.contentView.scroll(to: NSPoint(x: 0, y: 300))
+        let previous = reader.scrollView.contentView.bounds.minY
+        reader.update(sessionID: "glass", records: records, provider: "codex", startsAtEnd: true,
+                      followLatest: true, bottomInset: 100)
+        #expect(abs(reader.scrollView.contentView.bounds.minY - previous) < 1)
+        #expect(reader.scrollView.contentView.bounds.height == clipHeight)
+    }
+
+    @Test func findAndRequestedRecordsRemainAboveTheFloatingComposer() throws {
+        let records = (0..<40).map { record("\($0)", "assistant", "Message \($0)") }
+        let reader = controller(records)
+        reader.update(sessionID: "reader", records: records, provider: "codex", requestedRecordID: "25",
+                      requestGeneration: 1, bottomInset: 160)
+        #expect(reader.table.rect(ofRow: 25).maxY <= reader.scrollView.contentView.bounds.maxY - 160)
+        reader.scrollView.contentView.scroll(to: .zero)
+        let hit = try #require(ConversationMatcher.matches(records, query: "Message 30").first)
+        reader.update(sessionID: "reader", records: records, provider: "codex", findQuery: "Message 30",
+                      findHit: hit, findGeneration: 1, bottomInset: 160)
+        let cell = try #require(reader.table.view(atColumn: 0, row: 30, makeIfNecessary: true))
+        let text = try #require(cell.subviews.compactMap { $0 as? NSTextView }.first)
+        #expect(text.convert(text.bounds, to: reader.table).maxY <= reader.scrollView.contentView.bounds.maxY - 160)
+    }
+
     @Test func expandedToolPanelHasEqualInsetsAroundItsContent() throws {
         let tool = TranscriptRecord(recordID: "tool", record: Message(role: "tool_use", text: "", toolName: "exec_command", toolInput: #"{"cmd":"printf hello"}"#, toolOutput: nil))
         let reader = controller([tool])

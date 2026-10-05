@@ -168,3 +168,37 @@ private struct ConversationWorkspaceFixture {
     #expect(try fixture.git(["worktree", "list", "--porcelain"]) == before)
     #expect(!FileManager.default.fileExists(atPath: fixture.managed.path))
 }
+
+@Test func projectlessFoldersArePrivateIsolatedAndRetainFiles() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let client = ConversationWorkspaceClient(temporaryRoot: root)
+    let first = try await client.prepareTemporaryDirectory()
+    let file = first.workingDirectory.appendingPathComponent("created.txt")
+    try Data("keep across chats".utf8).write(to: file)
+    let second = try await client.prepareTemporaryDirectory()
+    #expect(first.id != second.id)
+    #expect(first.workingDirectory != second.workingDirectory)
+    #expect(first.repositoryRoot == nil && first.branch == nil && first.worktreeRoot == nil)
+    #expect(first.state == .ready)
+    #expect(try FileManager.default.contentsOfDirectory(atPath: second.workingDirectory.path).isEmpty)
+    #expect(try String(contentsOf: file, encoding: .utf8) == "keep across chats")
+    #expect(try JSONDecoder().decode(ConversationWorkspace.self, from: Data(contentsOf: #require(first.metadataURL))) == first)
+    let attributes = try FileManager.default.attributesOfItem(atPath: first.workingDirectory.path)
+    #expect(attributes[.posixPermissions] as? Int == 0o700)
+    #expect(ConversationWorkspaceClient().temporaryRoot.path.contains("/Library/Application Support/dev.memex.app/"))
+}
+
+@Test func projectlessFolderCollisionNeverReusesOrOverwritesFiles() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let id = UUID()
+    let client = ConversationWorkspaceClient(temporaryRoot: root, makeID: { id })
+    let first = try await client.prepareTemporaryDirectory()
+    let file = first.workingDirectory.appendingPathComponent("work.txt")
+    try Data("preserved".utf8).write(to: file)
+    let manifest = try Data(contentsOf: #require(first.metadataURL))
+    await #expect(throws: ConversationWorkspacePreparationError.self) { try await client.prepareTemporaryDirectory() }
+    #expect(try Data(contentsOf: file) == Data("preserved".utf8))
+    #expect(try Data(contentsOf: #require(first.metadataURL)) == manifest)
+}

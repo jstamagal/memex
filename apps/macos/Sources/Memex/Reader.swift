@@ -6,6 +6,7 @@ struct ReaderView: View {
     @State private var navigation = TranscriptNavigationState()
     @State private var find: ConversationFindState?
     @State private var rawTranscript = false
+    @State private var footerHeight: CGFloat = 0
     @FocusState private var findFocused: Bool
 
     var body: some View {
@@ -26,54 +27,11 @@ struct ReaderView: View {
                         Text(warning).font(.caption).foregroundStyle(.secondary).padding(8)
                     }
                     if let find, find.isOpen { findBar(find) }
-                    if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot {
-                        NativeTranscript(sessionID: session.id + ":live", records: live.visibleRecords,
-                                         provider: session.source, hasMore: false, isLoading: false, onLoadMore: {},
-                                         hasEarlier: live.hasEarlierRecords, startsAtEnd: true, navigation: navigation,
-                                         onLoadEarlier: { live.loadEarlierRecords() },
-                                         findQuery: find?.isOpen == true ? find?.query ?? "" : "",
-                                         findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
-                                         rawTranscript: rawTranscript, isLocalHost: true, sourcePath: session.sourcePath,
-                                         followLatest: true)
-                    } else {
-                        NativeTranscript(sessionID: store.readerPositionKey,
-                                     records: store.loadedReaderKey == store.readerPositionKey ? store.records : [],
-                                     provider: session.source, hasMore: store.hasMoreRecords,
-                                     isLoading: store.loadingRecords,
-                                     onLoadMore: { Task { await store.loadMoreRecords() } },
-                                     hasEarlier: store.hasEarlierRecords, startsAtEnd: store.readerStartsAtEnd,
-                                     anchorID: store.readerAnchorID, navigation: navigation,
-                                     onLoadEarlier: { Task { await store.loadEarlierRecords() } },
-                                     findQuery: find?.isOpen == true ? find?.query ?? "" : "",
-                                     findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
-                                     rawTranscript: rawTranscript, isLocalHost: session.machineID == "local",
-                                     sourcePath: session.sourcePath)
-                        if let error = store.readerError {
-                            ErrorBanner(message: error) {
-                                Task { await store.retryRecords() }
-                            }
-                        }
-                        if store.loadingRecords {
-                            ProgressView("Loading conversation…").controlSize(.small).padding(12)
-                        } else if store.records.isEmpty && store.readerError == nil {
-                            Text("No messages in this transcript.").foregroundStyle(.secondary).padding(12)
-                        }
-                    }
-                    if let directory = store.selectedWorkspace {
-                        WorkspaceChangeSummary(directory: directory,
-                                               isWorking: store.selectedLiveConversation?.isWorking == true,
-                                               review: store.reviewWorkspaceChange)
-                    }
-                    if let live = store.selectedLiveConversation {
-                        ConversationPendingView(conversation: live)
-                        ConversationComposer(conversation: live)
-                    } else if !InAppResumeTarget.isArchived(session) {
-                        Label(InAppResumeTarget.unavailableReason(for: session)
-                              ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
-                            .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
-                            .frame(maxWidth: .infinity)
+                    ZStack(alignment: .bottom) {
+                        transcript(session)
+                        footer(session)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
                     }
                 }
             } else {
@@ -110,6 +68,66 @@ struct ReaderView: View {
             else { await store.revealRecord(hit.recordID, offset: hit.recordOffset) }
         }
         .onDisappear { find?.reset() }
+    }
+
+    private func transcript(_ session: Session) -> some View {
+        VStack(spacing: 0) {
+            if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot {
+                NativeTranscript(sessionID: session.id + ":live", records: live.visibleRecords,
+                                 provider: session.source, hasMore: false, isLoading: false, onLoadMore: {},
+                                 hasEarlier: live.hasEarlierRecords, startsAtEnd: true, navigation: navigation,
+                                 onLoadEarlier: { live.loadEarlierRecords() },
+                                 findQuery: find?.isOpen == true ? find?.query ?? "" : "",
+                                 findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
+                                 rawTranscript: rawTranscript, isLocalHost: true, sourcePath: session.sourcePath,
+                                 followLatest: true, bottomInset: footerHeight)
+            } else {
+                NativeTranscript(sessionID: store.readerPositionKey,
+                                 records: store.loadedReaderKey == store.readerPositionKey ? store.records : [],
+                                 provider: session.source, hasMore: store.hasMoreRecords,
+                                 isLoading: store.loadingRecords,
+                                 onLoadMore: { Task { await store.loadMoreRecords() } },
+                                 hasEarlier: store.hasEarlierRecords, startsAtEnd: store.readerStartsAtEnd,
+                                 anchorID: store.readerAnchorID, navigation: navigation,
+                                 onLoadEarlier: { Task { await store.loadEarlierRecords() } },
+                                 findQuery: find?.isOpen == true ? find?.query ?? "" : "",
+                                 findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
+                                 rawTranscript: rawTranscript, isLocalHost: session.machineID == "local",
+                                 sourcePath: session.sourcePath, bottomInset: footerHeight)
+                if let error = store.readerError {
+                    ErrorBanner(message: error) {
+                        Task { await store.retryRecords() }
+                    }
+                }
+                if store.loadingRecords {
+                    ProgressView("Loading conversation…").controlSize(.small).padding(12)
+                } else if store.records.isEmpty && store.readerError == nil {
+                    Text("No messages in this transcript.").foregroundStyle(.secondary).padding(12)
+                }
+            }
+        }
+    }
+
+    private func footer(_ session: Session) -> some View {
+        VStack(spacing: 0) {
+            if let directory = store.selectedWorkspace {
+                WorkspaceChangeSummary(directory: directory,
+                                       isWorking: store.selectedLiveConversation?.isWorking == true,
+                                       review: store.reviewWorkspaceChange)
+            }
+            if let live = store.selectedLiveConversation {
+                ConversationPendingView(conversation: live)
+                ConversationComposer(conversation: live)
+            } else if !InAppResumeTarget.isArchived(session) {
+                Label(InAppResumeTarget.unavailableReason(for: session)
+                      ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
+                    .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
+                    .frame(maxWidth: .infinity)
+            }
+        }
     }
 
     private func search() {

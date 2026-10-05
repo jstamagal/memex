@@ -6,7 +6,7 @@ import Observation
 @MainActor @Observable
 final class CreatedConversationCatalog {
     struct Context: Codable, Equatable, Sendable {
-        let projectID: String
+        let projectID: String?
         let projectName: String
         let workspace: ConversationWorkspace
     }

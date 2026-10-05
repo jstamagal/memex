@@ -17,15 +17,17 @@ extension Store {
     }
 
     var canStartConversation: Bool {
-        !startingConversation && newConversationProject != nil
+        !startingConversation && (newConversationDraft.value.projectID == nil || newConversationProject != nil)
             && newConversationDraft.value.text.nilIfBlank != nil
             && newConversationDraft.value.createdSessionID == nil
             && newConversationDraft.value.preparedWorkspace?.state != .failed
-            && newConversationDraft.error == nil && localProjects.error == nil
+            && newConversationDraft.error == nil
+            && (newConversationDraft.value.projectID == nil || localProjects.error == nil)
     }
 
     func startConversationFromHome() async {
-        guard canStartConversation, let project = newConversationProject else { return }
+        guard canStartConversation else { return }
+        let project = newConversationProject
         startingConversation = true
         newConversationError = nil
         defer { startingConversation = false }
@@ -41,15 +43,19 @@ extension Store {
             if let prepared = draft.preparedWorkspace {
                 workspace = prepared
             } else {
-                workspace = try await workspaceClient.prepare(
-                    directory: URL(fileURLWithPath: project.directoryPath, isDirectory: true),
-                    mode: draft.workspaceMode, baseRef: draft.baseRef)
+                if let project {
+                    workspace = try await workspaceClient.prepare(
+                        directory: URL(fileURLWithPath: project.directoryPath, isDirectory: true),
+                        mode: draft.workspaceMode, baseRef: draft.baseRef)
+                } else {
+                    workspace = try await workspaceClient.prepareTemporaryDirectory()
+                }
                 newConversationDraft.value.preparedWorkspace = workspace
                 await newConversationDraft.flush()
                 if let error = newConversationDraft.error { throw ConversationRuntimeError(message: error) }
             }
 
-            let context = CreatedConversationCatalog.Context(projectID: project.id, projectName: project.name, workspace: workspace)
+            let context = CreatedConversationCatalog.Context(projectID: project?.id, projectName: project?.name ?? "No project", workspace: workspace)
             let conversation = try await createConversation(
                 .init(provider: draft.provider, workingDirectory: workspace.workingDirectory),
                 context: context, initialText: draft.text, navigate: false)

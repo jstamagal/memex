@@ -28,7 +28,7 @@ struct MemexApp: App {
                     Button("Browser") { delegate.store.showWorkspaceBrowser() }
                         .keyboardShortcut("b", modifiers: [.command, .shift])
                         .disabled(delegate.store.selected == nil)
-                    Button("Set Up Projects…") { delegate.store.showingProjectSetup = true }
+                    Button("Add New Project") { delegate.store.addNewProject() }
                 }
             }
     }
@@ -67,8 +67,7 @@ struct MemexApp: App {
             window.minSize = NSSize(width: 900, height: 560)
             window.isReleasedWhenClosed = false
             let content = BrowserContent(store: store)
-            window.contentViewController = BrowserColumnsController(store: store, sidebar: content.sidebar,
-                conversations: content.conversations, reader: content.reader)
+            window.contentViewController = BrowserColumnsController(store: store, sidebar: content.sidebar, reader: content.reader)
             // Installing a native content controller adopts its fitting size.
             // Restore the intended initial browser size before frame autosave.
             window.setContentSize(NSSize(width: 1380, height: 900))
@@ -92,7 +91,6 @@ struct MemexApp: App {
 @MainActor struct BrowserContent {
     let store: Store
     var sidebar: some View { BrowserSidebar(store: store) }
-    var conversations: some View { BrowserConversationList(store: store) }
     var reader: some View { BrowserReader(store: store) }
 }
 
@@ -125,172 +123,6 @@ private struct BrowserReader: View {
         .task(id: store.machineRequestID) { await store.loadProjects() }
         .onChange(of: store.scope) { _, _ in store.sessionLimit = 200 }
         .onChange(of: store.machineSelection) { _, _ in store.sessionLimit = 200 }
-    }
-}
-
-private struct BrowserSidebar: View {
-    @Bindable var store: Store
-
-    var body: some View { sidebar }
-
-    private var sidebar: some View {
-        VStack(spacing: 0) {
-            Group {
-                if #available(macOS 26.0, *) {
-                    sidebarList
-                        .scrollEdgeEffectStyle(.soft, for: .top)
-                } else {
-                    sidebarList
-                }
-            }
-            Divider()
-            machinePicker
-        }
-        // The material must continue beneath the native titlebar as well as
-        // the list and footer, otherwise its safe-area edge makes a color seam.
-        .background(SidebarBackground().ignoresSafeArea())
-    }
-
-    private var machinePicker: some View {
-        HStack(spacing: 6) {
-            Picker("Machines", selection: $store.machineSelection) {
-                Text("All Machines").tag(MachineSelection.all)
-                ForEach(store.machines) { machine in
-                    Text(machine.label).tag(MachineSelection.machine(machine.id))
-                }
-            }
-            .labelsHidden().pickerStyle(.menu)
-            .buttonStyle(.borderless)
-            .frame(maxWidth: .infinity)
-            .accessibilityLabel("Machines")
-            if store.loadingMachines { ProgressView().controlSize(.mini) }
-            if let error = store.machineError {
-                Button { Task { await store.loadMachines() } } label: {
-                    Image(systemName: "exclamationmark.triangle")
-                }
-                .buttonStyle(.plain).help(error)
-                .accessibilityLabel("Retry loading machines")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var sidebarList: some View {
-        List(selection: $store.scope) {
-            Section {
-                Label("Home", systemImage: "house")
-                    .tag(Store.Scope.home)
-                Label("All conversations", systemImage: "bubble.left.and.bubble.right")
-                    .tag(Store.Scope.all)
-            }
-            if !store.localProjects.projects.isEmpty {
-                Section("Saved projects") {
-                    ForEach(store.localProjects.projects) { project in
-                        Button { store.beginNewConversation(project: project) } label: {
-                            Label(project.name, systemImage: "folder").lineLimit(1)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Start a conversation in \(project.directoryPath)")
-                        .contextMenu {
-                            Button("New conversation") { store.beginNewConversation(project: project) }
-                            Button("Manage projects…") { store.showingProjectSetup = true }
-                        }
-                    }
-                }
-            }
-            Section {
-                ForEach(store.projects) { project in
-                    HStack {
-                        Label(project.project, systemImage: "folder").lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text(project.sessionCount, format: .number)
-                            .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                    }
-                    .tag(Store.Scope.project(project.project))
-                    .help("\(project.project): \(project.sessionCount) conversations across all time, excluding permission reviews")
-                }
-            } header: {
-                HStack {
-                    Text("Projects")
-                    Spacer()
-                    if store.loadingProjects { ProgressView().controlSize(.mini) }
-                    if let error = store.projectsError {
-                        Button { Task { await store.loadProjects() } } label: {
-                            Image(systemName: "exclamationmark.triangle")
-                        }
-                        .buttonStyle(.plain).help(error)
-                        .accessibilityLabel("Retry loading projects")
-                    }
-                    Menu {
-                        Button("Set up projects…") { store.showingProjectSetup = true }
-                        Divider()
-                        Picker("Sort by", selection: Binding(get: { store.projectSort }, set: { store.setProjectSort($0) })) {
-                            ForEach(ProjectSort.allCases, id: \.self) { sort in
-                                Text(sort.title).tag(sort)
-                            }
-                        }
-                        .pickerStyle(.inline)
-                        Divider()
-                        Button("Refresh projects") { Task { await store.loadProjects() } }
-                            .disabled(store.loadingProjects)
-                    } label: {
-                        Image(systemName: "ellipsis")
-                    }
-                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .padding(.trailing, 8)
-                    .help("Sort projects").accessibilityLabel("Sort projects")
-                }
-            }
-
-        }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
-    }
-
-}
-
-private struct SidebarBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
-}
-
-private struct BrowserConversationList: View {
-    @Bindable var store: Store
-
-    var body: some View {
-        VStack(spacing: 0) {
-            if let error = store.listError {
-                ErrorBanner(message: error) { Task { await store.loadSessions() } }
-            }
-            NativeConversationList(sessions: store.sessions, selectedID: store.selectedID,
-                states: Dictionary(uniqueKeysWithValues: store.sessions.map { ($0.id, store.liveConversations.listState(for: $0)) }),
-                projectNames: store.conversationProjectNames,
-                query: store.query,
-                select: { store.selectedID = $0 },
-                loadMore: { store.loadMoreSessionsIfNeeded(visibleID: $0) })
-            .overlay {
-                if store.sessions.isEmpty && !store.loadingSessions && store.listError == nil {
-                    ContentUnavailableView {
-                        Label(store.filters.isActive ? "No matching conversations" : (store.query.isEmpty ? "No conversations yet" : "No matches"),
-                              systemImage: "bubble.left.and.bubble.right")
-                    } description: {
-                        Text(store.filters.isActive ? "Try another timeframe, provider, or conversation type." :
-                             (store.query.isEmpty ? "Run memex index to index your local history, then refresh." : "Try different words or another project."))
-                    } actions: {
-                        if store.filters.isActive { Button("Reset Filters") { store.filters = .defaults } }
-                    }
-                }
-            }
-
-        }
     }
 }
 

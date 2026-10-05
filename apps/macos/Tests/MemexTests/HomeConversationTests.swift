@@ -172,4 +172,145 @@ private actor HomeConversationRuntime: ConversationRuntime {
         #expect(corrupt.error != nil)
         #expect(try Data(contentsOf: homeRoot) == Data("blocking file".utf8))
     }
+
+    @Test func projectlessRetryAfterRelaunchReusesSavedFolderAndIgnoresBrokenProjectCatalog() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let projectRoot = root.appendingPathComponent("projects")
+        try FileManager.default.createDirectory(at: projectRoot, withIntermediateDirectories: true)
+        let corrupt = Data("corrupt project catalog".utf8)
+        try corrupt.write(to: projectRoot.appendingPathComponent("projects.json"))
+        let projects = LocalProjects(directory: projectRoot)
+        #expect(projects.error != nil)
+        let homeRoot = root.appendingPathComponent("home")
+        let home = NewConversationDraft(directory: homeRoot)
+        home.selectNoProject()
+        home.value.text = "Work without a saved project"
+        let runtime = HomeConversationRuntime()
+        await runtime.failNextCreation()
+        let client = ConversationWorkspaceClient(temporaryRoot: root.appendingPathComponent("chat-folders"))
+        let store = Store(localProjects: projects, newConversationDraft: home, workspaceClient: client,
+            makeConversation: { request in
+                // The provider is never called before the folder identity reaches disk.
+                let saved = await MainActor.run { NewConversationDraft(directory: homeRoot).value }
+                #expect(saved.preparedWorkspace?.workingDirectory == request.workingDirectory)
+                return try await runtime.create(request)
+            })
+        #expect(store.canStartConversation)
+        await store.startConversationFromHome()
+        #expect(store.newConversationError != nil)
+        let prepared = try #require(home.value.preparedWorkspace)
+        try Data("user file".utf8).write(to: prepared.workingDirectory.appendingPathComponent("retained.txt"))
+        let reopenedHome = NewConversationDraft(directory: homeRoot)
+        #expect(reopenedHome.value.projectID == nil)
+        #expect(reopenedHome.value.preparedWorkspace == prepared)
+        let catalogRoot = root.appendingPathComponent("catalog")
+        let reopened = Store(createdConversations: CreatedConversationCatalog(directory: catalogRoot),
+            localProjects: projects, newConversationDraft: reopenedHome, workspaceClient: client,
+            makeConversation: { try await runtime.create($0) })
+        async let first: Void = reopened.startConversationFromHome()
+        async let second: Void = reopened.startConversationFromHome()
+        _ = await (first, second)
+        #expect(await runtime.creations == [prepared.workingDirectory, prepared.workingDirectory])
+        #expect(await runtime.prompts == ["Work without a saved project"])
+        let session = try #require(reopened.selected)
+        let context = try #require(CreatedConversationCatalog(directory: catalogRoot).contexts[session.id])
+        #expect(context.projectID == nil && context.projectName == "No project")
+        #expect(context.workspace == prepared)
+        #expect(reopened.projectName(for: session) == "No project")
+        #expect(session.project == prepared.workingDirectory.lastPathComponent)
+        #expect(session.cwd == prepared.workingDirectory.path)
+        #expect(try String(contentsOf: prepared.workingDirectory.appendingPathComponent("retained.txt"), encoding: .utf8) == "user file")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: client.temporaryRoot.path).count == 1)
+        #expect(try Data(contentsOf: projectRoot.appendingPathComponent("projects.json")) == corrupt)
+        await reopened.liveConversations.disconnectAll()
+    }
+
+    @Test func missingProjectDoesNotBecomeProjectlessAndSelectionProtectsRecovery() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let draft = NewConversationDraft()
+        draft.value.projectID = "removed-project"
+        draft.value.text = "Retained request"
+        draft.value.workspaceMode = .newWorktree
+        draft.value.baseRef = "trunk"
+        let runtime = HomeConversationRuntime()
+        let client = ConversationWorkspaceClient(temporaryRoot: root.appendingPathComponent("chats"))
+        let prepared = try await client.prepareTemporaryDirectory()
+        draft.value.preparedWorkspace = prepared
+        let store = Store(newConversationDraft: draft, workspaceClient: client, makeConversation: { try await runtime.create($0) })
+        #expect(!store.canStartConversation)
+        await store.startConversationFromHome()
+        #expect(await runtime.creations.isEmpty)
+        draft.value.createdSessionID = "already-created"
+        let recovery = draft.value
+        draft.selectNoProject()
+        #expect(draft.value == recovery)
+        draft.value.createdSessionID = nil
+        draft.selectNoProject()
+        #expect(draft.value.projectID == nil)
+        #expect(draft.value.workspaceMode == .existingDirectory)
+        #expect(draft.value.baseRef == nil && draft.value.preparedWorkspace == nil)
+        #expect(draft.value.text == "Retained request")
+        #expect(store.canStartConversation)
+        draft.selectWorkspace(.newWorktree, baseRef: "trunk")
+        #expect(draft.value.workspaceMode == .existingDirectory)
+        #expect(FileManager.default.fileExists(atPath: prepared.workingDirectory.path))
+    }
+
+    @Test func existingSavedProjectContextAndDraftRemainReadable() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let workspace = try await ConversationWorkspaceClient().prepare(directory: root, mode: .existingDirectory)
+        let encodedWorkspace = try JSONSerialization.jsonObject(with: JSONEncoder().encode(workspace))
+        let catalog: [String: Any] = ["version": 1, "sessions": [], "contexts": ["legacy-session": [
+            "projectID": "existing-project", "projectName": "Existing project", "workspace": encodedWorkspace]]]
+        try JSONSerialization.data(withJSONObject: catalog).write(to: root.appendingPathComponent("conversations.json"))
+        let reopened = CreatedConversationCatalog(directory: root)
+        #expect(reopened.error == nil)
+        #expect(reopened.contexts["legacy-session"]?.projectID == "existing-project")
+        #expect(reopened.contexts["legacy-session"]?.workspace == workspace)
+        let draft: [String: Any] = ["version": 1, "value": ["text": "Existing request", "provider": "codex",
+            "projectID": "existing-project", "workspaceMode": "existingDirectory", "preparedWorkspace": encodedWorkspace]]
+        try JSONSerialization.data(withJSONObject: draft).write(to: root.appendingPathComponent("new-conversation.json"))
+        let restored = NewConversationDraft(directory: root)
+        #expect(restored.error == nil)
+        #expect(restored.value.projectID == "existing-project")
+        #expect(restored.value.preparedWorkspace == workspace)
+    }
+
+    @Test func projectlessCreatedSessionRecoveryKeepsFolderAndNeverResends() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let homeRoot = root.appendingPathComponent("home")
+        let home = NewConversationDraft(directory: homeRoot)
+        home.value.text = "Retain my projectless request"
+        let draftsRoot = root.appendingPathComponent("drafts")
+        let drafts = ConversationDraftStore(directory: draftsRoot)
+        try Data("blocking file".utf8).write(to: draftsRoot)
+        let runtime = HomeConversationRuntime()
+        let client = ConversationWorkspaceClient(temporaryRoot: root.appendingPathComponent("chats"))
+        let store = Store(draftStore: drafts, newConversationDraft: home, workspaceClient: client,
+            makeConversation: { try await runtime.create($0) })
+        await store.startConversationFromHome()
+        let created = try #require(home.value.createdSessionID)
+        let workspace = try #require(home.value.preparedWorkspace)
+        #expect(NewConversationDraft(directory: homeRoot).value.createdSessionID == created)
+        #expect(await runtime.creations.count == 1)
+        #expect(await runtime.prompts.isEmpty)
+        home.selectNoProject()
+        #expect(home.value.preparedWorkspace == workspace)
+        #expect(home.value.createdSessionID == created)
+        await store.startConversationFromHome()
+        #expect(await runtime.creations.count == 1)
+        try FileManager.default.removeItem(at: draftsRoot)
+        await store.openCreatedConversationFromHome()
+        #expect(store.newConversationError == nil)
+        #expect(store.selected?.id == created)
+        #expect(store.selectedLiveConversation?.draft == "Retain my projectless request")
+        #expect(await runtime.prompts.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: workspace.workingDirectory.path))
+        #expect(store.createdConversations.contexts[created]?.workspace == workspace)
+        await store.liveConversations.disconnectAll()
+    }
 }

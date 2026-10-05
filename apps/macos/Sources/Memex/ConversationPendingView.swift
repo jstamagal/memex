@@ -33,7 +33,7 @@ struct ConversationPendingView: View {
                         }
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10))
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
                 }
             }
             #if canImport(SQACPUI)
@@ -41,7 +41,8 @@ struct ConversationPendingView: View {
                 AcpShimmerText("Thinking…", font: .system(size: 12))
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Agent is working")
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.regularMaterial, in: Capsule())
             }
             #endif
         }

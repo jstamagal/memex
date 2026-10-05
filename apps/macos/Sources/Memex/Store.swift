@@ -32,6 +32,10 @@ final class Store {
     var loadingMachines = false
     var findConversationRequest = 0
     var showingProjectSetup = false
+    var addingProject = false
+    var sidebarMode: SidebarMode = .projects {
+        didSet { filterPreferences?.set(sidebarMode.rawValue, forKey: "sidebar-mode") }
+    }
     var startingConversation = false
     var newConversationError: String?
     var showingWorkspaceChanges = false
@@ -130,6 +134,9 @@ final class Store {
         self.client = client
         self.projectCatalog = projectCatalog ?? ProjectCatalog(client: client)
         self.filterPreferences = filterPreferences
+        if let value = filterPreferences?.string(forKey: "sidebar-mode"), let mode = SidebarMode(rawValue: value) {
+            sidebarMode = mode
+        }
         if let data = filterPreferences?.data(forKey: Self.filterPreferencesKey),
            let saved = try? JSONDecoder().decode(ConversationFilters.self, from: data) { filters = saved }
     }
@@ -140,6 +147,21 @@ final class Store {
             switch self { case .home: "Home"; case .all: "All conversations"; case .project(let value): value }
         }
         var project: String? { if case .project(let value) = self { value } else { nil } }
+    }
+
+    enum SidebarMode: String, CaseIterable {
+        case projects, recent
+        var title: String { self == .projects ? "Group by project" : "Most recent chats" }
+    }
+
+    func addNewProject() {
+        addingProject = true
+        showingProjectSetup = true
+    }
+
+    func manageProjects() {
+        addingProject = false
+        showingProjectSetup = true
     }
 
     enum WorkspacePanel: String, CaseIterable, Identifiable {

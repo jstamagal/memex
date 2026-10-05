@@ -3,23 +3,20 @@ import Observation
 import SwiftUI
 
 /// One native controller owns both the real column dividers and their toolbar.
-@MainActor final class BrowserColumnsController<Sidebar: View, Conversations: View, Reader: View>: NSSplitViewController {
+@MainActor final class BrowserColumnsController<Sidebar: View, Reader: View>: NSSplitViewController {
     let sidebarHost: NSHostingController<Sidebar>
-    let conversationsHost: NSHostingController<Conversations>
     let readerHost: NSHostingController<Reader>
     let store: Store
     var browserToolbar: BrowserToolbarController?
 
-    init(store: Store, sidebar: Sidebar, conversations: Conversations, reader: Reader) {
+    init(store: Store, sidebar: Sidebar, reader: Reader) {
         self.store = store
         sidebarHost = NSHostingController(rootView: sidebar)
-        conversationsHost = NSHostingController(rootView: conversations)
         readerHost = NSHostingController(rootView: reader)
         super.init(nibName: nil, bundle: nil)
         // The split items and window own sizing. A child's temporary empty
         // state must not impose its preferred or maximum size on the window.
         sidebarHost.sizingOptions = []
-        conversationsHost.sizingOptions = []
         readerHost.sizingOptions = []
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -27,22 +24,15 @@ import SwiftUI
         super.viewDidLoad()
         splitView.isVertical = true
         splitView.dividerStyle = .thin
-        splitView.autosaveName = "MemexBrowserColumns"
+        splitView.autosaveName = "MemexSidebarReaderColumns"
         let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarHost)
-        sidebar.minimumThickness = 180
-        sidebar.maximumThickness = 290
+        sidebar.minimumThickness = 260
+        sidebar.maximumThickness = 420
         sidebar.canCollapse = true
-        let conversations = NSSplitViewItem(viewController: conversationsHost)
-        conversations.minimumThickness = 260
-        conversations.maximumThickness = 450
-        conversations.holdingPriority = .defaultHigh
-        conversations.canCollapse = true
         let reader = NSSplitViewItem(viewController: readerHost)
         reader.minimumThickness = 400
         addSplitViewItem(sidebar)
-        addSplitViewItem(conversations)
         addSplitViewItem(reader)
-        conversations.isCollapsed = store.scope == .home
     }
     override func viewDidAppear() {
         super.viewDidAppear()
@@ -77,7 +67,6 @@ import SwiftUI
     private(set) var filterPopover: NSPopover?
 
     static let sidebarBoundary = NSToolbarItem.Identifier("MemexSidebarBoundary")
-    static let readerBoundary = NSToolbarItem.Identifier("MemexReaderBoundary")
     static let title = NSToolbarItem.Identifier("MemexConversationTitle")
     static let filters = NSToolbarItem.Identifier("MemexFilters")
     static let refresh = NSToolbarItem.Identifier("MemexRefresh")
@@ -123,8 +112,8 @@ import SwiftUI
         if store.scope == .home {
             return [.toggleSidebar, Self.sidebarBoundary, Self.newConversation, .flexibleSpace]
         }
-        return [.toggleSidebar, Self.sidebarBoundary, Self.title, .flexibleSpace, Self.filters,
-         Self.readerBoundary, Self.newConversation, Self.refresh, Self.find,
+        return [.toggleSidebar, .flexibleSpace, Self.filters,
+         Self.sidebarBoundary, Self.title, Self.newConversation, Self.refresh, Self.find,
          .flexibleSpace, Self.search, Self.resume, Self.more, Self.workspaceChanges]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -135,8 +124,6 @@ import SwiftUI
         switch id {
         case Self.sidebarBoundary:
             return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 0)
-        case Self.readerBoundary:
-            return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 1)
         case Self.title:
             let item = NSToolbarItem(itemIdentifier: id)
             let title = NSHostingView(rootView: ConversationToolbarTitle(store: store))
@@ -210,12 +197,6 @@ import SwiftUI
         return item
     }
     func update() {
-        if let columns = splitView.delegate as? NSSplitViewController, columns.splitViewItems.count == 3 {
-            let collapsed = store.scope == .home
-            if columns.splitViewItems[1].isCollapsed != collapsed {
-                columns.splitViewItems[1].isCollapsed = collapsed
-            }
-        }
         let identifiers = toolbarDefaultItemIdentifiers(toolbar)
         if toolbar.items.map(\.itemIdentifier) != identifiers {
             filterPopover?.performClose(nil)
@@ -287,7 +268,7 @@ private struct ConversationToolbarTitle: View {
     @Bindable var store: Store
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(store.scope.title).font(.headline).lineLimit(1)
+            Text(store.scope == .home ? "Home" : "Chats").font(.headline).lineLimit(1)
             if store.scope != .home {
                 Text(store.sessionCountLabel)
                     .font(.subheadline).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
@@ -295,6 +276,6 @@ private struct ConversationToolbarTitle: View {
                     .help(store.sessionCountHelp)
             }
         }
-        .frame(minWidth: 70, idealWidth: 190, maxWidth: 240, alignment: .leading)
+        .frame(minWidth: 70, idealWidth: 110, maxWidth: 150, alignment: .leading)
     }
 }

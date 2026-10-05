@@ -11,19 +11,20 @@ struct ConversationComposer: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if conversation.isOpenElsewhere {
-                Label("Close this conversation in the other Codex app or CLI to continue here.", systemImage: "lock")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
             if let error = conversation.draftSaveError {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                    .padding(6).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
             if let error = conversation.attachmentError {
                 Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                    .padding(6).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
             AcpComposerView(
-                text: $conversation.draft,
-                placeholder: "Ask the agent…",
+                // Keep any saved draft intact while the ownership notice occupies the disabled field.
+                text: conversation.isOpenElsewhere ? .constant("") : $conversation.draft,
+                placeholder: conversation.isOpenElsewhere
+                    ? "Close this conversation in the other Codex app or CLI to continue here."
+                    : "Ask the agent…",
                 isRunning: conversation.isWorking,
                 canSend: conversation.canSubmit && conversation.hasPrompt,
                 focusRequestID: conversation.focusRequest,
@@ -65,6 +66,7 @@ struct ConversationComposer: View {
                 sendButton: { AcpSendButton().accessibilityLabel("Send") },
                 cancelButton: { AcpStopButton().accessibilityLabel("Stop") }
             )
+            .disabled(conversation.isOpenElsewhere)
         }
         .frame(maxWidth: ConversationReadingLane.maximumWidth)
         .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)

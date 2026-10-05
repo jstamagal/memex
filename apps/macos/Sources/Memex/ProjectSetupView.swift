@@ -15,7 +15,7 @@ struct ProjectSetupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
-                Text("Projects").font(.title2.weight(.semibold))
+                Text(store.addingProject ? "Add New Project" : "Projects").font(.title2.weight(.semibold))
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
@@ -81,7 +81,13 @@ struct ProjectSetupView: View {
             }
         }
         .padding(24).frame(width: 680)
-        .onAppear { selectedID = store.newConversationProject?.id ?? store.localProjects.projects.first?.id; loadSelection() }
+        .task {
+            if store.addingProject { await chooseFolder(adding: true) }
+            else {
+                selectedID = store.newConversationProject?.id ?? store.localProjects.projects.first?.id
+                loadSelection()
+            }
+        }
         .onChange(of: selectedID) { _, _ in loadSelection() }
         .task(id: directory?.path) { await inspectDirectory() }
     }
@@ -146,6 +152,7 @@ struct ProjectSetupView: View {
             store.newConversationDraft.selectProject(project, resetWorkspace: true)
             selectedID = project.id
             error = nil
+            if store.addingProject { dismiss() }
         } catch { self.error = error.localizedDescription }
     }
 
@@ -155,8 +162,7 @@ struct ProjectSetupView: View {
             try store.localProjects.remove(id: selectedID)
             if store.newConversationDraft.value.projectID == selectedID,
                store.newConversationDraft.value.createdSessionID == nil {
-                store.newConversationDraft.value.projectID = nil
-                store.newConversationDraft.value.preparedWorkspace = nil
+                store.newConversationDraft.selectNoProject()
             }
             self.selectedID = nil
             directory = nil
