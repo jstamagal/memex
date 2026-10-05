@@ -92,7 +92,8 @@ struct WorkspaceTerminalTests {
         try await waitUntil { other.isStarted }
         let secondPID = temp.appendingPathComponent("second-pid")
         let otherView = try #require(other.terminalView)
-        #expect(otherView.paste(text: "sleep 60 & MEMEX_BG_PID=$!; printf '%s\\n' \"$$\" \"$MEMEX_BG_PID\" > '\(secondPID.path)'"))
+        // Interactive Bash reads !; as history expansion; whitespace keeps $! literal.
+        #expect(otherView.paste(text: "sleep 60 & MEMEX_BG_PID=$! ; printf '%s\\n' \"$$\" \"$MEMEX_BG_PID\" > '\(secondPID.path)'"))
         #expect(otherView.sendKey(.enter))
         try await waitUntil(diagnostics: { other.captureHistory() }) {
             FileManager.default.fileExists(atPath: secondPID.path)
