@@ -96,6 +96,17 @@ struct ConversationWorkspaceClient: Sendable {
             let directory = try LocalProjects.validatedDirectory(directory)
             let repository = try Self.repository(directory, command: command)
             if mode == .existingDirectory {
+                if let root = repository?.root,
+                   root.path.hasPrefix(managedRoot.standardizedFileURL.resolvingSymlinksInPath().path + "/") {
+                    let manifest = root.deletingLastPathComponent().appendingPathComponent("workspace.json")
+                    if let workspace = try? JSONDecoder().decode(ConversationWorkspace.self, from: Data(contentsOf: manifest)),
+                       workspace.state == .ready, workspace.workingDirectory == directory,
+                       workspace.worktreeRoot == root, workspace.metadataURL == manifest,
+                       UUID(uuidString: workspace.id) != nil,
+                       root.deletingLastPathComponent().lastPathComponent == workspace.id {
+                        return workspace
+                    }
+                }
                 return ConversationWorkspace(id: UUID().uuidString, workingDirectory: directory,
                     sourceDirectory: directory,
                     repositoryRoot: repository?.root, baseRef: nil, baseCommit: nil,

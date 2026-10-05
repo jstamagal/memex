@@ -5,15 +5,16 @@ struct WorkspaceTerminalSurface: NSViewRepresentable {
     let session: WorkspaceTerminalSession
     let isActive: Bool
     let focusRequest: Int
+    var wantsFocus = true
 
     func makeNSView(context: Context) -> WorkspaceTerminalHost {
         let host = WorkspaceTerminalHost()
-        host.update(session: session, isActive: isActive, focusRequest: focusRequest)
+        host.update(session: session, isActive: isActive, focusRequest: focusRequest, wantsFocus: wantsFocus)
         return host
     }
 
     func updateNSView(_ host: WorkspaceTerminalHost, context: Context) {
-        host.update(session: session, isActive: isActive, focusRequest: focusRequest)
+        host.update(session: session, isActive: isActive, focusRequest: focusRequest, wantsFocus: wantsFocus)
     }
 
     static func dismantleNSView(_ host: WorkspaceTerminalHost, coordinator: ()) { host.detach() }
@@ -25,16 +26,19 @@ final class WorkspaceTerminalHost: NSView {
     private var isActive = false
     private var focusRequest: Int?
     private var pendingFocus = false
+    private var wantsFocus = true
 
-    func update(session: WorkspaceTerminalSession, isActive: Bool, focusRequest: Int) {
+    func update(session: WorkspaceTerminalSession, isActive: Bool, focusRequest: Int, wantsFocus: Bool = true) {
         if self.session !== session {
             detach()
             self.session = session
             self.focusRequest = nil
         }
         self.isActive = isActive
+        if wantsFocus && !self.wantsFocus { pendingFocus = isActive }
+        self.wantsFocus = wantsFocus
         if self.focusRequest != focusRequest {
-            pendingFocus = isActive
+            pendingFocus = isActive && wantsFocus
             self.focusRequest = focusRequest
         }
         refresh()
@@ -55,7 +59,7 @@ final class WorkspaceTerminalHost: NSView {
             terminal.frame = bounds
             terminal.autoresizingMask = [.width, .height]
             addSubview(terminal)
-            pendingFocus = true
+            pendingFocus = wantsFocus
         }
         terminal.isHidden = false
         terminal.setSurfaceVisible(true)

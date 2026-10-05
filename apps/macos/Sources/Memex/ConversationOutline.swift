@@ -16,6 +16,15 @@ struct ConversationPrompt: Identifiable, Equatable {
     private var token = UUID()
     private var recordOffsets: [String: Int] = [:]
 
+    func load(records: [TranscriptRecord]) {
+        token = UUID()
+        scanning = false
+        error = nil
+        recordOffsets = Dictionary(records.enumerated().map { ($0.element.id, $0.offset) }, uniquingKeysWith: { first, _ in first })
+        prompts = Self.entries(records, offset: 0)
+        if let selectedID, !prompts.contains(where: { $0.id == selectedID }) { self.selectedID = nil }
+    }
+
     func load(session: Session?, client: MemexClient) async {
         let token = UUID()
         self.token = token

@@ -26,6 +26,7 @@ enum ConversationMatcher {
     }
 
     static func body(_ record: TranscriptRecord) -> String {
+        if record.isRawOnly { return record.rawTranscriptBody }
         if record.record.isActivity || record.record.isInstruction {
             return TranscriptActivity(records: [record]).body
         }

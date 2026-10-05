@@ -27,7 +27,8 @@ final class CommandRun: @unchecked Sendable {
         lock.unlock()
     }
 
-    func execute(executable: URL, arguments: [String], timeout: TimeInterval, progress: ActivityProgressHandler? = nil) throws -> Data {
+    func execute(executable: URL, arguments: [String], timeout: TimeInterval, progress: ActivityProgressHandler? = nil,
+                 inputFile: URL? = nil) throws -> Data {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -45,7 +46,9 @@ final class CommandRun: @unchecked Sendable {
         child.arguments = arguments
         child.standardOutput = output
         child.standardError = errors
-        child.standardInput = FileHandle.nullDevice
+        let input = try inputFile.map { try FileHandle(forReadingFrom: $0) }
+        defer { try? input?.close() }
+        child.standardInput = input ?? FileHandle.nullDevice
         lock.lock()
         if cancelled { lock.unlock(); throw CancellationError() }
         do { try child.run() } catch { lock.unlock(); throw error }

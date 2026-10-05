@@ -7,6 +7,12 @@ struct ReaderView: View {
     @State private var find: ConversationFindState?
     @State private var rawTranscript = false
     @State private var footerHeight: CGFloat = 0
+    @State private var outline = ConversationOutline()
+    @State private var outlineOpen = false
+    @State private var requestedRecordID: String?
+    @State private var requestGeneration = 0
+    @State private var contextError: String?
+    @State private var planBranch: PlanBranch?
     @FocusState private var findFocused: Bool
 
     var body: some View {
@@ -27,6 +33,16 @@ struct ReaderView: View {
                         Text(warning).font(.caption).foregroundStyle(.secondary).padding(8)
                     }
                     if let find, find.isOpen { findBar(find) }
+                    if let contextError {
+                        HStack {
+                            Text(contextError).font(.caption).foregroundStyle(.orange)
+                            Button("Dismiss") { self.contextError = nil }
+                        }.padding(8)
+                    }
+                    ConversationWorkView(state: ConversationWork.project(currentRecords),
+                                         conversation: store.selectedLiveConversation, session: session,
+                                         sessions: contextSessions, navigate: store.openConversation,
+                                         branchPlan: { planBranch = PlanBranch(source: session, plan: $0) })
                     ZStack(alignment: .bottom) {
                         transcript(session)
                         footer(session)
@@ -40,9 +56,21 @@ struct ReaderView: View {
             }
         }
         .onAppear { if find == nil { find = ConversationFindState(client: store.client) } }
+        .sheet(item: $planBranch) { branch in
+            ConversationContextBranchSheet(store: store, source: branch.source, plan: branch.plan)
+        }
         .onChange(of: store.selected, initial: true) { _, session in
+            requestedRecordID = nil
+            contextError = nil
             if let session { store.liveConversations.prepare(session) }
         }
+        .task(id: outlineOpen ? store.readerTranscriptKey : "") {
+            guard outlineOpen else { return }
+            if store.readerUsesLiveSnapshot { outline.load(records: currentRecords) }
+            else { await outline.load(session: store.selected, client: store.client) }
+            outline.follow(navigation.visibleRecordID)
+        }
+        .onChange(of: navigation.visibleRecordID) { _, id in outline.follow(id) }
         .task(id: store.selectedLiveConversation?.session.id) {
             guard let live = store.selectedLiveConversation else { return }
             while !Task.isCancelled {
@@ -60,6 +88,7 @@ struct ReaderView: View {
         .onChange(of: find?.query) { _, _ in search() }
         .onChange(of: store.selectedLiveConversation?.revision) { _, _ in
             if store.readerUsesLiveSnapshot { search() }
+            if outlineOpen && store.readerUsesLiveSnapshot { outline.load(records: currentRecords) }
             store.updateCreatedConversationTitle()
         }
         .task(id: find?.generation) {
@@ -68,6 +97,12 @@ struct ReaderView: View {
             else { await store.revealRecord(hit.recordID, offset: hit.recordOffset) }
         }
         .onDisappear { find?.reset() }
+    }
+
+    private struct PlanBranch: Identifiable {
+        let id = UUID()
+        let source: Session
+        let plan: ConversationWork.Plan
     }
 
     private func transcript(_ session: Session) -> some View {
@@ -79,7 +114,8 @@ struct ReaderView: View {
                                  onLoadEarlier: { live.loadEarlierRecords() },
                                  findQuery: find?.isOpen == true ? find?.query ?? "" : "",
                                  findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
-                                 rawTranscript: rawTranscript, isLocalHost: true, sourcePath: session.sourcePath,
+                                 rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session), sourcePath: session.sourcePath,
+                                 requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
                                  followLatest: true, bottomInset: footerHeight)
             } else {
                 NativeTranscript(sessionID: store.readerPositionKey,
@@ -92,8 +128,9 @@ struct ReaderView: View {
                                  onLoadEarlier: { Task { await store.loadEarlierRecords() } },
                                  findQuery: find?.isOpen == true ? find?.query ?? "" : "",
                                  findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
-                                 rawTranscript: rawTranscript, isLocalHost: session.machineID == "local",
-                                 sourcePath: session.sourcePath, bottomInset: footerHeight)
+                                 rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session),
+                                 sourcePath: session.sourcePath, requestedRecordID: requestedRecordID,
+                                 requestGeneration: requestGeneration, bottomInset: footerHeight)
                 if let error = store.readerError {
                     ErrorBanner(message: error) {
                         Task { await store.retryRecords() }
@@ -117,7 +154,7 @@ struct ReaderView: View {
             }
             if let live = store.selectedLiveConversation {
                 ConversationPendingView(conversation: live)
-                ConversationComposer(conversation: live)
+                ConversationComposer(conversation: live, contextSessions: contextSessions)
             } else if !InAppResumeTarget.isArchived(session) {
                 Label(InAppResumeTarget.unavailableReason(for: session)
                       ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
@@ -133,6 +170,58 @@ struct ReaderView: View {
     private func search() {
         if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot { find?.search(records: live.snapshot.records) }
         else { find?.search(in: store.selected) }
+    }
+
+    private var currentRecords: [TranscriptRecord] {
+        if store.readerUsesLiveSnapshot, let live = store.selectedLiveConversation { return live.snapshot.records }
+        return store.loadedReaderKey == store.readerPositionKey ? store.records : []
+    }
+
+    private var contextSessions: [Session] {
+        var known = Set<String>()
+        return (store.sessions + store.createdConversations.sessions).filter { known.insert($0.id).inserted }
+    }
+
+    private func reveal(_ prompt: ConversationPrompt) {
+        outline.selectedID = prompt.id
+        let sessionID = store.selected?.id
+        Task {
+            if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot { live.revealRecord(prompt.id) }
+            else { await store.revealRecord(prompt.id, offset: prompt.offset) }
+            guard store.selected?.id == sessionID else { return }
+            requestedRecordID = prompt.id
+            requestGeneration += 1
+        }
+    }
+
+    private var outlinePopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Conversation outline").font(.headline)
+                Spacer()
+                if outline.scanning { ProgressView().controlSize(.small) }
+                Button { if let prompt = outline.move(-1) { reveal(prompt) } } label: { Image(systemName: "chevron.up") }
+                    .help("Previous prompt").disabled(outline.prompts.isEmpty)
+                Button { if let prompt = outline.move(1) { reveal(prompt) } } label: { Image(systemName: "chevron.down") }
+                    .help("Next prompt").disabled(outline.prompts.isEmpty)
+            }
+            if let error = outline.error { Text(error).foregroundStyle(.orange) }
+            if outline.prompts.isEmpty && !outline.scanning { Text("No prompts in this conversation.").foregroundStyle(.secondary) }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(outline.prompts) { prompt in
+                            Button { reveal(prompt) } label: {
+                                Text(prompt.preview).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(6).background(outline.selectedID == prompt.id ? Color.accentColor.opacity(0.12) : Color.clear,
+                                                          in: RoundedRectangle(cornerRadius: 5))
+                            }.buttonStyle(.plain).id(prompt.id)
+                        }
+                    }
+                }
+                .onChange(of: outline.selectedID) { _, id in if let id { proxy.scrollTo(id) } }
+            }
+        }.font(.caption).padding(12).frame(width: 340, height: 340)
     }
 
     private func findBar(_ state: ConversationFindState) -> some View {
@@ -163,7 +252,22 @@ struct ReaderView: View {
 
     private func header(_ session: Session) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(session.title).font(.title2.weight(.semibold)).lineLimit(2)
+            ConversationHistoryActions(store: store, session: session)
+            HStack(alignment: .top) {
+                Text(session.title).font(.title2.weight(.semibold)).lineLimit(2)
+                Spacer()
+                if let live = store.selectedLiveConversation {
+                    Button {
+                        guard let record = currentRecords.first(where: { $0.id == navigation.visibleRecordID }) else { return }
+                        contextError = live.appendContext(title: "Transcript passage", text: ConversationMatcher.body(record),
+                                               source: "\(session.id)#\(record.sourceID)") ? nil
+                            : "The passage could not be attached. Check conversation access and the attachment limit."
+                    } label: { Image(systemName: "quote.bubble") }
+                    .disabled(navigation.visibleRecordID == nil).help("Add the visible passage to the composer")
+                }
+                Button { outlineOpen.toggle() } label: { Image(systemName: "list.bullet.indent") }
+                    .help("Conversation outline").popover(isPresented: $outlineOpen) { outlinePopover }
+            }.buttonStyle(.borderless)
             HStack(spacing: 8) {
                 Text(session.source)
                 Text("·")

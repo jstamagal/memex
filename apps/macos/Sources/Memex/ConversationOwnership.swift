@@ -1,28 +1,23 @@
-import Darwin
 import Foundation
+import MemexExecutionHostCore
 
 enum ConversationOwnership {
-    /// Codex holds an exclusive flock for each native writer. Probe the existing
-    /// file read-only: a stale lock file is not evidence of a running owner.
     static func isOpenElsewhere(_ session: Session) throws -> Bool {
-        guard session.source == "codex", session.machineID == "local",
-              let id = UUID(uuidString: session.sessionID) else { return false }
-        let home = try InAppResumeTarget.providerHome(
-            for: URL(fileURLWithPath: session.sourcePath).standardizedFileURL, provider: "codex")
-            .resolvingSymlinksInPath()
-        let lock = home.appendingPathComponent("thread-writer-locks")
-            .appendingPathComponent(id.uuidString.lowercased() + ".lock")
-        let descriptor = open(lock.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        guard descriptor >= 0 else {
-            if errno == ENOENT { return false }
-            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
-        }
-        defer { close(descriptor) }
-        if flock(descriptor, LOCK_SH | LOCK_NB) == 0 {
-            _ = flock(descriptor, LOCK_UN)
-            return false
-        }
-        if errno == EWOULDBLOCK { return true }
-        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        guard session.machineID == "local", ["codex", "claude"].contains(session.source) else { return false }
+        if session.source == "codex", UUID(uuidString: session.sessionID) == nil { return false }
+        let source = URL(fileURLWithPath: session.sourcePath).standardizedFileURL
+        let home = session.source == "codex"
+            ? try InAppResumeTarget.providerHome(for: source, provider: "codex")
+            : source.deletingLastPathComponent() // Claude's descriptor probe does not use a home path.
+        return try NativeConversationOwnership.isOpenElsewhere(provider: session.source,
+            nativeSessionID: session.sessionID, sourceURL: source, providerHome: home)
+    }
+
+    static func hasExternalWriter(at file: URL) throws -> Bool {
+        try NativeConversationOwnership.hasExternalWriter(at: file)
+    }
+
+    static func containsExternalWriter(_ output: String, excludingPID: Int32) -> Bool {
+        NativeConversationOwnership.containsExternalWriter(output, excludingPID: excludingPID)
     }
 }

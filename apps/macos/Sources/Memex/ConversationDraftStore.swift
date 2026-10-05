@@ -10,16 +10,21 @@ final class ConversationDraftStore {
         var deliveryUncertain = false
         var attachments: [ConversationAttachment] = []
         var pendingPrompt: ConversationPendingPrompt?
+        var queue: [ConversationQueuedPrompt] = []
+        var queueHeld = false
 
         init(text: String, deliveryUncertain: Bool = false, attachments: [ConversationAttachment] = [],
-             pendingPrompt: ConversationPendingPrompt? = nil) {
+             pendingPrompt: ConversationPendingPrompt? = nil,
+             queue: [ConversationQueuedPrompt] = [], queueHeld: Bool = false) {
             self.text = text
             self.deliveryUncertain = deliveryUncertain
             self.attachments = attachments
             self.pendingPrompt = pendingPrompt
+            self.queue = queue
+            self.queueHeld = queueHeld
         }
 
-        private enum CodingKeys: String, CodingKey { case text, deliveryUncertain, attachments, pendingPrompt }
+        private enum CodingKeys: String, CodingKey { case text, deliveryUncertain, attachments, pendingPrompt, queue, queueHeld }
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -27,6 +32,8 @@ final class ConversationDraftStore {
             deliveryUncertain = try values.decodeIfPresent(Bool.self, forKey: .deliveryUncertain) ?? false
             attachments = try values.decodeIfPresent([ConversationAttachment].self, forKey: .attachments) ?? []
             pendingPrompt = try values.decodeIfPresent(ConversationPendingPrompt.self, forKey: .pendingPrompt)
+            queue = try values.decodeIfPresent([ConversationQueuedPrompt].self, forKey: .queue) ?? []
+            queueHeld = try values.decodeIfPresent(Bool.self, forKey: .queueHeld) ?? false
         }
     }
 
@@ -63,7 +70,7 @@ final class ConversationDraftStore {
 
     func set(_ draft: Draft, for sessionID: String) {
         let value: Draft? = draft.text.isEmpty && draft.attachments.isEmpty && draft.pendingPrompt == nil
-            && !draft.deliveryUncertain ? nil : draft
+            && draft.queue.isEmpty && !draft.queueHeld && !draft.deliveryUncertain ? nil : draft
         guard drafts[sessionID] != value else { return }
         drafts[sessionID] = value
         persist()

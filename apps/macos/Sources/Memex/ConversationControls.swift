@@ -2,6 +2,12 @@ import Foundation
 
 /// UI-facing values keep history-only builds independent of the local runtime.
 struct ConversationControls: Equatable, Sendable {
+    struct SlashCommand: Identifiable, Equatable, Sendable {
+        let name: String
+        let description: String
+        let hint: String?
+        var id: String { name }
+    }
     struct Choice: Identifiable, Equatable, Sendable {
         let id: String
         let title: String
@@ -25,6 +31,7 @@ struct ConversationControls: Equatable, Sendable {
     var supportsFileContents = false
     var pendingChanges = false
     var appliesToNextTurn = false
+    var slashCommands: [SlashCommand] = []
 
     var modelTitle: String? { models.first { $0.id == selectedModelID }?.title ?? selectedModelID }
     var reasoning: Configuration? {
@@ -67,6 +74,7 @@ struct ConversationPendingPrompt: Codable, Equatable, Sendable {
     let text: String
     let attachments: [ConversationAttachment]
     var phase: Phase
+    var isSteer: Bool? = nil
 
     init(_ command: ConversationCommand) {
         commandID = command.id
@@ -74,5 +82,27 @@ struct ConversationPendingPrompt: Codable, Equatable, Sendable {
         text = command.text
         attachments = command.attachments
         phase = .preparing
+        isSteer = command.action == .steer
+    }
+}
+
+/// Undispatched local intent. Its identity becomes the provider command identity
+/// when dispatched, including after queue edits, reordering, or app relaunch.
+struct ConversationQueuedPrompt: Identifiable, Codable, Equatable, Sendable {
+    let id: String
+    let issuedAt: String
+    var text: String
+    var attachments: [ConversationAttachment]
+
+    init(_ command: ConversationCommand) {
+        id = command.id
+        issuedAt = command.issuedAt
+        text = command.text
+        attachments = command.attachments
+    }
+
+    func command(steer: Bool = false) -> ConversationCommand {
+        ConversationCommand(steer ? .steer : .prompt, text: text, attachments: attachments,
+                            id: id, issuedAt: issuedAt)
     }
 }

@@ -121,6 +121,56 @@ struct WorkspaceTerminalTests {
         #expect(!window.isVisible)
     }
 
+    @Test func independentShellsInOneWorkspaceKeepStateAndCaptureHistory() async throws {
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("memex-terminal-group-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        let store = WorkspaceTerminalStore()
+        defer { store.shutdown() }
+        let group = try await store.group(for: temp)
+        let first = group.selected
+        let second = group.add()
+        #expect(first !== second)
+        #expect(first.directory == second.directory)
+        #expect(group.selected === second)
+        #expect(try await store.group(for: temp) === group)
+        group.layout = .sideBySide
+        #expect(group.visible.count == 2)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 350),
+                              styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let host = WorkspaceTerminalHost(frame: window.contentLayoutRect)
+        window.contentView = host
+        host.update(session: first, isActive: true, focusRequest: 0)
+        try await waitUntil { first.isStarted }
+        let firstView = try #require(first.terminalView)
+        #expect(firstView.paste(text: "export MEMEX_SPLIT=first; printf 'FIRST_SHELL_CAPTURE\\n'"))
+        #expect(firstView.sendKey(.enter))
+        host.detach()
+        host.update(session: second, isActive: true, focusRequest: 1)
+        try await waitUntil { second.isStarted }
+        let secondView = try #require(second.terminalView)
+        let evidence = temp.appendingPathComponent("independence")
+        #expect(secondView.paste(text: "printf '%s' \"${MEMEX_SPLIT-unset}\" > '\(evidence.path)'"))
+        #expect(secondView.sendKey(.enter))
+        try await waitUntil { FileManager.default.fileExists(atPath: evidence.path) }
+        #expect(try String(contentsOf: evidence, encoding: .utf8) == "unset")
+        try await waitUntil { first.captureHistory().contains("FIRST_SHELL_CAPTURE") }
+        let saved = WorkspaceTerminalGroup(directory: temp, initial: first, historyDirectory: temp.appendingPathComponent("history"))
+        saved.saveHistory(from: first)
+        let reloaded = WorkspaceTerminalGroup(directory: temp, initial: WorkspaceTerminalSession(directory: temp),
+                                             historyDirectory: temp.appendingPathComponent("history"))
+        #expect(reloaded.savedHistory.contains("FIRST_SHELL_CAPTURE"))
+        #expect(!reloaded.selected.isStarted)
+        #expect(reloaded.selected.isExited)
+        #expect(reloaded.selected.id == first.id)
+        group.remove(first)
+        #expect(first.isExited)
+        #expect(!second.isExited)
+        #expect(second.terminalView === secondView)
+    }
+
     private func waitUntil(_ predicate: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }

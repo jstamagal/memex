@@ -19,7 +19,7 @@ struct HomeView: View {
                         .textFieldStyle(.plain).font(.title3)
                         .focused($searchFocused)
                         .onSubmit {
-                            if let first = store.sessions.first { store.openConversation(first) }
+                            if let first = store.librarySessions.first { store.openConversation(first) }
                         }
                     if !store.query.isEmpty {
                         Button { store.query = "" } label: { Image(systemName: "xmark.circle.fill") }
@@ -55,12 +55,12 @@ struct HomeView: View {
                     if let error = store.listError {
                         ErrorBanner(message: error) { Task { await store.loadSessions() } }
                     }
-                    if store.sessions.isEmpty && !store.loadingSessions {
+                    if store.librarySessions.isEmpty && !store.loadingSessions {
                         ContentUnavailableView("No conversations", systemImage: "bubble.left.and.bubble.right",
                             description: Text("Try another search or change your filters."))
                     }
                     LazyVStack(spacing: 0) {
-                        ForEach(store.sessions) { session in
+                        ForEach(store.librarySessions) { session in
                             Button { store.openConversation(session) } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(alignment: .firstTextBaseline) {

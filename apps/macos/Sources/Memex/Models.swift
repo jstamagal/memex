@@ -133,7 +133,8 @@ struct TranscriptRecord: Decodable, Identifiable, Equatable, Sendable {
                              ("tool_output", record.toolOutput), ("event_id", record.eventID),
                              ("parent_tool_use_id", record.parentToolUseID), ("source_turn_id", record.sourceTurnID),
                              ("assistant_phase", record.assistantPhase), ("lifecycle_event", record.lifecycleEvent),
-                             ("source_record_type", record.sourceRecordType)] {
+                             ("source_record_type", record.sourceRecordType), ("structured_activity", record.structuredActivity),
+                             ("activity_status", record.activityStatus), ("output_completeness", record.outputCompleteness)] {
             if let value { fields[key] = .string(value) }
         }
         if let content = record.sourceContent { fields["source_content"] = .string(content) }
@@ -156,6 +157,9 @@ struct Message: Decodable, Equatable, Sendable {
     var sourceRecordType: String? = nil
     var sourceContent: String? = nil
     var toolResultIsError: Bool? = nil
+    var structuredActivity: String? = nil
+    var activityStatus: String? = nil
+    var outputCompleteness: String? = nil
     // Display-only classification; source records and serialized content stay intact.
     var contextLabel: String? = nil
 
@@ -167,6 +171,8 @@ struct Message: Decodable, Equatable, Sendable {
         case lifecycleEvent = "lifecycle_event", sourceRecordType = "source_record_type"
         case sourceContent = "source_content"
         case toolResultIsError = "tool_result_is_error"
+        case structuredActivity = "structured_activity", activityStatus = "activity_status"
+        case outputCompleteness = "output_completeness"
     }
 
     var isActivity: Bool { ["tool_use", "tool_result", "tool", "reasoning"].contains(role) }

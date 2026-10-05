@@ -32,6 +32,7 @@ struct MemexApp: App {
                         .keyboardShortcut("j")
                         .disabled(delegate.store.selectedWorkspace == nil && !delegate.store.showingTerminalDrawer)
                     Button("Add New Project") { delegate.store.addNewProject() }
+                    Button("Execution Hosts and Schedules…") { delegate.store.showingExecutionHosts = true }
                 }
             }
     }
@@ -39,22 +40,32 @@ struct MemexApp: App {
 
 @MainActor final class MemexApplicationDelegate: NSObject, NSApplicationDelegate {
     let store = Store(filterPreferences: .standard, draftStore: .persistent(), createdConversations: .persistent(),
+                      conversationLibrary: .persistent(), conversationNotifications: ConversationNotifications(defaults: .standard),
+                      conversationRelationships: .persistent(), executionHosts: .shared,
                       localProjects: .persistent(), newConversationDraft: .persistent())
     private var browser: NSWindowController?
     private var terminating = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard !terminating else { return .terminateLater }
-        if store.workspaceTerminals.needsCloseConfirmation {
+        let endsTerminals = store.workspaceTerminals.needsCloseConfirmation
+        let activeConversations = store.liveConversations.workEndingOnQuit
+        if endsTerminals || !activeConversations.isEmpty {
             let alert = NSAlert()
             alert.messageText = "Quit Memex?"
-            alert.informativeText = "Quitting ends your workspace terminals and any processes running in them."
-            alert.addButton(withTitle: "Quit and End Terminals")
+            var effects: [String] = []
+            if endsTerminals { effects.append("Workspace terminals and their running processes will end.") }
+            if !activeConversations.isEmpty {
+                effects.append("\(activeConversations.count) active conversation(s) are owned by this app. Quitting disconnects their agents; drafts and queued messages remain saved.")
+            }
+            alert.informativeText = effects.joined(separator: "\n\n")
+            alert.addButton(withTitle: "Quit and End Active Work")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
         }
         terminating = true
         Task {
+            store.workspaceBrowserExecution.stop()
             store.workspaceTerminals.shutdown()
             await store.newConversationDraft.flush()
             await store.liveConversations.disconnectAll()
@@ -63,7 +74,23 @@ struct MemexApp: App {
         return .terminateLater
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) { showBrowser() }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let root = store.client.root.map { URL(fileURLWithPath: $0) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".memex")
+        do { try store.workspaceBrowserExecution.start(root: root, automation: store.workspaceBrowser.automation) }
+        catch { store.executionHostError = "Browser control is unavailable: \(error.localizedDescription)" }
+        store.conversationNotifications.activate()
+        store.conversationNotifications.isConversationVisible = { [weak self] id in
+            guard let self else { return false }
+            return NSApp.isActive && self.store.selectedID == id && self.store.scope != .home
+        }
+        store.conversationNotifications.openConversation = { [weak self] id in
+            guard let self else { return }
+            self.showBrowser()
+            self.store.openNotifiedConversation(id)
+        }
+        showBrowser()
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         showBrowser()
         return false
@@ -117,6 +144,12 @@ private struct BrowserReader: View {
             }
         }
         .sheet(isPresented: $store.showingProjectSetup) { ProjectSetupView(store: store) }
+        .sheet(isPresented: $store.showingExecutionHosts) {
+            VStack(spacing: 0) {
+                if let error = store.executionHostError { Text(error).foregroundStyle(.orange).padding() }
+                ExecutionHostConnectionsView(onOpen: store.openHostedConversation)
+            }
+        }
         .inspector(isPresented: $store.showingWorkspaceChanges) {
             if store.showingWorkspaceChanges, store.selected != nil, store.scope != .home {
                 WorkspacePanelView(store: store)

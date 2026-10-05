@@ -84,6 +84,29 @@ private actor HomeConversationRuntime: ConversationRuntime {
         await store.liveConversations.disconnectAll()
     }
 
+    @Test func openBlankDraftCreatesOnceWithoutSendingAndCanBeConfiguredBeforeFirstPrompt() async throws {
+        let root = try directory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = NewConversationDraft(directory: root.appendingPathComponent("home"))
+        let runtime = HomeConversationRuntime()
+        let store = Store(draftStore: ConversationDraftStore(directory: root.appendingPathComponent("drafts")),
+            createdConversations: CreatedConversationCatalog(directory: root.appendingPathComponent("catalog")),
+            newConversationDraft: home, makeConversation: { try await runtime.create($0) })
+        #expect(!store.canStartConversation)
+        #expect(store.canPrepareConversation)
+        await store.startConversationFromHome(sendImmediately: false, preferences: .init())
+        #expect(await runtime.creations.count == 1)
+        #expect(await runtime.prompts.isEmpty)
+        let session = try #require(store.selected)
+        let conversation = try #require(store.liveConversations.sessions[session.id])
+        #expect(conversation.canChangeSettings)
+        #expect(home.value.createdSessionID == nil)
+        conversation.draft = "Only the explicit send runs this"
+        await conversation.send()
+        #expect(await runtime.prompts == ["Only the explicit send runs this"])
+        await store.liveConversations.disconnectAll()
+    }
+
     @Test func providerFailureReusesPreparedWorktreeAndKeepsPrompt() async throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }

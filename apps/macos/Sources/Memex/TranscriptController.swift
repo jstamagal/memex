@@ -304,7 +304,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         updatingRows = true
         defer { updatingRows = wasUpdating }
         var opened = Set<String>()
-        if records.first(where: { $0.id == hit.recordID })?.record.isRoutineTurnBoundary == true {
+        if let record = records.first(where: { $0.id == hit.recordID }),
+           record.record.isRoutineTurnBoundary || record.isRawOnly {
             let id = "message:\(hit.recordID)"
             if expanded.insert(id).inserted { opened.insert(id) }
         }
@@ -683,7 +684,13 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 switch event {
                 case "task_complete": title = "Completed"; symbolName = "checkmark.circle"
                 case "turn_aborted": title = "Interrupted"; symbolName = "pause.circle"; hasFailure = true
+                case "turn_failed": title = "Turn failed"; symbolName = "exclamationmark.circle"; hasFailure = true
                 case "task_started": title = "Turn started"; symbolName = "clock"
+                case "context_compacted", "compact_boundary": title = "Context compacted"; symbolName = "arrow.down.right.and.arrow.up.left"
+                case "retry", "retrying": title = "Retrying"; symbolName = "arrow.clockwise"
+                case "handoff": title = "Handed off"; symbolName = "arrow.triangle.branch"
+                case "branch": title = "Conversation branch"; symbolName = "arrow.triangle.branch"
+                case "selection_change": title = "Conversation context changed"; symbolName = "arrow.triangle.branch"
                 default: title = entry.record.text; symbolName = "info.circle"
                 }
             } else {
@@ -694,7 +701,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         }
         let rawMessage: Bool
         if case .activity = row { rawMessage = rawTranscript || (rawTools.contains(row.id) && !isTool) }
-        else { rawMessage = rawTranscript || rawTools.contains(row.id) }
+        else { rawMessage = rawTranscript || rawTools.contains(row.id) || row.records.contains(where: \.isRawOnly) }
         if rawMessage { fullText = row.records.map { $0.rawTranscriptBody }.joined(separator: "\n\n") }
         let body = fullText
         let font: NSFont = isTool ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 14)
@@ -703,7 +710,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         let available = max(120, laneWidth - indent)
         let maximumContentWidth = isUser ? available * 0.77 : available
         var showsRaw = rawMessage || rawTools.contains(row.id)
-        let attachments = !showsRaw && !isTool ? row.records.flatMap { SourceContent.blocks($0.record) } : []
+        let attachments = !showsRaw && (!isTool || isExpanded) ? row.records.flatMap { SourceContent.blocks($0.record) } : []
+        let hasPartialOutput = isTool && isExpanded && row.records.contains { $0.record.outputCompleteness == "partial" }
         var textLayout: TranscriptTextLayout
         var renderedTool: NSAttributedString?
         if body.isEmpty { textLayout = TranscriptTextLayout(text: "", font: font) }
@@ -743,7 +751,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         let bodyWidth = contentWidth - (isUser || isDisclosure ? 24 : 0)
         var richLayout: RichContentLayout?
         let mayHaveRichBlocks = !PromptSections.hasOpeningSection(body) && (body.contains("```") || body.contains("~~~") || body.contains("![") || body.contains("](/") || body.contains("](file:"))
-        if !showsRaw && findQuery.isEmpty && (!attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
+        if !showsRaw && findQuery.isEmpty && (hasPartialOutput || !attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
             if let cached = richLayouts[row.id] { richLayout = cached }
             else {
                 let blocks: [RichContentBlock]

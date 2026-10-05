@@ -39,22 +39,31 @@ enum WorkspaceBrowserAddress {
 /// Owned by the window's Store, rather than a transient inspector view. No page
 /// observation is published through the conversation or transcript model.
 @MainActor final class WorkspaceBrowserStore {
-    private var sessions: [String: WorkspaceBrowserSession] = [:]
+    private var groups: [String: WorkspaceBrowserTabs] = [:]
+    let automation = WorkspaceBrowserAutomationHost()
+    private let defaults: UserDefaults
 
-    func session(for conversationID: String) -> WorkspaceBrowserSession {
-        if let session = sessions[conversationID] { return session }
-        let session = WorkspaceBrowserSession()
-        sessions[conversationID] = session
-        return session
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    func tabs(for conversationID: String) -> WorkspaceBrowserTabs {
+        if let group = groups[conversationID] { return group }
+        let group = WorkspaceBrowserTabs(conversationID: conversationID, defaults: defaults)
+        groups[conversationID] = group
+        automation.register(group)
+        return group
     }
+
+    func session(for conversationID: String) -> WorkspaceBrowserSession { tabs(for: conversationID).selected }
 
     /// Call only when a chat is discarded, not when its inspector is hidden.
     func removeSession(for conversationID: String) {
-        sessions.removeValue(forKey: conversationID)?.webView.stopLoading()
+        automation.unregister(conversationID: conversationID)
+        groups.removeValue(forKey: conversationID)?.discard()
     }
 }
 
 @MainActor final class WorkspaceBrowserSession: NSObject, ObservableObject, WKNavigationDelegate, WKUIDelegate {
+    let id: UUID
     let webView: WKWebView
     @Published var addressText = ""
     @Published private(set) var currentURL: URL?
@@ -66,11 +75,22 @@ enum WorkspaceBrowserAddress {
     @Published private(set) var error: String?
     private(set) var requestedURL: URL?
     var isEditingAddress = false
+    @Published var zoom = 1.0 { didSet { webView.pageZoom = min(3, max(0.5, zoom)); stateDidChange?() } }
+    @Published var viewportWidth: Double? { didSet { stateDidChange?() } }
+    private(set) var history: [URL] = []
+    private(set) var historyIndex = -1
+    var stateDidChange: (() -> Void)?
+    var openTab: ((URL) -> Void)?
+    private var historyNavigation = false
     private var observers: Set<AnyCancellable> = []
 
-    override init() {
+    override convenience init() { self.init(id: UUID()) }
+
+    init(id: UUID) {
+        self.id = id
         // Keep WebKit's normal origin isolation, TLS validation and content
-        // protections. This pane installs no scripts or native message bridge.
+        // protections. Agent scripts run only through the explicit host capability gate;
+        // pages receive no native message bridge.
         webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
         webView.allowsBackForwardNavigationGestures = true
         super.init()
@@ -83,12 +103,6 @@ enum WorkspaceBrowserAddress {
         }.store(in: &observers)
         webView.publisher(for: \.title).receive(on: RunLoop.main).sink { [weak self] title in
             self?.title = title?.nilIfBlank ?? "Browser"
-        }.store(in: &observers)
-        webView.publisher(for: \.canGoBack).receive(on: RunLoop.main).sink { [weak self] value in
-            self?.canGoBack = value
-        }.store(in: &observers)
-        webView.publisher(for: \.canGoForward).receive(on: RunLoop.main).sink { [weak self] value in
-            self?.canGoForward = value
         }.store(in: &observers)
         webView.publisher(for: \.isLoading).receive(on: RunLoop.main).sink { [weak self] value in
             self?.isLoading = value
@@ -115,28 +129,70 @@ enum WorkspaceBrowserAddress {
         error = nil
         requestedURL = url
         addressText = url.absoluteString
+        if !historyNavigation {
+            if historyIndex + 1 < history.count { history.removeSubrange((historyIndex + 1)..<history.count) }
+            if history.last != url { history.append(url) }
+            history = Array(history.suffix(100))
+            historyIndex = history.count - 1
+        }
+        historyNavigation = false
+        updateHistoryState()
         webView.load(URLRequest(url: url))
         return true
     }
 
     func goBack() {
-        guard webView.canGoBack else { return }
-        error = nil
-        webView.goBack()
+        guard historyIndex > 0 else { return }
+        historyIndex -= 1
+        historyNavigation = true
+        _ = navigate(to: history[historyIndex])
     }
 
     func goForward() {
-        guard webView.canGoForward else { return }
-        error = nil
-        webView.goForward()
+        guard historyIndex + 1 < history.count else { return }
+        historyIndex += 1
+        historyNavigation = true
+        _ = navigate(to: history[historyIndex])
+    }
+
+    func restore(history: [URL], index: Int, zoom: Double, viewportWidth: Double?) {
+        self.history = Array(history.filter(WorkspaceBrowserAddress.allowsNavigation).suffix(100))
+        historyIndex = min(max(0, index), self.history.count - 1)
+        self.zoom = min(3, max(0.5, zoom))
+        self.viewportWidth = viewportWidth.flatMap { $0.isFinite && (240...2560).contains($0) ? $0 : nil }
+        if self.history.indices.contains(historyIndex) {
+            historyNavigation = true
+            _ = navigate(to: self.history[historyIndex])
+        }
+    }
+
+    private func updateHistoryState() {
+        canGoBack = historyIndex > 0
+        canGoForward = historyIndex + 1 < history.count
+        stateDidChange?()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let url = webView.url, WorkspaceBrowserAddress.allowsNavigation(to: url) {
+            if history.indices.contains(historyIndex), history[historyIndex] == requestedURL {
+                history[historyIndex] = url
+            } else if history.last != url {
+                if historyIndex + 1 < history.count { history.removeSubrange((historyIndex + 1)..<history.count) }
+                history.append(url)
+                history = Array(history.suffix(100))
+                historyIndex = history.count - 1
+            }
+            requestedURL = url
+        }
+        updateHistoryState()
     }
 
     func reload() {
         let failed = error != nil
         error = nil
-        if failed, let requestedURL { _ = navigate(to: requestedURL) }
+        if failed, let requestedURL { historyNavigation = true; _ = navigate(to: requestedURL) }
         else if webView.url != nil { webView.reload() }
-        else if let requestedURL { _ = navigate(to: requestedURL) }
+        else if let requestedURL { historyNavigation = true; _ = navigate(to: requestedURL) }
     }
 
     func stopLoading() { webView.stopLoading() }
@@ -157,6 +213,10 @@ enum WorkspaceBrowserAddress {
             return
         }
         requestedURL = url
+        if navigationAction.navigationType == .backForward, let index = history.lastIndex(of: url) {
+            historyIndex = index
+            updateHistoryState()
+        }
         error = nil
         decisionHandler(.allow)
     }
@@ -166,7 +226,7 @@ enum WorkspaceBrowserAddress {
         // Keep user-activated target=_blank links inside the retained pane.
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url,
            WorkspaceBrowserAddress.allowsNavigation(to: url) {
-            webView.load(navigationAction.request)
+            if let openTab { openTab(url) } else { _ = navigate(to: url) }
         }
         return nil
     }

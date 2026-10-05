@@ -216,7 +216,8 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         try await waitFor { conversation.snapshot.controls != nil }
         await conversation.setModel("invented-model")
         #expect(await driver.commands.isEmpty)
-        await conversation.setModel("provider-model")
+        let selecting = Task { await conversation.setModel("provider-model") }
+        while await driver.commands.isEmpty { await Task.yield() }
         #expect(await driver.commands.map(\.action) == [.model])
         controls.pendingChanges = true
         await driver.emit(ConversationSnapshot(connected: true, ready: true, controls: controls))
@@ -228,6 +229,7 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         controls.pendingChanges = false
         controls.selectedModelID = "provider-model"
         await driver.emit(ConversationSnapshot(connected: true, ready: true, controls: controls))
+        await selecting.value
         try await waitFor { conversation.canSubmit }
         await conversation.send()
         #expect(await driver.commands.map(\.action) == [.model, .prompt])

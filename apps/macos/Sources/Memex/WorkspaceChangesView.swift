@@ -7,8 +7,21 @@ struct WorkspaceChangesView: View {
     var initialSelectedPath: String? = nil
     var reviewRequest: UUID? = nil
     var close: (() -> Void)? = nil
+    var conversationID: String? = nil
+    var isolation: (() -> WorkspaceIsolation?)? = nil
+    var rewindConversation: ((WorkspaceCheckpoint) async throws -> Void)? = nil
+    var addReviewContext: ((WorkspaceReviewContext) -> Bool)? = nil
+    var setupCommand: String? = nil
     @State private var state = WorkspaceChangesState()
     @State private var refreshID = UUID()
+    @State private var scope = WorkspaceDiffScope.current
+    @State private var displayedScope = WorkspaceDiffScope.current
+    @State private var branchRef = ""
+    @State private var splitDiff = false
+    @State private var reviewComment = ""
+    @State private var actionError: String?
+    @State private var indexBusy = false
+    @State private var showingSetup = false
     private let client = WorkspaceChangesClient()
 
     private var displayedRoot: String {
@@ -19,6 +32,13 @@ struct WorkspaceChangesView: View {
         let directory: URL
         let path: String?
         let revision: UUID
+    }
+
+    private struct RefreshTask: Equatable {
+        let directory: URL
+        let revision: UUID
+        let isWorking: Bool
+        let scope: WorkspaceDiffScope
     }
 
     var body: some View {
@@ -39,6 +59,28 @@ struct WorkspaceChangesView: View {
             }
             .buttonStyle(.plain).font(.system(size: 11))
             .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
+            HStack {
+                Menu(scope.label) {
+                    Button("Current working tree") { scope = .current }
+                    Button("Branch comparison") { if branchRef.nilIfBlank != nil { scope = .branch(branchRef) } }
+                        .disabled(branchRef.nilIfBlank == nil)
+                }
+                TextField("Base ref", text: $branchRef).frame(maxWidth: 140)
+                    .onSubmit { if branchRef.nilIfBlank != nil { scope = .branch(branchRef) } }
+                Toggle("Split", isOn: $splitDiff).toggleStyle(.button)
+                Spacer()
+                WorkspaceGitActionsView(directory: directory, refreshKey: refreshID.uuidString + String(isWorking), didChange: { refreshID = UUID() })
+                    .disabled(isWorking)
+                if setupCommand?.nilIfBlank != nil {
+                    Button("Run setup…") { showingSetup = true }.disabled(isWorking)
+                }
+            }.font(.caption).padding(.horizontal, 10).padding(.vertical, 6)
+            if let conversationID {
+                WorkspaceCheckpointControls(directory: directory, conversationID: conversationID,
+                    scope: $scope, isolation: isolation, rewindConversation: rewindConversation,
+                    didChange: { refreshID = UUID() })
+                    .padding(.horizontal, 10).padding(.bottom, 6)
+            }
             Divider()
             if state.directory != directory {
                 ProgressView("Reading workspace changes…").frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -48,21 +90,32 @@ struct WorkspaceChangesView: View {
                 }
                 if let snapshot = state.snapshot {
                     if snapshot.files.isEmpty {
-                        ContentUnavailableView("No uncommitted changes", systemImage: "checkmark.circle",
-                            description: Text("This Git working tree has no staged, unstaged, or untracked files."))
+                        ContentUnavailableView(scope == .current ? "No uncommitted changes" : "No changes in this comparison", systemImage: "checkmark.circle",
+                            description: Text(scope == .current ? "This Git working tree has no staged, unstaged, or untracked files." : "The selected revisions have no changed paths."))
                     } else {
                         HSplitView {
                             List(snapshot.files, selection: Binding(get: { state.selectedPath }, set: { state.select($0) })) { file in
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(file.label).lineLimit(2).truncationMode(.middle)
-                                    Text(file.status).font(.caption).foregroundStyle(.secondary)
+                                    Text(scope == .current ? file.status : file.isUntracked ? "Untracked" : String(file.worktreeStatus))
+                                        .font(.caption).foregroundStyle(.secondary)
                                 }.tag(file.id).help(file.label)
                             }.listStyle(.sidebar).frame(minWidth: 150, idealWidth: 230, maxWidth: 340)
                             VStack(spacing: 0) {
                                 if let error = state.patchError {
                                     errorBanner(error, retained: state.patch != nil) { state.retryPatch() }
                                 }
-                                WorkspaceDiffText(text: state.patch, identity: directory.path + "/" + (state.selectedPath ?? ""))
+                                if scope == .current, let path = state.selectedPath {
+                                    HStack {
+                                        Button("Stage file") { Task { await changeIndex(path: path, stage: true) } }
+                                        Button("Unstage file") { Task { await changeIndex(path: path, stage: false) } }
+                                        Spacer()
+                                    }.font(.caption).padding(6).disabled(isWorking || indexBusy || state.loading || state.loadingPatch)
+                                }
+                                Group {
+                                    if splitDiff { WorkspaceSplitDiffView(patch: state.patch ?? "") }
+                                    else { WorkspaceDiffText(text: state.patch, identity: directory.path + "/" + (state.selectedPath ?? "")) }
+                                }
                                     .overlay {
                                         if state.patch == nil {
                                             if state.loadingPatch { ProgressView("Reading diff…") }
@@ -91,16 +144,31 @@ struct WorkspaceChangesView: View {
                 }
             }
             Divider()
-            Text("Current working tree · Staged, unstaged, and untracked files")
+            if let addReviewContext, let path = state.selectedPath, let patch = state.patch {
+                HStack {
+                    TextField("Review comment", text: $reviewComment)
+                    Button("Add review to chat") {
+                        let context = WorkspaceReviewContext(directory: state.snapshot?.root ?? directory,
+                            path: path, scope: scope.label, patch: patch, comment: reviewComment)
+                        if addReviewContext(context) { reviewComment = ""; actionError = nil }
+                        else { actionError = "The review context could not be added to this chat." }
+                    }
+                }.padding(8).disabled(state.loading || state.loadingPatch)
+            }
+            if let actionError { Text(actionError).font(.caption).foregroundStyle(.orange).padding(8) }
+            Text(scope == .current ? "Current working tree · Staged, unstaged, and untracked files" : scope.label)
                 .font(.caption).foregroundStyle(.secondary).padding(8)
         }
-        .task(id: directory.path + refreshID.uuidString + String(isWorking)) { await refresh() }
+        .task(id: RefreshTask(directory: directory, revision: refreshID, isWorking: isWorking, scope: scope)) { await refresh() }
         .task(id: PatchTask(directory: directory, path: state.selectedPath, revision: state.patchRevision)) { await loadPatch() }
         .onChange(of: reviewRequest) { _, _ in
             if let path = initialSelectedPath {
                 state.select(path)
                 refreshID = UUID()
             }
+        }
+        .sheet(isPresented: $showingSetup) {
+            if let setupCommand { WorkspaceSetupView(directory: directory, script: setupCommand) }
         }
     }
 
@@ -115,9 +183,13 @@ struct WorkspaceChangesView: View {
     }
 
     @MainActor private func refresh() async {
+        if displayedScope != scope {
+            state = WorkspaceChangesState()
+            displayedScope = scope
+        }
         let request = state.beginRefresh(directory: directory, initialSelectedPath: initialSelectedPath)
         do {
-            let next = try await client.snapshot(directory: directory)
+            let next = try await client.snapshot(directory: directory, scope: scope)
             guard !Task.isCancelled else { return }
             state.finishRefresh(next, request: request)
         } catch {
@@ -129,12 +201,44 @@ struct WorkspaceChangesView: View {
     @MainActor private func loadPatch() async {
         guard state.directory == directory, let read = state.beginPatch() else { return }
         do {
-            let next = try await client.diff(file: read.file, root: read.root)
+            let next = try await client.diff(file: read.file, root: read.root, scope: scope)
             guard !Task.isCancelled else { return }
             state.finishPatch(next, request: read.request)
         } catch {
             guard !Task.isCancelled else { return }
             state.failPatch(error.localizedDescription, request: read.request)
+        }
+    }
+
+    @MainActor private func changeIndex(path: String, stage: Bool) async {
+        indexBusy = true
+        defer { indexBusy = false }
+        do {
+            let original = state.snapshot?.files.first { $0.path == path }?.originalPath
+            let paths = stage ? [path] : [original, path].compactMap { $0 }
+            if stage { try await WorkspaceGitClient().stage(directory: directory, paths: paths) }
+            else { try await WorkspaceGitClient().unstage(directory: directory, paths: paths) }
+            actionError = nil
+            refreshID = UUID()
+        } catch { actionError = error.localizedDescription }
+    }
+}
+
+private struct WorkspaceSplitDiffView: View {
+    let patch: String
+    var body: some View {
+        ScrollView([.horizontal, .vertical]) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(WorkspaceSplitDiffRow.parse(patch)) { row in
+                    HStack(alignment: .top, spacing: 0) {
+                        Text(row.left.isEmpty ? " " : row.left).frame(minWidth: 350, maxWidth: .infinity, alignment: .leading)
+                            .background(row.kind == .change && !row.left.isEmpty ? Color.red.opacity(0.1) : .clear)
+                        Divider()
+                        Text(row.right.isEmpty ? " " : row.right).frame(minWidth: 350, maxWidth: .infinity, alignment: .leading)
+                            .background(row.kind == .change && !row.right.isEmpty ? Color.green.opacity(0.1) : .clear)
+                    }.font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+                }
+            }.padding(8)
         }
     }
 }

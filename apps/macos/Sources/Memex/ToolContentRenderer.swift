@@ -67,6 +67,13 @@ import AppKit
             }
         }
         for source in imageSources(records) { blocks.append(.attachment(label: "", source: source, image: true)) }
+        // Canonical tool parts carry typed media separately from output text.
+        // This also handles Claude's nested source/base64 image representation.
+        for record in records { blocks += SourceContent.blocks(record.record) }
+        if records.contains(where: { $0.record.outputCompleteness == "partial" }) {
+            blocks.append(.attachmentNotice(label: "Partial output",
+                detail: "Only part of this result was captured. Any full output reference is a provider location and may no longer be available."))
+        }
         return blocks
     }
 

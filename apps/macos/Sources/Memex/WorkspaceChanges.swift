@@ -85,7 +85,7 @@ struct WorkspaceChangesClient: Sendable {
 
     func diff(file: WorkspaceChange, root: URL) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
-            let common = ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--submodule=short"]
+            let common = ["--literal-pathspecs", "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--submodule=short"]
             if file.isUntracked {
                 let url = root.appendingPathComponent(file.path)
                 let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])

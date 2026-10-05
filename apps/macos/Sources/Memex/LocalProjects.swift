@@ -11,6 +11,7 @@ struct LocalProject: Identifiable, Codable, Hashable, Sendable {
     var directoryPath: String
     var defaultWorkspace: ConversationWorkspaceMode
     var defaultBaseRef: String?
+    var setupCommand: String? = nil
 
     var directory: URL { URL(fileURLWithPath: directoryPath, isDirectory: true) }
 }
@@ -68,11 +69,11 @@ final class LocalProjects {
 
     @discardableResult
     func save(name: String, directory: URL, defaultWorkspace: ConversationWorkspaceMode = .existingDirectory,
-              defaultBaseRef: String? = nil) throws -> LocalProject {
+              defaultBaseRef: String? = nil, setupCommand: String? = nil) throws -> LocalProject {
         let path = try Self.validatedDirectory(directory).path
         let project = LocalProject(id: projects.first(where: { $0.directoryPath == path })?.id ?? UUID().uuidString,
             name: try Self.validatedName(name), directoryPath: path,
-            defaultWorkspace: defaultWorkspace, defaultBaseRef: defaultBaseRef?.nilIfBlank)
+            defaultWorkspace: defaultWorkspace, defaultBaseRef: defaultBaseRef?.nilIfBlank, setupCommand: setupCommand?.nilIfBlank)
         var updated = projects
         if let index = updated.firstIndex(where: { $0.id == project.id }) { updated[index] = project }
         else { updated.append(project) }

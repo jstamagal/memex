@@ -49,6 +49,7 @@ extension ConversationControls {
         supportsFileContents = settings.promptCapabilities.embeddedContext
         pendingChanges = !settings.pendingControlCommandIDs.isEmpty
         appliesToNextTurn = settings.controlsApplyToNextTurn
+        slashCommands = settings.slashCommands.map { .init(name: $0.name, description: $0.description, hint: $0.hint) }
     }
 }
 #endif

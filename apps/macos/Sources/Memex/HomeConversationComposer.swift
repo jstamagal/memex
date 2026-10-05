@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 #if canImport(SQACPUI)
@@ -8,6 +9,10 @@ struct HomeConversationComposer: View {
     @State private var repository: ConversationWorkspaceRepository?
     @State private var inspecting = false
     @State private var workspaceError: String?
+    @State private var providers = ConversationProviderCatalog()
+    @State private var providerError: String?
+    @State private var showingProviderSetup = false
+    @State private var dropTargeted = false
 
     private var baseRefs: [String] {
         Array(Set((repository?.localBranches ?? []) + [repository?.defaultBaseRef, store.newConversationDraft.value.baseRef].compactMap { $0 })).sorted()
@@ -40,6 +45,27 @@ struct HomeConversationComposer: View {
                 cancelButton: { AcpStopButton() }
             )
             .disabled(store.startingConversation || draft.value.createdSessionID != nil)
+            .onPasteCommand(of: ConversationClipboard.supportedTypes) { providers in
+                Task { await captureClipboard(providers) }
+            }
+            .onDrop(of: ConversationClipboard.supportedTypes, isTargeted: $dropTargeted) { providers in
+                guard store.canPrepareConversation, !inspecting else { return false }
+                Task { await captureClipboard(providers) }
+                return true
+            }
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(dropTargeted ? Color.accentColor : .clear, lineWidth: 2))
+            HStack(spacing: 12) {
+                Button("Open draft to choose model and permissions") {
+                    Task { await store.startConversationFromHome(sendImmediately: false) }
+                }
+                .help("Create the conversation without sending. Choose its model, effort, permissions and context before the first message.")
+                Button {
+                    Task { await attachToNewDraft() }
+                } label: { Label("Attach files", systemImage: "paperclip") }
+            }
+            .font(.caption)
+            .disabled(!store.canPrepareConversation || inspecting
+                || (draft.value.workspaceMode == .newWorktree && (repository == nil || draft.value.baseRef == nil)))
             if store.startingConversation {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -60,7 +86,7 @@ struct HomeConversationComposer: View {
                     }
                 }.font(.caption).foregroundStyle(.secondary)
             }
-            if let error = store.newConversationError ?? draft.error ?? (draft.value.projectID == nil ? nil : store.localProjects.error) ?? workspaceError {
+            if let error = store.newConversationError ?? draft.error ?? providerError ?? (draft.value.projectID == nil ? nil : store.localProjects.error) ?? workspaceError {
                 Text(error).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
             }
             if draft.error != nil {
@@ -71,21 +97,48 @@ struct HomeConversationComposer: View {
         .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
         .frame(maxWidth: .infinity)
         .task(id: store.newConversationProject) { await inspectProject() }
+        .task { reloadProviders() }
+        .sheet(isPresented: $showingProviderSetup, onDismiss: reloadProviders) { ConversationProviderSetupView() }
+    }
+
+    @MainActor private func attachToNewDraft() async {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Attach to new draft"
+        guard await panel.begin() == .OK else { return }
+        await store.startConversationFromHome(sendImmediately: false, attachments: panel.urls)
+    }
+
+    @MainActor private func captureClipboard(_ providers: [NSItemProvider]) async {
+        guard store.canPrepareConversation, !inspecting else { return }
+        var prepared: LiveConversation?
+        await store.startConversationFromHome(sendImmediately: false, onPrepared: { prepared = $0 })
+        guard let conversation = prepared,
+              let controls = conversation.snapshot.controls else { return }
+        do {
+            let items = try await ConversationClipboard.capture(providers, controls: controls)
+            guard !items.isEmpty, conversation.appendCapturedContext(items) else {
+                throw ConversationRuntimeError(message: "These clipboard attachments could not be added to the new draft.")
+            }
+            conversation.reportAttachmentError(nil)
+        } catch { conversation.reportAttachmentError(error.localizedDescription) }
     }
 
     private var controls: some View {
         @Bindable var draft = store.newConversationDraft
         return HStack(spacing: 12) {
             Menu {
-                ForEach(["codex", "claude"], id: \.self) { provider in
-                    Button { draft.value.provider = provider } label: {
-                        let name = provider == "codex" ? "Codex" : "Claude Code"
-                        if draft.value.provider == provider { Label(name, systemImage: "checkmark") }
-                        else { Text(name) }
+                ForEach(providers.creatableProviders) { provider in
+                    Button { draft.value.provider = provider.id } label: {
+                        if draft.value.provider == provider.id { Label(provider.name, systemImage: "checkmark") }
+                        else { Text(provider.name) }
                     }
                 }
+                Divider()
+                Button("Configure providers…") { showingProviderSetup = true }
             } label: {
-                Text(draft.value.provider == "codex" ? "Codex" : "Claude Code")
+                Text(providers.providers.first(where: { $0.id == draft.value.provider })?.name ?? draft.value.provider)
             }
             .help("Uses this provider’s configured defaults. Model and permissions are available in the conversation.")
             Menu {
@@ -138,6 +191,13 @@ struct HomeConversationComposer: View {
         }
         .menuStyle(.borderlessButton).fixedSize(horizontal: false, vertical: true)
         .font(.system(size: 12)).foregroundStyle(.secondary)
+    }
+
+    private func reloadProviders() {
+        do {
+            providers = try ConversationProviderCatalog.load()
+            providerError = nil
+        } catch { providerError = "Provider configuration could not be read: \(error.localizedDescription)" }
     }
 
     @MainActor private func inspectProject() async {

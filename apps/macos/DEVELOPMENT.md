@@ -86,14 +86,12 @@ An optional local Sidequery checkout supplies `SQACP`, `SQACPHost`, `SQACPUI`, t
 ignored `apps/macos/.local-runtime-root` file. Ordinary builds without this
 configuration retain external resume only; no runtime source or binary is fetched.
 
-Build the checkout's `packages/sq-acp/rust/sq-acp-ffi-runtime` library for
-`aarch64-apple-darwin`, with `MACOSX_DEPLOYMENT_TARGET=14.0` and a Rust toolchain
-whose standard library supports that deployment target. The default artifact is
-`packages/sq-acp/target/runtime-native/aarch64-apple-darwin/release/libsq_acp_runtime.a`;
-`MEMEX_AGENT_RUNTIME_LIBRARY` can select another compatible archive. Build the
-helper with the pinned dependencies and `bun run build` in
-`packages/sq-acp/Tools/ClaudeAgentSDKHost`. Then use the normal app build script;
-it embeds and signs the helper.
+Use [the runtime preparation and provenance workflow](RUNTIME.md) to build the
+locked source archive and Claude helper before packaging. `build.sh` rejects stale
+or mismatched artifacts, and embeds/signs the execution-host and Claude helpers.
+Local dirty source requires an explicit development mode; Developer ID packaging
+requires the clean pinned revision. `MEMEX_HISTORY_ONLY=1` keeps the public
+history-only graph available even when a local runtime checkout is configured.
 
 Selecting a local main Codex or Claude session shows Sidequery's shared composer,
 send/stop controls, and approval/question panels. The first send loads the original

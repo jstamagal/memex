@@ -11,6 +11,11 @@ struct ProjectSetupView: View {
     @State private var baseRef: String?
     @State private var repository: ConversationWorkspaceRepository?
     @State private var error: String?
+    @State private var showingCreation = false
+    @State private var showingWorkspaces = false
+    @State private var checkouts: [WorkspaceCheckout] = []
+    @State private var setupCommand = ""
+    @State private var showingSetup = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -33,6 +38,8 @@ struct ProjectSetupView: View {
                         }
                     }.frame(minWidth: 180, idealWidth: 230)
                     Button("Add folder…", systemImage: "plus") { Task { await chooseFolder(adding: true) } }
+                    Button("New repository or clone…") { showingCreation = true }
+                    Button("Managed workspaces…") { showingWorkspaces = true }
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     if let directory {
@@ -47,6 +54,19 @@ struct ProjectSetupView: View {
                             Text("Existing folder").tag(ConversationWorkspaceMode.existingDirectory)
                             Text("New worktree").tag(ConversationWorkspaceMode.newWorktree).disabled(repository == nil)
                         }.pickerStyle(.menu)
+                        if !checkouts.isEmpty {
+                            Menu("Use existing worktree") {
+                                ForEach(checkouts) { checkout in
+                                    Button("\(checkout.branch ?? "Detached") — \(checkout.directory.path)") {
+                                        self.directory = checkout.directory
+                                        selectedID = nil
+                                        name = checkout.directory.lastPathComponent
+                                        mode = .existingDirectory
+                                        baseRef = nil
+                                    }.disabled(checkout.locked)
+                                }
+                            }
+                        }
                         if mode == .newWorktree {
                             Picker("Base branch", selection: $baseRef) {
                                 Text("Choose a branch").tag(String?.none)
@@ -57,6 +77,11 @@ struct ProjectSetupView: View {
                         } else if repository == nil {
                             Text("This folder does not have a Git worktree available.")
                                 .font(.caption).foregroundStyle(.secondary)
+                        }
+                        TextField("Setup command (optional)", text: $setupCommand)
+                            .help("Saved for explicit Run setup actions. It never runs automatically.")
+                        if setupCommand.nilIfBlank != nil {
+                            Button("Run setup in this folder…") { showingSetup = true }
                         }
                         Spacer()
                         HStack {
@@ -75,21 +100,46 @@ struct ProjectSetupView: View {
                     }
                 }
                 .padding(.leading, 12).frame(minWidth: 320, maxWidth: .infinity)
-            }.frame(height: 280).disabled(store.startingConversation)
+            }.frame(height: 360).disabled(store.startingConversation)
             if let error = error ?? store.localProjects.error {
                 Text(error).font(.callout).foregroundStyle(.orange).textSelection(.enabled)
             }
         }
         .padding(24).frame(width: 680)
         .task {
-            if store.addingProject { await chooseFolder(adding: true) }
-            else {
+            if !store.addingProject {
                 selectedID = store.newConversationProject?.id ?? store.localProjects.projects.first?.id
                 loadSelection()
             }
         }
         .onChange(of: selectedID) { _, _ in loadSelection() }
         .task(id: directory?.path) { await inspectDirectory() }
+        .sheet(isPresented: $showingCreation) {
+            ProjectCreationView { directory in
+                selectedID = nil
+                self.directory = directory
+                name = directory.lastPathComponent
+                mode = .existingDirectory
+                baseRef = nil
+                setupCommand = ""
+                error = nil
+            }
+        }
+        .sheet(isPresented: $showingSetup) {
+            if let directory { WorkspaceSetupView(directory: directory, script: setupCommand) }
+        }
+        .sheet(isPresented: $showingWorkspaces) {
+            WorkspaceLifecycleView(client: store.workspaceClient, referencedDirectories: {
+                store.createdConversations.contexts.values.map { $0.workspace.workingDirectory }
+                    + store.sessions.filter { $0.machineID == "local" }.compactMap { $0.cwd.map { URL(fileURLWithPath: $0) } }
+            }) { workspace in
+                selectedID = nil
+                directory = workspace.workingDirectory
+                name = workspace.branch ?? workspace.workingDirectory.lastPathComponent
+                mode = .existingDirectory
+                baseRef = nil
+            }
+        }
     }
 
     private var baseRefs: [String] {
@@ -102,6 +152,7 @@ struct ProjectSetupView: View {
         directory = project.directory
         mode = project.defaultWorkspace
         baseRef = project.defaultBaseRef
+        setupCommand = project.setupCommand ?? ""
         error = nil
     }
 
@@ -120,6 +171,7 @@ struct ProjectSetupView: View {
             name = url.lastPathComponent
             mode = .existingDirectory
             baseRef = nil
+            setupCommand = ""
         }
         directory = url
         error = nil
@@ -127,12 +179,18 @@ struct ProjectSetupView: View {
 
     @MainActor private func inspectDirectory() async {
         repository = nil
+        checkouts = []
         guard let directory else { return }
         do {
             let repository = try await store.workspaceClient.inspect(directory: directory)
             guard !Task.isCancelled, self.directory == directory else { return }
             self.repository = repository
             if baseRef == nil { baseRef = repository?.defaultBaseRef }
+            if repository != nil {
+                let checkouts = try await store.workspaceClient.checkouts(directory: directory)
+                guard !Task.isCancelled, self.directory == directory else { return }
+                self.checkouts = checkouts
+            }
         } catch is CancellationError {} catch {
             if self.directory == directory { self.error = error.localizedDescription }
         }
@@ -144,10 +202,11 @@ struct ProjectSetupView: View {
             let project: LocalProject
             if let selectedID {
                 project = LocalProject(id: selectedID, name: name, directoryPath: directory.path,
-                                       defaultWorkspace: mode, defaultBaseRef: baseRef)
+                                       defaultWorkspace: mode, defaultBaseRef: baseRef, setupCommand: setupCommand.nilIfBlank)
                 try store.localProjects.update(project)
             } else {
-                project = try store.localProjects.save(name: name, directory: directory, defaultWorkspace: mode, defaultBaseRef: baseRef)
+                project = try store.localProjects.save(name: name, directory: directory, defaultWorkspace: mode,
+                    defaultBaseRef: baseRef, setupCommand: setupCommand.nilIfBlank)
             }
             store.newConversationDraft.selectProject(project, resetWorkspace: true)
             selectedID = project.id

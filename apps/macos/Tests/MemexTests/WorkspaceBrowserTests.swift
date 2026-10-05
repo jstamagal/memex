@@ -113,6 +113,76 @@ import WebKit
         #expect(session.error?.contains("Reload") == true)
     }
 
+    @Test func tabsRestoreNavigationAndSelectionWithoutRestoringAgentAccess() async throws {
+        let suite = "memex-browser-tabs-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = try WorkspaceBrowserHTTPFixture()
+        defer { server.stop() }
+        try await waitUntil { server.port != nil }
+        let port = try #require(server.port)
+        let store = WorkspaceBrowserStore(defaults: defaults)
+        let tabs = store.tabs(for: "tabs-test")
+        let first = tabs.selected
+        _ = first.navigate(to: URL(string: "http://localhost:\(port)/one")!)
+        try await waitUntil { first.title == "Page one" && !first.isLoading }
+        _ = first.navigate(to: URL(string: "http://localhost:\(port)/two")!)
+        try await waitUntil { first.title == "Page two" && !first.isLoading }
+        let second = try #require(tabs.add())
+        first.zoom = 1.4
+        first.viewportWidth = 390
+        _ = try store.automation.allow(conversationID: "tabs-test", capabilities: [.snapshot])
+        let restored = WorkspaceBrowserStore(defaults: defaults).tabs(for: "tabs-test")
+        #expect(restored.sessions.count == 2)
+        #expect(restored.selected.id == second.id)
+        #expect(restored.automationGrant == nil)
+        let restoredFirst = try #require(restored.sessions.first { $0.id == first.id })
+        #expect(restoredFirst.history.map(\.path) == ["/one", "/two"])
+        #expect(restoredFirst.zoom == 1.4)
+        #expect(restoredFirst.viewportWidth == 390)
+        restoredFirst.goBack()
+        try await waitUntil { restoredFirst.title == "Page one" && !restoredFirst.isLoading }
+        #expect(restoredFirst.canGoForward)
+        restored.close(second.id)
+        #expect(restored.selected.id == first.id)
+        #expect(tabs.selected === second)
+    }
+
+    @Test func automationControlsOnlyGrantedRegisteredTabsAndRejectsRevocation() async throws {
+        let suite = "memex-browser-automation-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = try WorkspaceBrowserHTTPFixture()
+        defer { server.stop() }
+        try await waitUntil { server.port != nil }
+        let port = try #require(server.port)
+        let store = WorkspaceBrowserStore(defaults: defaults)
+        let tabs = store.tabs(for: "allowed-chat")
+        let session = tabs.selected
+        _ = session.navigate(to: URL(string: "http://localhost:\(port)/one")!)
+        try await waitUntil { session.title == "Page one" && !session.isLoading }
+        let grant = try store.automation.allow(conversationID: tabs.conversationID, capabilities: [.snapshot, .click, .type, .scroll])
+        func request(_ action: WorkspaceBrowserCapability, chat: String = "allowed-chat", tab: UUID? = nil) -> WorkspaceBrowserAutomationRequest {
+            .init(hostID: grant.hostID, grantID: grant.id, conversationID: chat, tabID: tab ?? session.id, action: action)
+        }
+        var typing = request(.type)
+        typing.selector = "#entry"
+        typing.text = "Captured input"
+        _ = try await store.automation.dispatch(typing)
+        #expect(try await session.runBrowserScript("return document.querySelector('#entry').value;") == "Captured input")
+        var clicking = request(.click)
+        clicking.selector = "#button"
+        _ = try await store.automation.dispatch(clicking)
+        let snapshot = try await store.automation.dispatch(request(.snapshot))
+        #expect(snapshot.text.contains("Clicked fixture"))
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(request(.evaluate)) }
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(request(.snapshot, chat: "other-chat")) }
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(request(.snapshot, tab: UUID())) }
+        store.automation.revoke(conversationID: tabs.conversationID)
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(request(.snapshot)) }
+        #expect(try await session.runBrowserScript("return document.querySelector('#entry').value;") == "Captured input")
+    }
+
     private func waitUntil(_ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
@@ -147,7 +217,7 @@ private final class WorkspaceBrowserHTTPFixture: @unchecked Sendable {
                 self.lock.withLock { self.count += 1 }
                 let request = String(decoding: data, as: UTF8.self)
                 let page = request.hasPrefix("GET /two ") ? "two" : "one"
-                let body = "<html><head><title>Page \(page)</title></head><body>Page \(page)</body></html>"
+                let body = "<html><head><title>Page \(page)</title></head><body>Page \(page)<input id='entry'><button id='button' onclick=\"this.textContent='Clicked fixture'\">Click fixture</button></body></html>"
                 let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n\(body)"
                 connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
             }

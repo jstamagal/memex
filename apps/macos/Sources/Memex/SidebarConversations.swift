@@ -9,11 +9,7 @@ struct SidebarConversationGroup: Identifiable {
 extension Store {
     var sidebarSessions: [Session] {
         // Keep search relevance and its source-record anchors intact.
-        guard query.nilIfBlank == nil else { return sessions }
-        return sessions.sorted {
-            let lhs = $0.lastAt ?? "", rhs = $1.lastAt ?? ""
-            return lhs == rhs ? $0.id < $1.id : lhs > rhs
-        }
+        conversationLibrary.sorted(librarySessions, preservingSearchRank: query.nilIfBlank != nil)
     }
 
     var sidebarGroups: [SidebarConversationGroup] {
@@ -39,21 +35,40 @@ extension Store {
 struct BrowserSidebar: View {
     @Bindable var store: Store
     @State private var collapsedProjects: Set<String> = []
+    @State private var selectedConversations: Set<String> = []
+    @State private var renameSession: Session?
+    @State private var renamedTitle = ""
+    @State private var showingRename = false
+    @State private var removal: [Session] = []
+    @State private var showingRemoval = false
+    @State private var showingNotifications = false
 
     private enum Selection: Hashable { case home, all, conversation(String) }
-    private var selection: Binding<Selection?> {
+    private var selection: Binding<Set<Selection>> {
         Binding(get: {
-            if store.scope == .home { return .home }
-            return store.selectedID.map(Selection.conversation) ?? .all
+            if !selectedConversations.isEmpty { return Set(selectedConversations.map(Selection.conversation)) }
+            if store.scope == .home { return [.home] }
+            return store.selectedID.map { [.conversation($0)] } ?? [.all]
         }, set: { value in
-            switch value {
-            case .home: store.scope = .home
-            case .all: store.scope = .all
-            case .conversation(let id):
-                if let session = store.sessions.first(where: { $0.id == id }) { store.openConversation(session) }
-            case nil: break
+            let ids = Set(value.compactMap { if case .conversation(let id) = $0 { return id }; return nil })
+            selectedConversations = ids
+            if ids.count == 1, let id = ids.first,
+               let session = store.librarySessions.first(where: { $0.id == id }) {
+                store.openConversation(store.nativeLibrarySession(session))
+            } else if ids.isEmpty {
+                if value.contains(.home) { store.scope = .home }
+                else if value.contains(.all) { store.scope = .all }
             }
         })
+    }
+
+    private var pinned: [Session] {
+        guard store.conversationLibraryScope == .active, store.query.nilIfBlank == nil else { return [] }
+        return store.sidebarSessions.filter { store.conversationLibrary.isPinned($0) }
+    }
+    private var unpinned: [Session] {
+        let ids = Set(pinned.map(\.id))
+        return store.sidebarSessions.filter { !ids.contains($0.id) }
     }
 
     var body: some View {
@@ -65,6 +80,19 @@ struct BrowserSidebar: View {
                 }
                 Section {
                     sidebarOptions
+                    Picker("Conversation library", selection: $store.conversationLibraryScope) {
+                        ForEach(ConversationLibrary.Scope.allCases) { Text($0.title).tag($0) }
+                    }
+                    .labelsHidden().pickerStyle(.menu).accessibilityLabel("Conversation library")
+                    if store.conversationLibraryScope == .removed {
+                        Text("Removed only from Memex. Provider history, saved drafts and running agents are retained.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if selectedConversations.count > 1 {
+                        Menu("\(selectedConversations.count) selected") {
+                            managementActions(store.librarySelection(selectedConversations))
+                        }
+                    }
                     if let project = store.selectedProject {
                         HStack {
                             Text(project).lineLimit(1)
@@ -76,31 +104,43 @@ struct BrowserSidebar: View {
                             .buttonStyle(.plain).help("Show all projects")
                         }.font(.caption).foregroundStyle(.secondary)
                     }
+                    if !pinned.isEmpty {
+                        Section("Pinned") {
+                            conversationRows(pinned, showsProject: true)
+                        }
+                    }
                     if store.sidebarMode == .projects {
                         ForEach(store.sidebarGroups) { group in
-                            DisclosureGroup(isExpanded: Binding(get: { !collapsedProjects.contains(group.id) }, set: {
-                                if $0 { collapsedProjects.remove(group.id) } else { collapsedProjects.insert(group.id) }
-                            })) {
-                                ForEach(group.sessions) { session in row(session, showsProject: false) }
-                            } label: {
-                                Label(group.name, systemImage: "folder").lineLimit(1)
+                            let rows = group.sessions.filter { session in !pinned.contains { $0.id == session.id } }
+                            if !rows.isEmpty {
+                                DisclosureGroup(isExpanded: Binding(get: { !collapsedProjects.contains(group.id) }, set: {
+                                    if $0 { collapsedProjects.remove(group.id) } else { collapsedProjects.insert(group.id) }
+                                })) {
+                                    conversationRows(rows, showsProject: false)
+                                } label: {
+                                    Label(group.name, systemImage: "folder").lineLimit(1)
+                                }
                             }
                         }
                     } else {
-                        ForEach(store.sidebarSessions) { session in row(session, showsProject: true) }
+                        conversationRows(unpinned, showsProject: true)
                     }
                     if store.loadingSessions {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity)
                     } else if store.hasMoreSessions, let last = store.sessions.last {
                         Button("Load older conversations") { store.loadMoreSessionsIfNeeded(visibleID: last.id) }
                             .buttonStyle(.plain).foregroundStyle(.secondary)
-                    } else if store.sessions.isEmpty && store.listError == nil {
+                    } else if store.librarySessions.isEmpty && store.listError == nil {
                         Text(store.query.isEmpty ? "No conversations" : "No matching conversations")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     if let error = store.listError {
                         Button("Retry loading conversations") { Task { await store.loadSessions() } }
                             .help(error)
+                    }
+                    if let error = store.conversationLibrary.error {
+                        Text(error).font(.caption).foregroundStyle(.red)
+                        Button("Reload organization") { store.conversationLibrary.reload() }
                     }
                 }
             }
@@ -122,6 +162,77 @@ struct BrowserSidebar: View {
             .padding(.horizontal, 16).padding(.vertical, 12)
         }
         .background(SidebarBackground().ignoresSafeArea())
+        .onChange(of: store.selectedID) { _, id in
+            selectedConversations = Set(id.map { [$0] } ?? [])
+        }
+        .onChange(of: store.conversationLibraryScope) { _, _ in
+            selectedConversations = []
+            store.finishLibraryAction(true)
+        }
+        .onChange(of: store.librarySessions.map(\.id)) { _, ids in
+            selectedConversations.formIntersection(ids)
+        }
+        .alert("Rename conversation", isPresented: $showingRename) {
+            TextField("Title", text: $renamedTitle)
+            Button("Cancel", role: .cancel) { renameSession = nil }
+            Button("Save") {
+                if let session = renameSession { _ = store.conversationLibrary.rename(session, to: renamedTitle) }
+                renameSession = nil
+            }
+        } message: {
+            Text("This title is used in Memex. Clear it to restore the original provider title.")
+        }
+        .alert("Remove \(removal.count == 1 ? "conversation" : "\(removal.count) conversations") from Memex?",
+               isPresented: $showingRemoval) {
+            Button("Cancel", role: .cancel) { removal = [] }
+            Button("Remove from Memex", role: .destructive) {
+                store.finishLibraryAction(store.conversationLibrary.remove(removal))
+                removal = []
+            }
+        } message: {
+            Text("Provider history and saved drafts will not be deleted, and running agents will not be stopped. Restore these conversations from Removed from Memex in the sidebar.")
+        }
+        .sheet(isPresented: $showingNotifications) {
+            ConversationNotificationSettingsView(notifications: store.conversationNotifications)
+        }
+    }
+
+    private func conversationRows(_ sessions: [Session], showsProject: Bool) -> some View {
+        ForEach(sessions) { session in row(session, showsProject: showsProject) }
+            .onMove { offsets, destination in
+                let native = sessions.map(store.nativeLibrarySession)
+                _ = store.conversationLibrary.reorder(native, from: offsets, to: destination)
+            }
+            .moveDisabled(store.query.nilIfBlank != nil || store.conversationLibraryScope != .active)
+    }
+
+    @ViewBuilder
+    private func managementActions(_ sessions: [Session]) -> some View {
+        if sessions.count == 1, let session = sessions.first {
+            Button("Rename…") {
+                renameSession = session
+                renamedTitle = store.conversationTitle(session)
+                showingRename = true
+            }
+            if store.conversationLibrary.entries[session.id]?.title != nil {
+                Button("Restore original title") { _ = store.conversationLibrary.rename(session, to: "") }
+            }
+        }
+        if !sessions.isEmpty {
+            if store.conversationLibraryScope == .removed {
+                Button("Restore to conversations") { store.finishLibraryAction(store.conversationLibrary.restore(sessions)) }
+            } else {
+                let allPinned = sessions.allSatisfy { store.conversationLibrary.isPinned($0) }
+                Button(allPinned ? "Unpin" : "Pin") { _ = store.conversationLibrary.pin(sessions, pinned: !allPinned) }
+                if store.conversationLibraryScope == .archived {
+                    Button("Restore to conversations") { store.finishLibraryAction(store.conversationLibrary.archive(sessions, archived: false)) }
+                } else {
+                    Button("Archive") { store.finishLibraryAction(store.conversationLibrary.archive(sessions, archived: true)) }
+                }
+                Divider()
+                Button("Remove from Memex…", role: .destructive) { removal = sessions; showingRemoval = true }
+            }
+        }
     }
 
     private var sidebarOptions: some View {
@@ -150,6 +261,10 @@ struct BrowserSidebar: View {
                     }.pickerStyle(.inline)
                 }
                 Divider()
+                Button("Sort visible chats by recent activity") {
+                    _ = store.conversationLibrary.resetOrder(store.librarySessions.map(store.nativeLibrarySession))
+                }
+                Button("Notification preferences…") { showingNotifications = true }
                 Button("Refresh conversations") { Task { await store.refresh() } }
                     .disabled(store.loadingSessions)
             } label: {
@@ -166,6 +281,7 @@ struct BrowserSidebar: View {
         return VStack(alignment: .leading, spacing: 4) {
             Text(session.title).font(.system(size: 13)).lineLimit(2)
             HStack(spacing: 4) {
+                if store.conversationLibrary.isPinned(session) { Image(systemName: "pin.fill").accessibilityLabel("Pinned") }
                 Text(showsProject ? store.projectName(for: session) : session.source).lineLimit(1)
                 if session.machineID != "local" { Text("· \(session.machineID)").lineLimit(1) }
                 Spacer(minLength: 2)
@@ -186,6 +302,10 @@ struct BrowserSidebar: View {
         .tag(Selection.conversation(session.id))
         .help(session.title)
         .accessibilityElement(children: .combine)
+        .contextMenu {
+            managementActions(store.librarySelection(selectedConversations.contains(session.id)
+                ? selectedConversations : [session.id]))
+        }
     }
 }
 

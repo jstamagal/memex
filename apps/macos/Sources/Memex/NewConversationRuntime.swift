@@ -20,6 +20,9 @@ enum NewConversationRuntime {
     /// Read a newly created native transcript before the search index catches up.
     /// This temporary private runtime never connects a provider or claims a writer.
     static func records(for session: Session) async throws -> [TranscriptRecord] {
+        if session.source.hasPrefix("acp:"), session.machineID == "local" {
+            return try await Task.detached { try ConfiguredConversationHistory.records(for: session) }.value
+        }
         #if canImport(SQACPHost)
         return try await Task.detached {
             let source = URL(fileURLWithPath: session.sourcePath)
@@ -68,8 +71,11 @@ enum NewConversationRuntime {
     private static func createNative(_ request: NewConversationRequest, environment: [String: String],
                                      applicationSupport: URL?, helperURL: URL?) async throws -> CreatedConversation {
         try await Task.detached {
+            if request.provider.hasPrefix("acp:") {
+                return try createConfigured(request, applicationSupport: applicationSupport)
+            }
             guard ["codex", "claude"].contains(request.provider) else {
-                throw ConversationRuntimeError(message: "Choose Codex or Claude Code to create a conversation.")
+                throw ConversationRuntimeError(message: "Choose an installed conversation provider.")
             }
             let manager = FileManager.default
             let key = request.provider == "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"
@@ -112,6 +118,29 @@ enum NewConversationRuntime {
                 applicationSupport: applicationSupport, helperURL: helperURL, requiresTranscript: false)
             return CreatedConversation(session: session, runtime: NativeConversationRuntime(creation: creation), target: target)
         }.value
+    }
+    private static func createConfigured(_ request: NewConversationRequest, applicationSupport: URL?) throws -> CreatedConversation {
+        guard let profile = try ConversationProviderCatalog.load().configured.first(where: { $0.id == request.provider }) else {
+            throw ConversationRuntimeError(message: "This provider configuration is missing. Add it in Conversation providers.")
+        }
+        try profile.validate()
+        let cwd = request.workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: cwd.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw ConversationRuntimeError(message: "The conversation's working directory is unavailable.")
+        }
+        let creation = try AgentConversationCreation.acp(provider: profile.id, configuration: profile.acpConfiguration, cwd: cwd.path)
+        let support = try applicationSupport ?? FileManager.default.url(for: .applicationSupportDirectory,
+            in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("dev.memex.app/Resume")
+        let manifestURL = support.appendingPathComponent("Providers").appendingPathComponent(UUID().uuidString + ".json")
+        let manifest = ConfiguredConversationManifest(version: 1, provider: profile,
+            nativeSessionID: creation.nativeSessionID, workingDirectory: cwd.path, supportsResume: creation.supportsResume)
+        try manifest.write(to: manifestURL)
+        let session = Session(source: profile.id, sessionID: creation.nativeSessionID, sourcePath: manifestURL.path,
+            project: cwd.lastPathComponent, lastAt: Date().ISO8601Format(), cwd: cwd.path,
+            machine: "local", messageCount: 0, conversationKind: "main")
+        let target = try InAppResumeTarget.resolve(session, applicationSupport: applicationSupport, requiresTranscript: false)
+        return CreatedConversation(session: session, runtime: NativeConversationRuntime(creation: creation), target: target)
     }
     #endif
 

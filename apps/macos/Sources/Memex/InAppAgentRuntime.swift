@@ -63,6 +63,7 @@ actor NativeConversationRuntime: ConversationRuntime {
     private var warning: String?
     private var sentPromptIDs: Set<String> = []
     private var newPromptIDs: Set<String> = []
+    private var changingHistory = false
 
     init(creation: AgentConversationCreation? = nil) { self.creation = creation }
 
@@ -95,7 +96,7 @@ actor NativeConversationRuntime: ConversationRuntime {
         self.service = service
         let id = "memex-" + InAppResumeTarget.digest(target.session.id)
         let source: String?
-        if created == nil {
+        if created == nil && target.configuredProvider == nil {
             let imported = try service.addSource(agent: target.session.source, format: "jsonl", url: target.sourceURL,
                 nativeNamespace: target.providerInstanceID, nativeSessionID: target.session.sessionID, sessionID: id)
             guard let conversation = try ConversationProjection.conversation(in: imported, sessionID: id),
@@ -106,7 +107,9 @@ actor NativeConversationRuntime: ConversationRuntime {
             source = sourceID
         } else {
             source = nil
-            warning = "The provider has not saved its transcript yet. Send a message before closing to make this conversation resumable."
+            if target.configuredProvider == nil {
+                warning = "The provider has not saved its transcript yet. Send a message before closing to make this conversation resumable."
+            }
         }
         sessionID = id
         let binding = AgentConversationBinding(sessionID: id, sourceID: source,
@@ -121,6 +124,9 @@ actor NativeConversationRuntime: ConversationRuntime {
         do {
             if let created {
                 try service.connectCreated(binding, creation: created)
+            } else if let provider = target.configuredProvider {
+                try service.registerACP(binding, provider: target.session.source)
+                try service.connectACP(binding, configuration: provider.acpConfiguration)
             } else if target.session.source == "codex" {
                 try service.connectCodex(binding, executablePath: target.executableURL.path, environment: target.environment)
             } else if let helper = target.helperURL {
@@ -130,7 +136,7 @@ actor NativeConversationRuntime: ConversationRuntime {
         } catch {
             throw conversationProviderError(error)
         }
-        fileVersion = created == nil ? try? FileVersion(target.sourceURL) : nil
+        fileVersion = created == nil && target.configuredProvider == nil ? try? FileVersion(target.sourceURL) : nil
         try publish()
         poll = Task { [weak self] in
             while !Task.isCancelled {
@@ -156,21 +162,23 @@ actor NativeConversationRuntime: ConversationRuntime {
 
     private func tick() {
         guard let target, let service, let sessionID else { return }
-        do {
-            let version = try FileVersion(target.sourceURL)
-            if version != fileVersion {
-                if fileVersion == nil {
-                    _ = try service.addSource(agent: target.session.source, format: "jsonl", url: target.sourceURL,
-                        nativeNamespace: target.providerInstanceID, nativeSessionID: target.session.sessionID, sessionID: sessionID)
-                } else {
-                    _ = try service.refresh(sessionID: sessionID)
+        if target.configuredProvider == nil {
+            do {
+                let version = try FileVersion(target.sourceURL)
+                if version != fileVersion {
+                    if fileVersion == nil {
+                        _ = try service.addSource(agent: target.session.source, format: "jsonl", url: target.sourceURL,
+                            nativeNamespace: target.providerInstanceID, nativeSessionID: target.session.sessionID, sessionID: sessionID)
+                    } else {
+                        _ = try service.refresh(sessionID: sessionID)
+                    }
+                    fileVersion = version
+                    warning = nil
                 }
-                fileVersion = version
-                warning = nil
-            }
-        } catch {
-            if fileVersion != nil || FileManager.default.fileExists(atPath: target.sourceURL.path) {
-                warning = "Transcript refresh failed: \(error.localizedDescription). Live output is retained."
+            } catch {
+                if fileVersion != nil || FileManager.default.fileExists(atPath: target.sourceURL.path) {
+                    warning = "Transcript refresh failed: \(error.localizedDescription). Live output is retained."
+                }
             }
         }
         if !wasReady && Date().timeIntervalSince(connectedAt) > 45 {
@@ -181,12 +189,12 @@ actor NativeConversationRuntime: ConversationRuntime {
     }
 
     private func publish() throws {
-        guard let service, let sessionID,
+        guard !changingHistory, let service, let sessionID,
               let conversation = try ConversationProjection.conversation(in: service.read(sessionID: sessionID), sessionID: sessionID) else { return }
         let actions = service.supportedActions(sessionID: sessionID)
         let thread = try request("thread.snapshot", params: ["threadId": .string(sessionID)])
         let operations = try request("provider_operation.list", params: ["threadId": .string(sessionID), "includeTerminal": .bool(false)])
-        let deliveries = try service.commandStatuses(sessionID: sessionID).filter { $0.action == .prompt }.map {
+        let deliveries = try service.commandStatuses(sessionID: sessionID).filter { $0.action == .prompt || $0.action == .steer }.map {
             ConversationDelivery(commandID: $0.commandID, status: $0.status, error: $0.error,
                                  nativeTurnID: $0.nativeTurnID, nativeMessageID: $0.nativeMessageID)
         }
@@ -200,8 +208,13 @@ actor NativeConversationRuntime: ConversationRuntime {
             ready: actions.contains(.prompt), canCancel: actions.contains(.cancel), sentPromptIDs: sentPromptIDs,
             ownedLiveUserTurns: ownedLiveUserTurns)
         snapshot.controls = try service.settings(sessionID: sessionID).map(ConversationControls.init)
+        snapshot.canSteer = actions.contains(.steer)
+        snapshot.canMutateHistory = service.supportsConversationMutation(sessionID: sessionID)
         snapshot.deliveries = deliveries
         snapshot.warning = snapshot.warning ?? warning
+        if snapshot.ready, let target, target.configuredProvider != nil {
+            try ConfiguredConversationHistory.save(conversation: conversation, target: target)
+        }
         if snapshot.ready { wasReady = true }
         receive?(.success(snapshot))
         if wasReady && !snapshot.connected {
@@ -218,24 +231,65 @@ actor NativeConversationRuntime: ConversationRuntime {
         return value["result"]
     }
 
-    func perform(_ command: ConversationCommand) throws {
+    func mutateHistory(_ request: ConversationHistoryMutation) async throws -> Session {
+        guard !changingHistory, let service, let sessionID, let target else {
+            throw ConversationRuntimeError(message: "The agent is disconnected or already changing history.")
+        }
+        changingHistory = true
+        defer { changingHistory = false }
+        let boundary = request.boundary
+        let nativeID: String = try await withCheckedThrowingContinuation { continuation in
+            do {
+                try service.mutateConversation(sessionID: sessionID,
+                    boundary: .init(userMessageID: boundary.userMessageID, turnID: boundary.turnID,
+                                    nextTurnUserMessageID: boundary.nextUserMessageID, throughEnd: boundary.throughEnd),
+                    operation: request.operation == .fork ? .fork : .revert) { result in
+                        continuation.resume(with: result)
+                    }
+            } catch { continuation.resume(throwing: error) }
+        }
+        let session = try NativeConversationLocation.session(nativeID: nativeID, source: target)
+        if request.operation == .revert { disconnect() }
+        return session
+    }
+
+    func perform(_ command: ConversationCommand) async throws {
         guard let service, let sessionID else { throw ConversationRuntimeError(message: "The agent is disconnected.") }
         let action: AgentConversationAction
         switch command.action {
         case .prompt: action = .prompt
+        case .steer: action = .steer
         case .cancel: action = .cancel
         case .approval: action = .approval
         case .userInput: action = .userInput
         case .model: action = .model
         case .configuration: action = .configuration
         }
-        if command.action == .prompt { sentPromptIDs.insert(command.id) }
+        if command.action == .prompt || command.action == .steer { sentPromptIDs.insert(command.id) }
         let content: [AcpPromptContentBlock]? = command.attachments.isEmpty ? nil
             : [.text(command.text)] + (try command.attachments.map { try $0.promptContent() })
         let result = try service.perform(action, sessionID: sessionID, commandID: command.id,
             issuedAt: command.issuedAt, text: command.text,
             optionID: command.action == .configuration ? command.requestID : nil,
             requestID: command.requestID, promptContent: content)
+        if command.action == .cancel, target?.session.source == "codex" || target?.session.source == "claude" {
+            let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+            while ContinuousClock.now < deadline {
+                guard self.service === service else {
+                    throw ConversationRuntimeError(message: "The agent disconnected before acknowledging Stop.")
+                }
+                if let status = try service.commandStatuses(sessionID: sessionID).first(where: { $0.commandID == command.id }) {
+                    if status.status == "completed" { break }
+                    if status.status == "failed" {
+                        throw ConversationRuntimeError(message: status.error ?? "The agent rejected Stop.")
+                    }
+                }
+                try await Task.sleep(for: .milliseconds(50))
+                if ContinuousClock.now >= deadline {
+                    throw ConversationRuntimeError(message: "The agent did not acknowledge Stop. Queued work remains held.")
+                }
+            }
+        }
         if command.action == .prompt {
             let receipt = try JSONDecoder().decode(RawTranscriptJSON.self, from: Data(result.utf8))
             if receipt["replayed"].bool == false { newPromptIDs.insert(command.id) }

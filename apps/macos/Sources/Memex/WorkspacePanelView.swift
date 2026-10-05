@@ -5,20 +5,28 @@ struct WorkspacePanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let sessionID = store.selectedID {
+            if store.selectedID != nil {
                 WorkspacePanelTabs(selection: Binding(get: { store.workspacePanel }, set: store.selectWorkspacePanel),
-                                   browser: store.workspaceBrowser.session(for: sessionID),
                                    close: { store.showingWorkspaceChanges = false })
             }
             Divider()
-            // Keep both panes mounted so a tab switch never resets the diff's
-            // selected file, native scroll position, or the browser's page.
+            // Keep panes mounted so tab switches retain selections and edits.
+            // File drafts also survive closing the inspector or changing chats.
             ZStack {
                 Group {
                     if let directory = store.selectedWorkspace {
                         WorkspaceChangesView(directory: directory, isWorking: store.selectedLiveConversation?.isWorking == true,
                                              initialSelectedPath: store.selectedWorkspaceChange,
-                                             reviewRequest: store.workspaceChangeReviewRequest)
+                                             reviewRequest: store.workspaceChangeReviewRequest,
+                                             conversationID: store.selectedID,
+                                             isolation: { store.selected.flatMap { store.workspaceIsolation(for: $0) } },
+                                             rewindConversation: { try await store.rewindConversation(to: $0) },
+                                             addReviewContext: store.selectedLiveConversation.map { live in
+                                                 { context in live.appendContext(title: "Code review", text: context.promptText, source: directory.path) }
+                                             },
+                                             setupCommand: store.selected.flatMap { session in
+                                                 store.createdConversations.contexts[session.id]?.projectID
+                                             }.flatMap { id in store.localProjects.projects.first { $0.id == id }?.setupCommand })
                     } else {
                         ContentUnavailableView("Workspace unavailable", systemImage: "folder",
                             description: Text("Git changes are available for conversations with a local workspace."))
@@ -27,9 +35,20 @@ struct WorkspacePanelView: View {
                 .opacity(store.workspacePanel == .changes ? 1 : 0)
                 .allowsHitTesting(store.workspacePanel == .changes)
                 .accessibilityHidden(store.workspacePanel != .changes)
+                if let directory = store.selectedWorkspace {
+                    WorkspaceFilesView(directory: directory, addContext: store.selectedLiveConversation.map { live in
+                        { text in live.appendContext(title: "Workspace file", text: text, source: directory.path) }
+                    })
+                        .id(directory)
+                        .opacity(store.workspacePanel == .files ? 1 : 0)
+                        .allowsHitTesting(store.workspacePanel == .files)
+                        .accessibilityHidden(store.workspacePanel != .files)
+                }
                 if let sessionID = store.selectedID {
-                    WorkspaceBrowserView(session: store.workspaceBrowser.session(for: sessionID),
-                                         isActive: store.workspacePanel == .browser)
+                    WorkspaceBrowserTabView(tabs: store.workspaceBrowser.tabs(for: sessionID),
+                                            automation: store.workspaceBrowser.automation,
+                                            live: store.selectedLiveConversation,
+                                            isActive: store.workspacePanel == .browser)
                         .opacity(store.workspacePanel == .browser ? 1 : 0)
                         .allowsHitTesting(store.workspacePanel == .browser)
                         .accessibilityHidden(store.workspacePanel != .browser)
@@ -44,13 +63,13 @@ struct WorkspacePanelView: View {
 
 private struct WorkspacePanelTabs: View {
     @Binding var selection: Store.WorkspacePanel
-    @ObservedObject var browser: WorkspaceBrowserSession
     let close: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
             tab(.changes, title: "Changes", symbol: "doc.text.magnifyingglass")
-            tab(.browser, title: browser.title, symbol: "globe")
+            tab(.files, title: "Files", symbol: "folder")
+            tab(.browser, title: "Browser", symbol: "globe")
             tab(.terminal, title: "Terminal", symbol: "terminal")
             Spacer(minLength: 4)
             Button(action: close) { Image(systemName: "sidebar.right").frame(width: 28, height: 28) }
@@ -74,8 +93,7 @@ private struct WorkspacePanelTabs: View {
                 .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
-        .help(panel == .browser ? browser.currentURL?.absoluteString ?? "Browser"
-              : panel == .terminal ? "Workspace terminal (⌘J for drawer)" : "Uncommitted changes")
+        .help(panel == .terminal ? "Workspace terminal (⌘J for drawer)" : panel.title)
         .accessibilityLabel(panel.title)
         .accessibilityValue(selection == panel ? "Selected" : "")
         .accessibilityAddTraits(selection == panel ? .isSelected : [])

@@ -4,7 +4,12 @@ import WebKit
 struct WorkspaceBrowserView: View {
     @ObservedObject var session: WorkspaceBrowserSession
     var isActive = true
+    var live: LiveConversation?
     @FocusState private var addressFocused: Bool
+    @State private var captureError: String?
+    @State private var isCapturing = false
+    @State private var pickingElement = false
+    @State private var pickerTask: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +40,27 @@ struct WorkspaceBrowserView: View {
                     .onSubmit {
                         if session.submitAddress() { addressFocused = false }
                     }
+                Menu {
+                    Button("Add page context to chat") { capture(screenshot: false) }
+                    Button("Add viewport screenshot to chat") { capture(screenshot: true) }
+                    Button("Pick element for chat") { pickElement() }
+                    Divider()
+                    Button("Zoom in") { session.zoom = min(3, session.zoom + 0.1) }
+                    Button("Zoom out") { session.zoom = max(0.5, session.zoom - 0.1) }
+                    Button("Actual size") { session.zoom = 1 }
+                    Picker("Preview width", selection: $session.viewportWidth) {
+                        Text("Fill pane").tag(nil as Double?)
+                        Text("Phone · 390 px").tag(390.0 as Double?)
+                        Text("Tablet · 768 px").tag(768.0 as Double?)
+                        Text("Desktop · 1280 px").tag(1280.0 as Double?)
+                    }
+                    Divider()
+                    Button("Open in default browser") {
+                        if let url = session.currentURL { NSWorkspace.shared.open(url) }
+                    }
+                } label: { Image(systemName: "ellipsis") }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .disabled(isCapturing).help("Preview and context controls")
             }.padding(.horizontal, 8).padding(.vertical, 6)
                 .background(.bar)
             if session.isLoading {
@@ -53,7 +79,22 @@ struct WorkspaceBrowserView: View {
                         .help("Dismiss error").accessibilityLabel("Dismiss browser error")
                 }.padding(10).background(.quaternary)
             }
-            WorkspaceBrowserWebView(webView: session.webView)
+            if pickingElement {
+                HStack {
+                    Text("Click an element to add its context to chat.")
+                    Spacer()
+                    Button("Cancel") { cancelPicker() }
+                }.font(.caption).padding(8).background(.bar)
+            }
+            if let captureError {
+                Text(captureError).font(.caption).foregroundStyle(.secondary).padding(8).textSelection(.enabled)
+            }
+            GeometryReader { geometry in
+                ScrollView(.horizontal) {
+                    WorkspaceBrowserWebView(webView: session.webView)
+                        .frame(width: session.viewportWidth ?? geometry.size.width, height: geometry.size.height)
+                }
+            }
                 .id(ObjectIdentifier(session))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay {
@@ -77,11 +118,84 @@ struct WorkspaceBrowserView: View {
         }
         .onChange(of: addressFocused) { _, focused in session.isEditingAddress = focused }
         .onChange(of: session) { previous, next in
+            cancelPicker(in: previous)
             previous.isEditingAddress = false
             next.isEditingAddress = false
             addressFocused = false
         }
-        .onDisappear { session.isEditingAddress = false }
+        .onDisappear { session.isEditingAddress = false; cancelPicker() }
+    }
+
+    private func capture(screenshot: Bool) {
+        guard let live else { captureError = "Resume this conversation before adding browser context."; return }
+        let capturedSession = session
+        isCapturing = true
+        captureError = nil
+        Task { @MainActor in
+            defer { isCapturing = false }
+            do {
+                let source = capturedSession.currentURL?.absoluteString ?? "App browser"
+                let accepted: Bool
+                if screenshot {
+                    let png = try await capturedSession.screenshot()
+                    accepted = live.appendImageContext(title: capturedSession.title, pngData: png, source: source)
+                } else {
+                    let text = try await capturedSession.pageContext()
+                    accepted = live.appendContext(title: capturedSession.title, text: text, source: source)
+                }
+                if !accepted { captureError = "The composer could not accept this browser context." }
+            } catch { captureError = error.localizedDescription }
+        }
+    }
+
+    private func pickElement() {
+        guard let live else { captureError = "Resume this conversation before adding browser context."; return }
+        let capturedSession = session
+        pickingElement = true
+        captureError = nil
+        pickerTask = Task { @MainActor in
+            defer { pickingElement = false; pickerTask = nil }
+            do {
+                _ = try await capturedSession.runBrowserScript("""
+                    if (window.__memexPickHandler) document.removeEventListener('click', window.__memexPickHandler, true);
+                    window.__memexPicked = null;
+                    window.__memexPickHandler = e => {
+                      e.preventDefault(); e.stopImmediatePropagation();
+                      const el = e.target;
+                      window.__memexPicked = JSON.stringify({url:location.href,title:document.title,
+                        tag:el.tagName,id:el.id,text:(el.innerText || el.textContent || '').slice(0,16384),
+                        html:el.outerHTML.slice(0,16384)});
+                      document.removeEventListener('click', window.__memexPickHandler, true);
+                    };
+                    document.addEventListener('click', window.__memexPickHandler, true);
+                    return '';
+                    """)
+                for _ in 0..<300 {
+                    try await Task.sleep(for: .milliseconds(200))
+                    try Task.checkCancellation()
+                    let context = try await capturedSession.runBrowserScript("return window.__memexPicked || ''; ")
+                    if !context.isEmpty {
+                        if !live.appendContext(title: "Browser element", text: context,
+                                               source: capturedSession.currentURL?.absoluteString ?? "App browser") {
+                            captureError = "The composer could not accept this element context."
+                        }
+                        return
+                    }
+                }
+                captureError = "Element selection timed out. Try again."
+                cancelPicker(in: capturedSession)
+            } catch is CancellationError { }
+            catch { captureError = error.localizedDescription; cancelPicker(in: capturedSession) }
+        }
+    }
+
+    private func cancelPicker(in target: WorkspaceBrowserSession? = nil) {
+        pickerTask?.cancel()
+        pickingElement = false
+        let target = target ?? session
+        Task { @MainActor in
+            _ = try? await target.runBrowserScript("if (window.__memexPickHandler) document.removeEventListener('click', window.__memexPickHandler, true); delete window.__memexPicked; delete window.__memexPickHandler; return ''; ")
+        }
     }
 }
 

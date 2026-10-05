@@ -33,8 +33,10 @@ enum ConversationProjection {
             return ConversationQuestion(id: id, title: payload["title"].string, prompt: payload["prompt"].string ?? "Your input is needed",
                 placeholder: payload["placeholder"].string, choices: payload["choices"].array.compactMap {
                     guard let id = $0["id"].string, let title = $0["title"].string else { return nil }
-                    return .init(id: id, title: title, value: $0["value"].string ?? title)
-                })
+                    return .init(id: id, title: title, value: $0["value"].string ?? title,
+                                 description: $0["description"].string)
+                }, defaultValue: payload["defaultValue"].string, multiSelect: payload["multiSelect"].bool ?? false,
+                   isSecret: payload["isSecret"].bool ?? false)
         }
         let pendingPrompts = operations.array.filter {
             ["thread.turn.start", "thread.turn.steer"].contains($0["command"]["type"].string ?? "")
@@ -63,6 +65,8 @@ enum ConversationProjection {
         var liveResults: [String: RawTranscriptJSON] = [:]
         var liveUserTurns: Set<String> = []
         var sourceTurns: [String: String] = [:]
+        var sourceMetadata: [String: RawTranscriptJSON] = [:]
+        var liveMetadata: [String: RawTranscriptJSON] = [:]
         var emitted: Set<String> = []
         var records: [TranscriptRecord] = []
 
@@ -76,9 +80,9 @@ enum ConversationProjection {
                       ownedLiveUserTurns.contains(turn) else { return nil }
                 return turn
             })
-            if !liveUserTurns.isEmpty {
-                sourceTurns = Self.codexSourceTurns(conversation["persisted"].array)
-            }
+            let catalog = conversation["persisted"].array.isEmpty ? persisted : conversation["persisted"].array
+            sourceTurns = Self.codexSourceTurns(catalog)
+            sourceMetadata = Self.metadataByEntity(catalog)
             for entity in persisted {
                 if let id = entity["entity_id"].string { entities[id] = entity }
             }
@@ -90,7 +94,34 @@ enum ConversationProjection {
                 if entity["body"]["kind"].string == "tool_result", let call = entity["body"]["data"]["native_correlation_key"].string {
                     liveResults[call] = entity
                 }
+                let payload = entity["body"]["data"]["payload"]
+                if payload["data"]["namespace"].string == "memex/live",
+                   let target = payload["data"]["value"]["item_id"].string {
+                    liveMetadata[target] = payload["data"]["value"]
+                }
             }
+        }
+
+        /// Metadata is joined by exact retained evidence, never text or proximity.
+        /// Some tools aggregate call and result evidence; conflicting envelopes are
+        /// intentionally left unclassified rather than assigning a guessed phase.
+        private static func metadataByEntity(_ catalog: [RawTranscriptJSON]) -> [String: RawTranscriptJSON] {
+            var byEvidence: [String: [RawTranscriptJSON]] = [:]
+            for entity in catalog {
+                let payload = entity["body"]["data"]["payload"]
+                guard payload["type"].string == "metadata",
+                      ["codex", "claude"].contains(payload["data"]["namespace"].string ?? "") else { continue }
+                for evidence in entity["evidence"].array {
+                    if let key = evidence.jsonText { byEvidence[key, default: []].append(payload["data"]["value"]) }
+                }
+            }
+            var result: [String: RawTranscriptJSON] = [:]
+            for entity in catalog {
+                guard let id = entity["entity_id"].string else { continue }
+                let candidates = entity["evidence"].array.flatMap { byEvidence[$0.jsonText ?? ""] ?? [] }
+                if let first = candidates.first, candidates.allSatisfy({ $0 == first }) { result[id] = first }
+            }
+            return result
         }
 
         /// Canonical content and its Codex metadata share the same retained
@@ -125,18 +156,48 @@ enum ConversationProjection {
                 .sorted { $0["body"]["data"]["source_order"].integer < $1["body"]["data"]["source_order"].integer }
             for entry in entries {
                 let data = entry["body"]["data"]
-                guard data["display"].bool != false else { continue }
                 let payload = data["payload"]
-                if payload["type"].string == "entity" {
+                if payload["type"].string == "metadata" || payload["type"].string == "opaque" {
+                    emitMetadata(entry, payload: payload)
+                } else if data["display"].bool == false {
+                    append(entry, suffix: "raw", role: "system", text: "", rawOnly: true)
+                } else if payload["type"].string == "entity" {
                     if let id = payload["data"]["entity_id"].string, let entity = entities[id] { emit(entity) }
                 } else if payload["type"].string == "branch_summary", let summary = payload["data"]["summary"].string {
                     append(entry, suffix: "summary", role: "system", text: summary, context: "Conversation summary")
                 } else if payload["type"].string == "model_change", let model = payload["data"]["model"].string {
                     append(entry, suffix: "model", role: "system", text: model, context: "Model")
+                } else {
+                    append(entry, suffix: "raw", role: "system", text: "", rawOnly: true)
                 }
             }
             for entity in live { emit(entity) }
             return records
+        }
+
+        mutating func emitMetadata(_ entity: RawTranscriptJSON, payload: RawTranscriptJSON) {
+            let value = payload["data"]["value"]
+            if let id = value["child"]["id"].string {
+                let child = value["child"]
+                append(entity, suffix: "child", role: "subagent",
+                       text: (child["title"].string ?? id) + " · " + (child["status"].string ?? "unknown"),
+                       activity: RawTranscriptJSON.object(["child": child]).jsonText)
+                return
+            }
+            let native = value["payload"].jsonText == nil ? value : value["payload"]
+            let event = native["type"].string ?? value["subtype"].string ?? ""
+            let lifecycle = ["task_started", "task_complete", "turn_complete", "turn_aborted", "context_compacted",
+                             "compact_boundary", "retry", "retrying", "handoff", "turn_failed"].contains(event)
+            if lifecycle {
+                let normalized = event == "turn_complete" ? "task_complete" : event
+                if let turn = native["turn_id"].string,
+                   !emitted.insert("lifecycle:\(turn):\(normalized)").inserted { return }
+                append(entity, suffix: "event", role: "lifecycle",
+                       text: native["message"].string ?? native["reason"].string ?? value["content"].string ?? "",
+                       turnID: native["turn_id"].string, lifecycle: normalized)
+            } else {
+                append(entity, suffix: "raw", role: "system", text: "", rawOnly: true)
+            }
         }
 
         mutating func emit(_ original: RawTranscriptJSON) {
@@ -217,13 +278,26 @@ enum ConversationProjection {
                     if part["type"].string == "structured" { return part["data"]["value"].jsonText }
                     return nil
                 }.joined(separator: "\n")
+                var media = data["parts"].array.compactMap { part -> RawTranscriptJSON? in
+                    if part["type"].string == "opaque" { return part["data"]["value"] }
+                    if part["type"].string == "artifact", let id = part["data"]["entity_id"].string,
+                       let artifact = entities[id] { return Self.artifactContent(artifact, title: "Tool attachment") }
+                    return nil
+                }
+                if let ref = data["full_artifact"]["entity_id"].string, let artifact = entities[ref] {
+                    media.append(Self.artifactContent(artifact, title: "Full output"))
+                }
                 append(entity, suffix: "result", role: "tool_result", text: "", output: text,
-                       parentTool: data["native_correlation_key"].string, isError: data["outcome"].string == "error")
+                       parentTool: data["native_correlation_key"].string, isError: data["outcome"].string == "error",
+                       sourceContent: media.isEmpty ? nil : RawTranscriptJSON.array(media).jsonText)
             case "artifact":
                 appendArtifact(entity, owner: entity, suffix: "artifact", role: "assistant")
             case "context_boundary":
+                append(entity, suffix: "boundary", role: "lifecycle", text: "",
+                       lifecycle: data["kind"].string == "compaction" ? "context_compacted" : data["kind"].string)
                 if let summary = data["summary"]["entity_id"].string, let value = entities[summary] { emit(value) }
-            default: break
+            case "entry": emitMetadata(entity, payload: data["payload"])
+            default: append(entity, suffix: "raw", role: "system", text: "", rawOnly: true)
             }
         }
 
@@ -268,17 +342,40 @@ enum ConversationProjection {
             }
         }
 
+        private static func artifactContent(_ entity: RawTranscriptJSON, title: String) -> RawTranscriptJSON {
+            let data = entity["body"]["data"]
+            let location = data["content"]["data"]["uri"].string ?? data["native_locations"].array.first?.string
+            var content: [String: RawTranscriptJSON] = ["type": .string("attachment"), "title": .string(title)]
+            if let location {
+                content["path"] = .string(location)
+                content["url"] = .string(location)
+                if data["media_type"].string?.hasPrefix("image/") == true { content["type"] = .string("image") }
+            }
+            return .object(content)
+        }
+
         mutating func append(_ entity: RawTranscriptJSON, suffix: String, role: String, text: String,
                              nativeID: String? = nil, toolName: String? = nil, input: String? = nil,
                              output: String? = nil, parentTool: String? = nil, isError: Bool? = nil, context: String? = nil,
-                             sourceContent: String? = nil, rawOnly: Bool = false) {
+                             sourceContent: String? = nil, rawOnly: Bool = false,
+                             turnID: String? = nil, lifecycle: String? = nil, activity: String? = nil) {
             guard let identity = entity["entity_id"].string ?? entity["item_id"].string else { return }
+            let metadata = sourceMetadata[identity] ?? .null
+            let data = entity["body"]["data"]
             let message = Message(role: role, text: text, toolName: toolName, toolInput: input, toolOutput: output,
-                eventID: nativeID, parentToolUseID: parentTool, sourceTurnID: entity["native_turn_id"].string,
+                eventID: nativeID, parentToolUseID: parentTool,
+                sourceTurnID: turnID ?? entity["native_turn_id"].string ?? sourceTurns[identity],
+                assistantPhase: data["assistant_phase"].string ?? metadata["payload"]["phase"].string,
+                lifecycleEvent: lifecycle,
                 sourceRecordType: entity["item_id"].string == nil ? "agent_history" : "agent_live",
                 sourceContent: sourceContent,
                 toolResultIsError: isError, contextLabel: context)
-            records.append(TranscriptRecord(recordID: "runtime:\(identity):\(suffix)", record: message,
+            var decorated = message
+            if let phase = liveMetadata[identity]?["phase"].string { decorated.assistantPhase = phase }
+            decorated.structuredActivity = activity ?? liveMetadata[identity]?["activity"].jsonText
+            decorated.activityStatus = liveMetadata[identity]?["status"].string ?? data["status"].string
+            decorated.outputCompleteness = data["completeness"].string
+            records.append(TranscriptRecord(recordID: "runtime:\(identity):\(suffix)", record: decorated,
                                             rawJSON: try? entity.prettyPrinted(), isRawOnly: rawOnly))
         }
     }

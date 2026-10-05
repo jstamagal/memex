@@ -5,10 +5,19 @@ import Observation
 final class Store {
     let liveConversations: LiveConversations
     let createdConversations: CreatedConversationCatalog
+    let conversationLibrary: ConversationLibrary
+    let conversationNotifications: ConversationNotifications
+    let conversationRelationships: ConversationRelationships
+    let executionHosts: ExecutionHostConnections
+    var historyActionInProgress = false
+    var historyActionError: String?
+    var workspaceCheckpointWarning: String?
+    var conversationLibraryScope: ConversationLibrary.Scope = .active
     let localProjects: LocalProjects
     let newConversationDraft: NewConversationDraft
     let workspaceClient: ConversationWorkspaceClient
     @ObservationIgnored let workspaceBrowser = WorkspaceBrowserStore()
+    @ObservationIgnored let workspaceBrowserExecution = WorkspaceBrowserExecutionBridge()
     @ObservationIgnored let workspaceTerminals = WorkspaceTerminalStore()
     @ObservationIgnored let makeConversation: @Sendable (NewConversationRequest) async throws -> CreatedConversation
     var sessions: [Session] = []
@@ -33,6 +42,8 @@ final class Store {
     var loadingMachines = false
     var findConversationRequest = 0
     var showingProjectSetup = false
+    var showingExecutionHosts = false
+    var executionHostError: String?
     var addingProject = false
     var sidebarMode: SidebarMode = .projects {
         didSet { filterPreferences?.set(sidebarMode.rawValue, forKey: "sidebar-mode") }
@@ -125,11 +136,19 @@ final class Store {
     init(client: MemexClient = MemexClient(), projectCatalog: ProjectCatalog? = nil, filterPreferences: UserDefaults? = nil,
          draftStore: ConversationDraftStore = ConversationDraftStore(), liveConversations: LiveConversations? = nil,
          createdConversations: CreatedConversationCatalog = CreatedConversationCatalog(),
+         conversationLibrary: ConversationLibrary = ConversationLibrary(),
+         conversationNotifications: ConversationNotifications = ConversationNotifications(),
+         conversationRelationships: ConversationRelationships = ConversationRelationships(),
+         executionHosts: ExecutionHostConnections = ExecutionHostConnections(),
          localProjects: LocalProjects = LocalProjects(), newConversationDraft: NewConversationDraft = NewConversationDraft(),
          workspaceClient: ConversationWorkspaceClient = ConversationWorkspaceClient(),
          makeConversation: @escaping @Sendable (NewConversationRequest) async throws -> CreatedConversation = { try await NewConversationRuntime.create($0) }) {
-        self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore)
+        self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore, executionHosts: executionHosts)
+        self.executionHosts = executionHosts
         self.createdConversations = createdConversations
+        self.conversationLibrary = conversationLibrary
+        self.conversationNotifications = conversationNotifications
+        self.conversationRelationships = conversationRelationships
         self.localProjects = localProjects
         self.newConversationDraft = newConversationDraft
         self.workspaceClient = workspaceClient
@@ -142,6 +161,17 @@ final class Store {
         }
         if let data = filterPreferences?.data(forKey: Self.filterPreferencesKey),
            let saved = try? JSONDecoder().decode(ConversationFilters.self, from: data) { filters = saved }
+        self.liveConversations.onNotificationState = { [weak self] session, state in
+            guard let self else { return }
+            self.conversationNotifications.receive(self.conversationLibrary.presenting(session), state: state)
+        }
+        self.liveConversations.beforePrompt = { [weak self] session, command in
+            await self?.captureTurnCheckpoint(session: session, turnID: "command:" + command.id, moment: .beforeTurn)
+        }
+        self.liveConversations.afterTurn = { [weak self] session, snapshot in
+            guard let turnID = snapshot.records.last(where: { $0.record.sourceTurnID != nil })?.record.sourceTurnID else { return }
+            await self?.captureTurnCheckpoint(session: session, turnID: turnID, moment: .afterTurn)
+        }
     }
 
     enum Scope: Hashable {
@@ -168,19 +198,38 @@ final class Store {
     }
 
     enum WorkspacePanel: String, CaseIterable, Identifiable {
-        case changes, browser, terminal
+        case changes, files, browser, terminal
         var id: String { rawValue }
         var title: String {
-            switch self { case .changes: "Changes"; case .browser: "Browser"; case .terminal: "Terminal" }
+            switch self { case .changes: "Changes"; case .files: "Files"; case .browser: "Browser"; case .terminal: "Terminal" }
         }
     }
 
-    var selected: Session? { sessions.first { $0.id == selectedID } }
+    var selected: Session? {
+        guard let selectedID,
+              let session = sessions.first(where: { $0.id == selectedID })
+                ?? conversationLibrary.savedSession(id: selectedID)
+                ?? createdConversations.sessions.first(where: { $0.id == selectedID }) else { return nil }
+        return conversationLibrary.presenting(session)
+    }
     var selectedLiveConversation: LiveConversation? { selectedID.flatMap { liveConversations.sessions[$0] } }
     var selectedWorkspace: URL? {
-        guard let selected, selected.machineID == "local", let cwd = selected.cwd?.nilIfBlank,
+        guard let selected, canAccessLocalFiles(for: selected), let cwd = selected.cwd?.nilIfBlank,
               cwd.hasPrefix("/") else { return nil }
         return URL(fileURLWithPath: cwd, isDirectory: true)
+    }
+
+    func canAccessLocalFiles(for session: Session) -> Bool {
+        session.machineID == "local" && liveConversations.sessions[session.id]?.isServerOwned != true
+            && executionHosts.connection(for: session) == nil
+    }
+
+    func openHostedConversation(_ session: Session, connection: ExecutionHostConnection, conversationID: String) {
+        liveConversations.prepareHosted(session, connection: connection, conversationID: conversationID)
+        conversationLibrary.retain(session)
+        if !sessions.contains(where: { $0.id == session.id }) { sessions.insert(session, at: 0) }
+        showingExecutionHosts = false
+        openNotifiedConversation(session.id)
     }
     var selectedWorkspaceChange: String? {
         selectedWorkspace.flatMap { workspaceChangeSelections[$0.path] }
@@ -285,6 +334,23 @@ final class Store {
     func openConversation(_ session: Session) {
         if scope == .home { scope = homeProject.map(Scope.project) ?? .all }
         selectedID = session.id
+    }
+
+    func openNotifiedConversation(_ id: String) {
+        guard let session = sessions.first(where: { $0.id == id })
+            ?? liveConversations.sessions[id]?.session
+            ?? createdConversations.sessions.first(where: { $0.id == id })
+            ?? conversationLibrary.savedSession(id: id) else { return }
+        let entry = conversationLibrary.entries[id]
+        conversationLibraryScope = entry?.removed == true ? .removed : entry?.archived == true ? .archived : .active
+        // Reveal the exact identity without changing archive/removal metadata.
+        query = ""
+        filters = .defaults
+        homeProject = nil
+        scope = .all
+        machineSelection = .machine(session.machineID)
+        if !sessions.contains(where: { $0.id == id }) { sessions.insert(session, at: 0) }
+        selectedID = id
     }
 
     @discardableResult
@@ -405,6 +471,7 @@ final class Store {
     }
 
     func refresh(refreshActivity: Bool = true) async {
+        conversationLibrary.reload()
         filterReferenceDate = Date()
         countRefresh += 1
         if refreshActivity { activityRefresh += 1 }

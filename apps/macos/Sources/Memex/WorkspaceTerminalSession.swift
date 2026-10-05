@@ -6,25 +6,36 @@ import Observation
 @MainActor @Observable
 final class WorkspaceTerminalStore {
     private(set) var sessions: [URL: WorkspaceTerminalSession] = [:]
+    private(set) var workspaces: [URL: WorkspaceTerminalGroup] = [:]
     private var isShutdown = false
 
     func session(for directory: URL) async throws -> WorkspaceTerminalSession {
+        try await group(for: directory).selected
+    }
+
+    func group(for directory: URL) async throws -> WorkspaceTerminalGroup {
         let local = try Self.validate(directory)
         let root = try await WorkspaceChangesClient().worktreeRoot(directory: local) ?? local
         guard !isShutdown else { throw WorkspaceChangesError(message: "Terminals have shut down.") }
         _ = try Self.validate(root)
-        if let session = sessions[root] { return session }
+        if let group = workspaces[root] { return group }
         let session = WorkspaceTerminalSession(directory: root)
-        sessions[root] = session
-        return session
+        let group = WorkspaceTerminalGroup(directory: root, initial: session)
+        sessions[root] = group.selected
+        workspaces[root] = group
+        return group
     }
 
-    var needsCloseConfirmation: Bool { sessions.values.contains { $0.needsCloseConfirmation } }
+    var needsCloseConfirmation: Bool { workspaces.values.contains { $0.sessions.contains { $0.needsCloseConfirmation } } }
 
     func shutdown() {
         isShutdown = true
-        for session in sessions.values { session.close() }
+        for group in workspaces.values {
+            group.saveAllHistory()
+            for session in group.sessions { session.close() }
+        }
         sessions.removeAll()
+        workspaces.removeAll()
     }
 
     static func validate(_ directory: URL) throws -> URL {
@@ -45,22 +56,29 @@ final class WorkspaceTerminalStore {
 @MainActor @Observable
 final class WorkspaceTerminalSession: TerminalSurfaceTitleDelegate, TerminalSurfaceCloseDelegate,
     TerminalSurfaceLifecycleDelegate, TerminalSurfaceClipboardConfirmationDelegate {
-    let id = UUID()
+    let id: UUID
     let directory: URL
     private(set) var title: String
     private(set) var isExited = false
     private(set) var isStarted = false
     private(set) var error: String?
+    private(set) var capturedHistory = ""
     var closeRequested = false
     @ObservationIgnored private(set) var terminalView: AppTerminalView?
     @ObservationIgnored private(set) var surface: TerminalSurface?
     @ObservationIgnored private var controller: TerminalController?
     @ObservationIgnored private var tickTimer: Timer?
     @ObservationIgnored weak var host: WorkspaceTerminalHost?
+    @ObservationIgnored var didFocus: (() -> Void)?
 
-    init(directory: URL) {
+    init(directory: URL, id: UUID = UUID(), restoredHistory: String? = nil) {
+        self.id = id
         self.directory = directory
         title = directory.lastPathComponent
+        if let restoredHistory {
+            capturedHistory = restoredHistory
+            isExited = true
+        }
     }
 
     // The public engine wrapper does not expose Ghostty's close-confirmation
@@ -74,6 +92,7 @@ final class WorkspaceTerminalSession: TerminalSurfaceTitleDelegate, TerminalSurf
         catch { self.error = error.localizedDescription; return nil }
         let controller = TerminalController()
         let view = WorkspaceAppTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 320))
+        view.didFocus = { [weak self] in self?.didFocus?() }
         view.delegate = self
         view.configuration = TerminalSurfaceOptions(workingDirectory: directory.path, waitAfterCommand: false)
         view.setSurfaceVisible(false)
@@ -90,6 +109,7 @@ final class WorkspaceTerminalSession: TerminalSurfaceTitleDelegate, TerminalSurf
 
     /// Called only after user confirmation, or during approved app shutdown.
     func close() {
+        _ = captureHistory()
         closeRequested = false
         isExited = true
         tickTimer?.invalidate()
@@ -116,6 +136,23 @@ final class WorkspaceTerminalSession: TerminalSurfaceTitleDelegate, TerminalSurf
         error = nil
         title = directory.lastPathComponent
         host?.refresh()
+    }
+
+    /// Explicit capture uses Ghostty's public selection API. It changes the
+    /// selection but never synthesizes shell input or accesses the clipboard.
+    @discardableResult func captureHistory() -> String {
+        if let view = terminalView, view.performBindingAction("select_all"), let text = surface?.readSelection() {
+            capturedHistory = String(text.suffix(262_144))
+            _ = view.performBindingAction("clear_selection")
+        }
+        return capturedHistory
+    }
+
+    func selectedText() -> String { String((surface?.readSelection() ?? "").prefix(65_536)) }
+
+    func clearHistory() {
+        _ = terminalView?.performBindingAction("clear_screen")
+        capturedHistory = ""
     }
 
     func terminalDidAttachSurface(_ surface: TerminalSurface) {
@@ -168,6 +205,14 @@ final class WorkspaceTerminalSession: TerminalSurfaceTitleDelegate, TerminalSurf
 /// Keep the application's drawer shortcut available even if Ghostty adds a
 /// binding for it. All other keyboard, IME and paste handling stays native.
 final class WorkspaceAppTerminalView: AppTerminalView {
+    var didFocus: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted { didFocus?() }
+        return accepted
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
            event.charactersIgnoringModifiers?.lowercased() == "j" {

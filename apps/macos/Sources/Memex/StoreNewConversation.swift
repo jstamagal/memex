@@ -17,16 +17,22 @@ extension Store {
     }
 
     var canStartConversation: Bool {
+        canPrepareConversation && newConversationDraft.value.text.nilIfBlank != nil
+    }
+
+    /// Preparing a native session loads its real settings without sending a prompt.
+    var canPrepareConversation: Bool {
         !startingConversation && (newConversationDraft.value.projectID == nil || newConversationProject != nil)
-            && newConversationDraft.value.text.nilIfBlank != nil
             && newConversationDraft.value.createdSessionID == nil
             && newConversationDraft.value.preparedWorkspace?.state != .failed
             && newConversationDraft.error == nil
             && (newConversationDraft.value.projectID == nil || localProjects.error == nil)
     }
 
-    func startConversationFromHome() async {
-        guard canStartConversation else { return }
+    func startConversationFromHome(sendImmediately: Bool = true, attachments: [URL] = [],
+                                   preferences: ConversationComposerPreferences.Selection? = nil,
+                                   onPrepared: ((LiveConversation) -> Void)? = nil) async {
+        guard sendImmediately ? canStartConversation : canPrepareConversation else { return }
         let project = newConversationProject
         startingConversation = true
         newConversationError = nil
@@ -64,10 +70,26 @@ extension Store {
             if let error = createdConversations.error ?? newConversationDraft.error ?? liveConversations.drafts.error {
                 throw ConversationRuntimeError(message: error)
             }
+            let preferences = preferences ?? ConversationComposerPreferences.selection(provider: draft.provider)
+            if !(await conversation.applySettings(modelID: preferences.modelID, configurationValues: preferences.configurations)) {
+                revealCreatedConversation(conversation.session)
+                throw ConversationRuntimeError(message: conversation.error ?? "Conversation settings could not be confirmed. Review this draft before sending.")
+            }
+            if !attachments.isEmpty {
+                await conversation.attachFiles(attachments)
+                await liveConversations.drafts.flush()
+                if let error = conversation.attachmentError ?? conversation.draftSaveError {
+                    // Keep the created identity and open its editable draft. Retrying
+                    // attachment capture must never allocate another native session.
+                    revealCreatedConversation(conversation.session)
+                    throw ConversationRuntimeError(message: error)
+                }
+            }
             try await newConversationDraft.finishTransfer()
             revealCreatedConversation(conversation.session)
             conversation.focus()
-            await conversation.send()
+            onPrepared?(conversation)
+            if sendImmediately { await conversation.send() }
         } catch {
             if let failed = (error as? ConversationWorkspacePreparationError)?.retainedWorkspace {
                 newConversationDraft.value.preparedWorkspace = failed
