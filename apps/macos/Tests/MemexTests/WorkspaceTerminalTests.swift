@@ -94,7 +94,9 @@ struct WorkspaceTerminalTests {
         let otherView = try #require(other.terminalView)
         #expect(otherView.paste(text: "sleep 60 & MEMEX_BG_PID=$!; printf '%s\\n' \"$$\" \"$MEMEX_BG_PID\" > '\(secondPID.path)'"))
         #expect(otherView.sendKey(.enter))
-        try await waitUntil { FileManager.default.fileExists(atPath: secondPID.path) }
+        try await waitUntil(diagnostics: { other.captureHistory() }) {
+            FileManager.default.fileExists(atPath: secondPID.path)
+        }
         let runningPIDs = try String(contentsOf: secondPID, encoding: .utf8).split(separator: "\n").map(String.init)
         let pid = try #require(runningPIDs.first)
         try #require(runningPIDs.count == 2)
@@ -171,10 +173,11 @@ struct WorkspaceTerminalTests {
         #expect(second.terminalView === secondView)
     }
 
-    private func waitUntil(sourceLocation: SourceLocation = #_sourceLocation, _ predicate: () -> Bool) async throws {
+    private func waitUntil(diagnostics: () -> String = { "" }, sourceLocation: SourceLocation = #_sourceLocation,
+                           _ predicate: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !predicate(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }
-        #expect(predicate(), "Terminal state did not arrive before the deadline", sourceLocation: sourceLocation)
+        #expect(predicate(), "Terminal state did not arrive before the deadline. \(diagnostics())", sourceLocation: sourceLocation)
         guard predicate() else { throw WorkspaceChangesError(message: "Terminal test timed out.") }
     }
 }
