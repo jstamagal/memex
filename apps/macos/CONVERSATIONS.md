@@ -45,6 +45,18 @@ their explanatory choices and support single choice, multiple selection, and
 custom answers as advertised by the provider. Stale/disconnected request controls
 are disabled. Unsupported actions are not presented as universal capabilities.
 
+Use **Back** and **Next** to review pending questions; changing steps preserves each
+question's draft and does not send it. **Submit answer** replies only to that
+question's original native request. **Attach text files to answer…** captures up to
+10 UTF-8 files totaling 1 MB and includes their actual contents in the answer,
+including when the files later change. Question drafts and these attachments stay
+in the open viewer until submitted; they are not recovered after app restart.
+Images, audio, video, PDF and binary answer attachments are rejected because the
+current native question transports accept strings, not media blocks. Attach media
+to a separate prompt instead. Codex, Claude SDK and the current ACP bridge expose
+no independent asynchronous-question dismissal operation, so **Stop conversation**
+remains an interruption action and is not presented as dismissing one question.
+
 ## Providers and related work
 
 Built-in local execution uses Codex's app server and Claude Code's SDK. **Configure

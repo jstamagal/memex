@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test"
+import type { HostSchedule, HostWorktree } from "../src/execution"
 
 async function hostFixture(page: Page, failFirstSend = false) {
   const calls: { method: string; params: Record<string, unknown> }[] = []
@@ -6,6 +7,8 @@ async function hostFixture(page: Page, failFirstSend = false) {
   let interrupted = false
   let sendAttempts = 0
   let model = "model-one"
+  const worktrees: HostWorktree[] = []
+  const schedules: HostSchedule[] = []
   const conversation = { id: "host-conversation", nativeSessionID: "native-conversation", provider: "codex", providerInstanceID: "codex:/home/user/.codex",
     workspaceID: "/work/project", cwd: "/work/project", transcriptPath: "/home/user/.codex/sessions/session.jsonl", title: "Test conversation", connected: true }
   await page.route("**/api/**", async route => {
@@ -19,10 +22,35 @@ async function hostFixture(page: Page, failFirstSend = false) {
     calls.push(request)
     let result: unknown
     switch (request.method) {
-      case "host.info": result = { hostId: "test-host", providers: ["codex"], capabilities: ["conversation", "queue", "schedules"] }; break
-      case "workspace.list": result = [{ id: "/work/project", path: "/work/project" }]; break
+      case "host.info": result = { hostId: "test-host", providers: ["codex"], capabilities: ["conversation", "queue", "schedules", "schedules.wall_clock", "worktree.lifecycle"] }; break
+      case "workspace.list": result = [{ id: "/work/project", path: "/work/project" }, ...worktrees.filter(tree => !tree.archived && !tree.removed).map(tree => ({ id: tree.workspaceId, path: tree.path, worktreeID: tree.id, repositoryWorkspaceID: tree.repositoryWorkspaceId }))]; break
+      case "worktree.list": result = worktrees; break
+      case "worktree.create": {
+        const tree: HostWorktree = { id: "owned-worktree", path: "/private/host/worktrees/owned/checkout", workspaceId: "/private/host/worktrees/owned/checkout",
+          repositoryWorkspaceId: String(request.params.workspaceId), branch: "memex-chat-owned", baseRef: String(request.params.baseRef), state: "ready", archived: false, removed: false, referencedBy: [] }
+        worktrees.push(tree); result = tree; break
+      }
+      case "worktree.archive": {
+        const tree = worktrees.find(tree => tree.id === request.params.worktreeId)!
+        tree.archived = request.params.archived !== false; result = tree; break
+      }
+      case "worktree.cleanup": {
+        const tree = worktrees.find(tree => tree.id === request.params.worktreeId)!
+        tree.removed = true; tree.archived = true; result = tree; break
+      }
+      case "worktree.reattach": {
+        const tree = worktrees.find(tree => tree.id === request.params.worktreeId)!
+        tree.removed = false; tree.archived = false; result = tree; break
+      }
       case "conversation.list": result = created ? [conversation] : []; break
-      case "schedule.list": result = []; break
+      case "schedule.list": result = schedules; break
+      case "schedule.upsert": {
+        const schedule: HostSchedule = { id: String(request.params.scheduleId), conversationID: String(request.params.conversationId), prompt: String(request.params.text),
+          intervalSeconds: request.params.intervalSeconds as number | undefined, wallClock: request.params.wallClock as HostSchedule["wallClock"], paused: false, nextRunAt: "2026-10-06T16:30:00Z" }
+        const prior = schedules.findIndex(item => item.id === schedule.id)
+        if (prior < 0) schedules.push(schedule); else schedules[prior] = schedule
+        result = schedule; break
+      }
       case "conversation.create": created = true; result = { conversation }; break
       case "conversation.model": model = String(request.params.text); result = { receipt: { accepted: true } }; break
       case "conversation.send":
@@ -107,4 +135,46 @@ test("retrying an uncertain send preserves newly attached draft context", async 
   await expect(page.getByRole("button", { name: "Retry exact command" })).toHaveCount(0)
   await expect(page.getByLabel("Message to agent")).toHaveValue("Do this once")
   await expect(page.getByRole("button", { name: "context.txt ×" })).toBeVisible()
+})
+
+test("weekday schedule sends explicit local time and zone and restores them for editing", async ({ page }) => {
+  const calls = await hostFixture(page)
+  await page.getByText("Schedules", { exact: true }).click()
+  await page.getByLabel("Scheduled prompt").fill("Weekday check")
+  await page.getByLabel("Schedule recurrence").selectOption("wallClock")
+  await page.getByLabel("Schedule local time").fill("09:30")
+  await page.getByLabel("Schedule time zone").fill("America/Los_Angeles")
+  await page.getByLabel("Tuesday", { exact: true }).uncheck()
+  await page.getByRole("button", { name: "Save schedule", exact: true }).click()
+  await expect.poll(() => calls.filter(call => call.method === "schedule.upsert").length).toBe(1)
+  const saved = calls.find(call => call.method === "schedule.upsert")!.params
+  expect(saved.wallClock).toEqual({ localTime: "09:30", weekdays: [1, 3, 4, 5], timeZone: "America/Los_Angeles" })
+  expect(saved.intervalSeconds).toBeUndefined()
+  await page.getByRole("button", { name: "Edit", exact: true }).click()
+  await expect(page.getByLabel("Schedule local time")).toHaveValue("09:30")
+  await expect(page.getByLabel("Schedule time zone")).toHaveValue("America/Los_Angeles")
+  await expect(page.getByLabel("Tuesday", { exact: true })).not.toBeChecked()
+})
+
+test("worktree lifecycle uses returned identities and makes checkout available to new conversations", async ({ page }) => {
+  const calls = await hostFixture(page)
+  await page.getByText("Managed worktrees", { exact: true }).click()
+  await page.getByLabel("Worktree base ref").fill("main")
+  await page.getByRole("button", { name: "Create worktree", exact: true }).click()
+  await expect(page.getByText("memex-chat-owned", { exact: true })).toBeVisible()
+  const created = calls.find(call => call.method === "worktree.create")!.params
+  expect(created.workspaceId).toBe("/work/project")
+  expect(created.baseRef).toBe("main")
+  expect(created.path).toBeUndefined()
+  await page.getByRole("button", { name: "Archive", exact: true }).click()
+  await expect(page.getByText("Archived · files retained", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Unarchive", exact: true }).click()
+  page.once("dialog", dialog => dialog.accept())
+  await page.getByRole("button", { name: "Remove clean checkout", exact: true }).click()
+  await expect(page.getByText("Checkout removed", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "Reattach", exact: true }).click()
+  await expect(page.getByRole("button", { name: "Archive", exact: true })).toBeVisible()
+  expect(calls.filter(call => call.method === "worktree.cleanup" || call.method === "worktree.reattach").map(call => call.params.worktreeId)).toEqual(["owned-worktree", "owned-worktree"])
+  await page.getByText("New conversation", { exact: true }).click()
+  await expect(page.getByLabel("Execution workspace").locator("option").filter({ hasText: "/private/host/worktrees/owned/checkout" })).toHaveCount(1)
 })

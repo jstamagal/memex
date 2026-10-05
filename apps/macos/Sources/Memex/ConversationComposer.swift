@@ -22,19 +22,7 @@ struct ConversationComposer: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             ConversationQueueView(conversation: conversation)
-            ForEach(conversation.snapshot.questions) { question in
-                AcpStructuredUserInputView(input: questionItem(question),
-                    isResponding: conversation.submitting || !conversation.snapshot.connected,
-                    onSubmit: { choices, text in
-                        Task {
-                            do {
-                                let response = choices.isEmpty ? text : try AcpUserInputAnswer(selectedValues: choices, text: text).encoded()
-                                await conversation.answer(question, text: response)
-                            } catch { contextError = error.localizedDescription }
-                        }
-                    }, onCancel: { Task { await conversation.stop() } })
-                    .id(question.id)
-            }
+            ConversationQuestionsView(conversation: conversation)
             if let error = contextError ?? library.error {
                 HStack(alignment: .top) {
                     Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
@@ -264,13 +252,6 @@ struct ConversationComposer: View {
             contextError = nil
             conversation.focus()
         } catch { contextError = error.localizedDescription }
-    }
-
-    private func questionItem(_ question: ConversationQuestion) -> AcpComposerPendingUserInputItem {
-        .init(id: question.id, title: question.title, prompt: question.prompt, placeholder: question.placeholder,
-            defaultValue: question.defaultValue,
-            choices: question.choices.map { .init(id: $0.id, title: $0.title, value: $0.value, description: $0.description) },
-            multiSelect: question.multiSelect, isSecret: question.isSecret)
     }
 
     private var settingsSheet: some View {

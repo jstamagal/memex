@@ -31,7 +31,17 @@ Native and web clients persist outgoing requests before network dispatch. A time
 
 After a host restart, sessions remain disconnected until explicitly resumed, undispatched queues are held, and a command that crossed the provider boundary without a recorded outcome is marked uncertain. Resuming the queue only rearms held, undispatched entries. It does not replay uncertain entries. Stop holds the queue even if the provider rejects interruption. Provider-native history remains the evidence for resolving an uncertain send.
 
-Schedules use the same durable queue and provider dispatch as interactive messages. CRUD, pause/resume, and run-now are available through the native connection view, web UI, and control API. The initial recurrence model is a fixed interval of 60 seconds to one year, with an optional first run timestamp. Missed intervals are coalesced into one occurrence, not a burst of catch-up prompts. Held queues and disconnected sessions prevent delivery until resumed. Schedule run-now does not silently release a held queue.
+Schedules use the same durable queue and provider dispatch as interactive messages. CRUD, pause/resume, and run-now are available through the native connection view, web UI, and control API. Choose either an interval of 60 seconds to one year (with an optional first run timestamp), or a fixed local `HH:mm` time on selected ISO weekdays (Monday 1 through Sunday 7) in an explicit timezone. The saved timezone governs execution even when the host or viewer changes its system timezone. Editing a prompt without changing recurrence preserves its due time and paused state.
+
+Missed intervals coalesce into one occurrence. For local-time schedules, a time that does not exist during a spring daylight-saving transition is skipped; an autumn repeated time runs only at its first occurrence. A local-time occurrence missed by at least 60 seconds is skipped and recorded in `lastSkippedAt`, with the next run recomputed in its timezone. It is never replayed as a catch-up burst. Held queues and disconnected sessions prevent provider delivery until resumed. Schedule run-now uses the same durable queue and does not silently release a held queue.
+
+## Managed worktrees
+
+The native host view, web client, and control MCP expose worktree creation, listing, archive, reattachment, and clean-checkout removal. Creation requires the exact root of a repository already granted by `--workspace`; a grant to a nested project folder does not grant the rest of its repository. The caller selects an existing `baseRef`, or leaves it empty to use the repository's recorded remote default. The host creates a unique branch and checkout below its private execution state directory. The source checkout's dirty, untracked, and ignored files are never copied, stashed, reset, or committed.
+
+Created worktrees appear in `workspace.list` and can be passed as `workspaceId` when creating a hosted conversation. This derived authority depends on the original repository grant and a verified host-owned manifest and Git relationship. Removing the parent repository from startup grants prevents new execution or lifecycle mutations through its managed worktrees. No method accepts an arbitrary destination path or adopts an unrelated directory as host-owned.
+
+Archive hides the workspace from the new-conversation picker and retains all files, including dirty and ignored content. Existing conversations retain their original location. Reattach unhides an existing checkout without resetting files, or recreates a removed clean checkout from its retained branch. Cleanup refuses any retained hosted conversation referencing the checkout, even when disconnected, as well as staged, unstaged, untracked, ignored, symlink-replaced, foreign, or locked worktrees. Cleanup leaves the branch, commits, and ownership record for reattachment. It never removes native provider history. Failed preparation retains its manifest and any created resources for inspection. Worktree mutations use the same durable command receipts and uncertain-outcome handling as provider commands.
 
 Fork and delegate currently use an explicitly labeled **context handoff** into a newly created native conversation. They retain the parent relationship and do not claim to clone provider-native history or merge Git branches. The original session remains untouched.
 
@@ -48,7 +58,12 @@ Responses contain the same `id` and either `result` or `error: {code,message}`. 
 | Methods | Parameters beyond `hostId` |
 | --- | --- |
 | `host.info` | None |
-| `workspace.list` | None; returns only startup-registered roots |
+| `workspace.list` | None; returns startup-registered roots and active host-owned worktrees derived from those grants |
+| `worktree.list` | Optional startup repository `workspaceId`; returns owned active/archived/removed/failed records and `referencedBy` hosted conversation IDs |
+| `worktree.create` | `commandId`, startup repository `workspaceId`, optional existing `baseRef`; generated destination and branch only |
+| `worktree.archive` | `commandId`, `worktreeId`, optional `archived` (defaults true); retains all files |
+| `worktree.reattach` | `commandId`, `worktreeId`; restores the retained branch if clean checkout was removed, otherwise preserves existing files |
+| `worktree.cleanup` | `commandId`, `worktreeId`; refuses retained conversation references and all dirty/ignored files, retains branch and manifest |
 | `conversation.list` | None |
 | `conversation.create` | `commandId`, `provider`, `workspaceId`, optional `title`; never sends the first prompt |
 | `conversation.import` | `commandId`, `provider`, `nativeSessionId`, `sourcePath`, `workspaceId`, optional `title`; source must be an existing native JSONL transcript inside the configured provider home |
@@ -64,7 +79,7 @@ Responses contain the same `id` and either `result` or `error: {code,message}`. 
 | `conversation.fork`, `.delegate` | `commandId`, parent `conversationId`, optional `title`, `provider`, `workspaceId`, `text` |
 | `command.read` | Original `commandId` |
 | `schedule.list` | None |
-| `schedule.upsert` | `commandId`, `scheduleId`, `conversationId`, `text`, `intervalSeconds`, optional `paused`, `nextRunAt` (RFC3339) |
+| `schedule.upsert` | `commandId`, `scheduleId`, `conversationId`, `text`, optional `paused`; either `intervalSeconds` plus optional `nextRunAt` (RFC3339), or `wallClock: {localTime:"09:00", weekdays:[1,2,3,4,5], timeZone:"America/Los_Angeles"}` |
 | `schedule.pause` | `commandId`, `scheduleId`, `paused` |
 | `schedule.delete`, `schedule.run` | `commandId`, `scheduleId` |
 | `browser.describe` | `conversationId`; requires attached desktop and explicit per-chat browser grant |
@@ -82,4 +97,4 @@ The native app may attach `desktop.sock` under the same private execution direct
 
 ## Verification
 
-The focused regression suites are `MemexExecutionHostCoreTests`, `ExecutionHostAdapterTests`, Rust `execution_host` tests, and `web/tests/execution.spec.ts`. They cover stable IDs, namespace/workspace boundaries, duplicate creation/send, stop-held queues, uncertain-delivery recovery, schedule coalescing/run-now, private pairing token requirements, pre-fetch web outbox persistence, first-send configuration, and mobile controls. Tests use disposable state, real runtime imports, loopback HTTP and private socket fixtures, and fake execution providers. They do not establish successful execution against an installed provider. A real-provider execution smoke check has not yet been performed.
+The focused regression suites are `MemexExecutionHostCoreTests` (including `HostWorktreeTests` and `HostWallClockScheduleTests`), `ExecutionHostAdapterTests`, Rust `execution_host` tests, and `web/tests/execution.spec.ts`. They cover stable IDs, namespace/workspace boundaries, duplicate creation/send, stop-held queues, uncertain-delivery recovery, interval coalescing, local weekdays/timezones and DST, worktree ownership/cleanup/reattachment, private pairing token requirements, pre-fetch web outbox persistence, first-send configuration, and mobile controls. Tests use disposable Git repositories, real runtime imports, loopback HTTP and private socket fixtures, and fake execution providers. They do not establish successful execution against an installed provider. A real-provider execution smoke check has not yet been performed.

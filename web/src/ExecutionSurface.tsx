@@ -3,10 +3,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { MessageContent } from "@/MessageContent"
+import { ExecutionQuestions } from "@/ExecutionQuestions"
 import { ExecutionClient, captureExecutionAttachment, type ExecutionDraft, type ExecutionRequest, type HostConversation,
-  type HostInfo, type HostSnapshot, type HostWorkspace, type HostSchedule, type HostEntity, type HostPendingRequest } from "@/execution"
+  type HostInfo, type HostSnapshot, type HostWorkspace, type HostSchedule, type HostEntity, type HostWorktree } from "@/execution"
 
 const pairingKey = "memex-execution-pairing-v1"
+const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 function rememberedClient(): ExecutionClient | null {
   try {
     const pairing = JSON.parse(sessionStorage.getItem(pairingKey) || "null") as { token: string; hostId: string } | null
@@ -43,28 +45,15 @@ function LiveMessages({ snapshot }: { snapshot: HostSnapshot }) {
   })}</div>
 }
 
-function InputRequest({ request, disabled, onAnswer }: { request: HostPendingRequest; disabled: boolean; onAnswer: (text: string) => void }) {
-  const [answer, setAnswer] = useState("")
-  const [selected, setSelected] = useState<string[]>([])
-  return <fieldset className="rounded-lg border p-3" disabled={disabled}>
-    <legend className="px-1 text-sm font-medium">{request.payload.title || "Input required"}</legend>
-    <p className="mb-2 text-sm">{request.payload.prompt}</p>
-    {request.payload.choices?.map(choice => <label key={choice.id} className="mb-2 flex items-start gap-2 text-sm">
-      <input type={request.payload.multiSelect ? "checkbox" : "radio"} name={request.requestId} checked={selected.includes(choice.value)}
-        onChange={() => setSelected(values => request.payload.multiSelect ? values.includes(choice.value) ? values.filter(value => value !== choice.value) : [...values, choice.value] : [choice.value])} />
-      <span>{choice.title}{choice.description && <span className="block text-xs text-muted-foreground">{choice.description}</span>}</span>
-    </label>)}
-    <Input aria-label="Custom answer" type={request.payload.isSecret ? "password" : "text"} value={answer} onChange={event => setAnswer(event.target.value)} />
-    <Button className="mt-2" size="sm" disabled={!answer && !selected.length} onClick={() => onAnswer(request.payload.multiSelect ? JSON.stringify([...selected, ...(answer ? [answer] : [])]) : answer || selected[0])}>Answer</Button>
-  </fieldset>
-}
-
 export function ExecutionSurface({ onBack }: { onBack: () => void }) {
   const [client, setClient] = useState(rememberedClient)
   const [token, setToken] = useState("")
   const [info, setInfo] = useState<HostInfo | null>(null)
   const [conversations, setConversations] = useState<HostConversation[]>([])
   const [workspaces, setWorkspaces] = useState<HostWorkspace[]>([])
+  const [worktrees, setWorktrees] = useState<HostWorktree[]>([])
+  const [repository, setRepository] = useState("")
+  const [baseRef, setBaseRef] = useState("")
   const [selected, setSelected] = useState("")
   const [snapshot, setSnapshot] = useState<HostSnapshot | null>(null)
   const [workspace, setWorkspace] = useState("")
@@ -76,6 +65,10 @@ export function ExecutionSurface({ onBack }: { onBack: () => void }) {
   const [scheduleId, setScheduleId] = useState(() => crypto.randomUUID() as string)
   const [scheduleText, setScheduleText] = useState("")
   const [interval, setIntervalSeconds] = useState(3600)
+  const [scheduleKind, setScheduleKind] = useState("interval")
+  const [localTime, setLocalTime] = useState("09:00")
+  const [scheduleDays, setScheduleDays] = useState([1, 2, 3, 4, 5])
+  const [timeZone, setTimeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")
   const [error, setError] = useState("")
   const [receipt, setReceipt] = useState("")
   const [busy, setBusy] = useState(false)
@@ -87,9 +80,12 @@ export function ExecutionSurface({ onBack }: { onBack: () => void }) {
     const [host, chats, folders, recurring] = await Promise.all([control.call<HostInfo>("host.info"), control.call<HostConversation[]>("conversation.list"),
       control.call<HostWorkspace[]>("workspace.list"), control.call<HostSchedule[]>("schedule.list")])
     if (host.hostId !== control.hostId) throw new Error("The endpoint's execution identity changed. Pair it explicitly again.")
+    const trees = host.capabilities.includes("worktree.lifecycle") ? await control.call<HostWorktree[]>("worktree.list") : []
+    setWorktrees(trees)
     setInfo(host); setConversations(chats); setWorkspaces(folders); setSchedules(recurring); setOutbox(control.pending())
     setWorkspace(current => folders.some(folder => folder.id === current) ? current : folders[0]?.id || "")
     setProvider(current => host.providers.includes(current) ? current : host.providers[0] || "")
+    setRepository(current => folders.some(folder => folder.id === current && !folder.worktreeID) ? current : folders.find(folder => !folder.worktreeID)?.id || "")
   }, [])
 
   useEffect(() => {
@@ -191,22 +187,62 @@ export function ExecutionSurface({ onBack }: { onBack: () => void }) {
             {!workspaces.length && <p className="text-xs text-muted-foreground">Start the execution host with a registered workspace.</p>}
           </div>
         </details>
+        {info?.capabilities.includes("worktree.lifecycle") && <details className="rounded-md border p-3">
+          <summary className="text-sm font-medium">Managed worktrees</summary>
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-muted-foreground">Create an isolated branch from a registered repository. Archive retains all files; cleanup requires no retained chat references and no dirty or ignored files.</p>
+            <label className="block text-xs">Repository<select aria-label="Worktree repository" className="mt-1 w-full rounded border bg-background p-2" value={repository} onChange={event => setRepository(event.target.value)}>
+              {workspaces.filter(folder => !folder.worktreeID).map(folder => <option key={folder.id} value={folder.id}>{folder.path}</option>)}
+            </select></label>
+            <Input aria-label="Worktree base ref" placeholder="Base ref (blank uses recorded default)" value={baseRef} onChange={event => setBaseRef(event.target.value)} />
+            <Button size="sm" disabled={busy || !repository} onClick={async () => {
+              const created = await operate<HostWorktree>("worktree.create", { workspaceId: repository, ...(baseRef.trim() ? { baseRef: baseRef.trim() } : {}) })
+              if (created) setWorkspace(created.workspaceId)
+            }}>Create worktree</Button>
+            {worktrees.map(tree => <div key={tree.id} className="space-y-2 border-t pt-2 text-xs">
+              <p className="break-all">{tree.branch || tree.id}</p><p className="break-all text-muted-foreground">{tree.path}</p>
+              <p>{tree.removed ? "Checkout removed" : tree.archived ? "Archived · files retained" : tree.state}{tree.referencedBy.length ? ` · ${tree.referencedBy.length} chat references` : ""}</p>
+              {tree.failure && <p className="text-destructive">{tree.failure}</p>}
+              <div className="flex flex-wrap gap-1">
+                <Button size="sm" variant="ghost" disabled={busy || tree.state !== "ready"} onClick={() => void operate(tree.removed ? "worktree.reattach" : "worktree.archive", tree.removed ? { worktreeId: tree.id } : { worktreeId: tree.id, archived: !tree.archived })}>{tree.removed ? "Reattach" : tree.archived ? "Unarchive" : "Archive"}</Button>
+                {!tree.removed && <Button size="sm" variant="ghost" disabled={busy || tree.state !== "ready" || !!tree.referencedBy.length} onClick={() => {
+                  if (window.confirm("Remove this unused, clean checkout? Dirty and ignored files block removal. Its branch and commits remain for reattachment.")) void operate("worktree.cleanup", { worktreeId: tree.id })
+                }}>Remove clean checkout</Button>}
+              </div>
+            </div>)}
+          </div>
+        </details>}
         <details className="rounded-md border p-3">
           <summary className="text-sm font-medium">Schedules</summary>
           <div className="mt-3 space-y-3">
             {schedules.map(schedule => <div key={schedule.id} className="space-y-1 border-b pb-2 text-xs">
               <p className="line-clamp-3">{schedule.prompt}</p><p className="text-muted-foreground">{schedule.paused ? "Paused" : `Next: ${new Date(schedule.nextRunAt).toLocaleString()}`}</p>
               <div className="flex flex-wrap gap-1">
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setScheduleId(schedule.id); setScheduleText(schedule.prompt); setIntervalSeconds(schedule.intervalSeconds); setSelected(schedule.conversationID) }}>Edit</Button>
+                <Button size="sm" variant="ghost" disabled={busy} onClick={() => {
+                  setScheduleId(schedule.id); setScheduleText(schedule.prompt); setIntervalSeconds(schedule.intervalSeconds || 3600); setSelected(schedule.conversationID)
+                  setScheduleKind(schedule.wallClock ? "wallClock" : "interval")
+                  if (schedule.wallClock) { setLocalTime(schedule.wallClock.localTime); setScheduleDays(schedule.wallClock.weekdays); setTimeZone(schedule.wallClock.timeZone) }
+                }}>Edit</Button>
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => void operate("schedule.pause", { scheduleId: schedule.id, paused: !schedule.paused })}>{schedule.paused ? "Resume" : "Pause"}</Button>
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => void operate("schedule.run", { scheduleId: schedule.id })}>Run now</Button>
                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => void operate("schedule.delete", { scheduleId: schedule.id })}>Delete</Button>
               </div>
             </div>)}
             <Textarea aria-label="Scheduled prompt" placeholder="Prompt for the selected conversation" value={scheduleText} onChange={event => setScheduleText(event.target.value)} />
-            <label className="block text-xs">Repeat every (seconds)<Input aria-label="Schedule interval in seconds" type="number" min={60} value={interval} onChange={event => setIntervalSeconds(Number(event.target.value))} /></label>
-            <Button size="sm" disabled={busy || !selected || !scheduleText.trim() || interval < 60} onClick={async () => {
-              if (await operate("schedule.upsert", { scheduleId, conversationId: selected, text: scheduleText, intervalSeconds: interval })) { setScheduleId(crypto.randomUUID()); setScheduleText("") }
+            <label className="block text-xs">Recurrence<select aria-label="Schedule recurrence" className="mt-1 w-full rounded border bg-background p-2" value={scheduleKind} onChange={event => setScheduleKind(event.target.value)}>
+              <option value="interval">Fixed interval</option><option value="wallClock">Local time and weekdays</option>
+            </select></label>
+            {scheduleKind === "interval" ? <label className="block text-xs">Repeat every (seconds)<Input aria-label="Schedule interval in seconds" type="number" min={60} value={interval} onChange={event => setIntervalSeconds(Number(event.target.value))} /></label> : <>
+              <label className="block text-xs">Local time<Input aria-label="Schedule local time" type="time" value={localTime} onChange={event => setLocalTime(event.target.value)} /></label>
+              <label className="block text-xs">Time zone<Input aria-label="Schedule time zone" placeholder="America/Los_Angeles" value={timeZone} onChange={event => setTimeZone(event.target.value)} /></label>
+              <fieldset className="flex flex-wrap gap-2"><legend className="mb-1 text-xs">Weekdays</legend>{weekdays.map((day, index) => <label key={day} className="flex items-center gap-1 text-xs">
+                <input type="checkbox" aria-label={day} checked={scheduleDays.includes(index + 1)} onChange={() => setScheduleDays(current => current.includes(index + 1) ? current.filter(value => value !== index + 1) : [...current, index + 1].sort())} />{day.slice(0, 3)}
+              </label>)}</fieldset>
+              <p className="text-xs text-muted-foreground">Times skipped by daylight saving changes are skipped. Repeated times run once. Occurrences missed by more than a minute are skipped.</p>
+            </>}
+            <Button size="sm" disabled={busy || !selected || !scheduleText.trim() || (scheduleKind === "interval" ? interval < 60 || !Number.isFinite(interval) : !localTime || !timeZone.trim() || !scheduleDays.length)} onClick={async () => {
+              const recurrence = scheduleKind === "interval" ? { intervalSeconds: interval } : { wallClock: { localTime, weekdays: scheduleDays, timeZone } }
+              if (await operate("schedule.upsert", { scheduleId, conversationId: selected, text: scheduleText, ...recurrence })) { setScheduleId(crypto.randomUUID()); setScheduleText("") }
             }}>Save schedule</Button>
           </div>
         </details>
@@ -254,11 +290,15 @@ export function ExecutionSurface({ onBack }: { onBack: () => void }) {
             {snapshot && <LiveMessages snapshot={snapshot} />}
           </div>
           <div className="space-y-3 border-t p-3 md:p-4">
-            {requests.map(request => request.kind === "approval" ? <div key={request.requestId} className="rounded-lg border p-3">
+            {requests.filter(request => request.kind === "approval").map(request => <div key={request.requestId} className="rounded-lg border p-3">
               <p className="text-sm font-medium">{request.payload.title || "Approval required"}</p>
               {request.payload.rawInputJSON && <pre className="my-2 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{request.payload.rawInputJSON}</pre>}
-              <div className="flex flex-wrap gap-2">{request.payload.options?.map(option => <Button key={option.id} size="sm" variant="outline" disabled={busy} onClick={() => void operate("conversation.approval", { conversationId: selected, requestId: request.requestId, text: option.id })}>{option.name}</Button>)}</div>
-            </div> : <InputRequest key={request.requestId} request={request} disabled={busy} onAnswer={text => void operate("conversation.userInput", { conversationId: selected, requestId: request.requestId, text })} />)}
+              <div className="flex flex-wrap gap-2">{request.payload.options?.map(option => <Button key={option.id} size="sm" variant="outline" disabled={busy || !snapshot?.connected || outbox.some(item => item.params.conversationId === selected && item.method === "conversation.approval" && item.params.requestId === request.requestId)} onClick={() => void operate("conversation.approval", { conversationId: selected, requestId: request.requestId, text: option.id })}>{option.name}</Button>)}</div>
+            </div>)}
+            <ExecutionQuestions key={selected} requests={requests.filter(request => request.kind !== "approval")}
+              disabled={busy || !snapshot?.connected}
+              blockedRequestIDs={new Set(outbox.filter(request => request.params.conversationId === selected && request.method === "conversation.userInput").map(request => String(request.params.requestId)))}
+              onAnswer={async (requestId, text) => (await operate("conversation.userInput", { conversationId: selected, requestId, text })) !== undefined} />
             {!!snapshot?.queue.length && <details className="rounded-md border p-2" open><summary className="text-sm">Queue{snapshot.queueHeld ? " · held" : ""}</summary>
               {snapshot.queue.filter(entry => entry.status !== "cancelled").map(entry => <div key={entry.command.id} className="mt-2 flex flex-wrap items-center gap-1 text-xs">
                 <span className="mr-auto max-w-full break-words">{entry.command.text} · {entry.status}{entry.error ? ` · ${entry.error}` : ""}</span>

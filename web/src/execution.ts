@@ -1,7 +1,9 @@
 export type HostInfo = { hostId: string; providers: string[]; capabilities: string[] }
 export type HostConversation = { id: string; nativeSessionID: string; provider: string; providerInstanceID: string; workspaceID: string; cwd: string; transcriptPath?: string; title: string; connected: boolean; parentID?: string }
-export type HostWorkspace = { id: string; path: string }
-export type HostSchedule = { id: string; conversationID: string; prompt: string; intervalSeconds: number; nextRunAt: string; paused: boolean; lastCommandID?: string }
+export type HostWorkspace = { id: string; path: string; worktreeID?: string; repositoryWorkspaceID?: string }
+export type HostWorktree = { id: string; workspaceId: string; repositoryWorkspaceId: string; path: string; branch?: string; baseRef?: string; state: string; failure?: string; archived: boolean; removed: boolean; referencedBy: string[] }
+export type HostWallClock = { localTime: string; weekdays: number[]; timeZone: string }
+export type HostSchedule = { id: string; conversationID: string; prompt: string; intervalSeconds?: number; wallClock?: HostWallClock; nextRunAt: string; paused: boolean; lastCommandID?: string; lastSkippedAt?: string }
 export type HostQueueEntry = { command: { id: string; text: string; issuedAt: string; conversationID: string }; status: string; error?: string }
 export type HostPendingRequest = { requestId: string; kind: string; status: string; payload: { title?: string; prompt?: string; rawInputJSON?: string; multiSelect?: boolean; isSecret?: boolean; options?: { id: string; name: string; kind?: string }[]; choices?: { id: string; title: string; value: string; description?: string }[] } }
 export type HostEntity = { entity_id?: string; item_id?: string; native_turn_id?: string; source_order?: number; body: { kind: string; data: { role?: string; native_message_id?: string; parts?: { type: string; data: unknown }[]; name?: string; raw_arguments?: string; status?: string } } }

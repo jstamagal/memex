@@ -244,4 +244,51 @@ final class ExecutionHostTests: XCTestCase {
         parameters["nextRunAt"] = .string("tomorrow sometime")
         XCTAssertEqual(call(host, "schedule.upsert", parameters).error?.code, "invalid_params")
     }
+
+    func testWallClockScheduleSkipsMissedRunsAndPersistsNextOccurrenceAcrossRestart() throws {
+        let (directory, workspace) = try fixture()
+        let provider = Provider()
+        var current = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-05T08:00:00Z"))
+        var host = try ExecutionHost(directory: directory, workspaceRoots: [workspace], providerFactory: { _ in provider }, now: { current })
+        let id = try create(host, workspace)
+        let parameters: [String: HostValue] = ["scheduleId": .string("weekday"), "conversationId": .string(id), "text": .string("morning check"),
+            "wallClock": .object(["localTime": .string("09:00"), "weekdays": .array([1, 2, 3, 4, 5].map { .number(Double($0)) }), "timeZone": .string("UTC")])]
+        XCTAssertEqual(call(host, "schedule.upsert", parameters).result?["nextRunAt"].string, "2026-10-05T09:00:00Z")
+        current = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-06T08:00:00Z"))
+        host = try ExecutionHost(directory: directory, workspaceRoots: [workspace], providerFactory: { _ in provider }, now: { current })
+        try host.tick()
+        XCTAssertTrue(provider.commands.isEmpty)
+        let skipped = call(host, "schedule.list").result?.array.first
+        XCTAssertEqual(skipped?["lastSkippedAt"].string, "2026-10-05T09:00:00Z")
+        XCTAssertEqual(skipped?["nextRunAt"].string, "2026-10-06T09:00:00Z")
+        current = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-06T09:00:00Z"))
+        try host.tick()
+        try host.tick()
+        XCTAssertEqual(provider.commands.count, 1)
+        XCTAssertEqual(provider.commands.first?.text, "morning check")
+        XCTAssertEqual(call(host, "schedule.list").result?.array.first?["nextRunAt"].string, "2026-10-07T09:00:00Z")
+    }
+
+    func testEditingPromptKeepsDueTimeAndPauseForEitherRecurrence() throws {
+        let (directory, workspace) = try fixture()
+        let provider = Provider()
+        var current = Date(timeIntervalSince1970: 1_800_000_000)
+        let host = try ExecutionHost(directory: directory, workspaceRoots: [workspace], providerFactory: { _ in provider }, now: { current })
+        let id = try create(host, workspace)
+        var parameters: [String: HostValue] = ["scheduleId": .string("interval"), "conversationId": .string(id), "text": .string("original"),
+            "intervalSeconds": .number(3600), "paused": .bool(true)]
+        let original = call(host, "schedule.upsert", parameters).result
+        current = current.addingTimeInterval(120)
+        parameters["text"] = .string("revised")
+        parameters.removeValue(forKey: "paused")
+        let edited = call(host, "schedule.upsert", parameters).result
+        XCTAssertEqual(edited?["nextRunAt"], original?["nextRunAt"])
+        XCTAssertEqual(edited?["paused"], .bool(true))
+        parameters.removeValue(forKey: "intervalSeconds")
+        parameters["wallClock"] = .object(["localTime": .string("09:00"), "weekdays": .array([.number(1)]), "timeZone": .string("UTC")])
+        let weekly = call(host, "schedule.upsert", parameters).result
+        current = current.addingTimeInterval(120)
+        parameters["text"] = .string("revised again")
+        XCTAssertEqual(call(host, "schedule.upsert", parameters).result?["nextRunAt"], weekly?["nextRunAt"])
+    }
 }

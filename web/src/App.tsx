@@ -850,7 +850,9 @@ function App() {
     }
   }, [hasMoreResults, intent, results, searchParamsFor, searchStatus])
 
-  useEffect(() => updateLocation(target), [target, updateLocation])
+  useEffect(() => {
+    if (shellView !== "execution") updateLocation(target)
+  }, [shellView, target, updateLocation])
 
   const homeResults = useMemo(() => {
     const unique = new Map<string, SearchResult>()
