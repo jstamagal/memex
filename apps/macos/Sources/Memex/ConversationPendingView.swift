@@ -22,9 +22,9 @@ struct ConversationPendingView: View {
                             Label(pending.attachments.map(\.title).joined(separator: ", "), systemImage: "paperclip")
                                 .font(.caption).lineLimit(2)
                         }
-                        HStack(spacing: 8) {
-                            Text(label(pending.phase)).font(.caption).foregroundStyle(.secondary)
-                            if pending.phase == .notSent || pending.phase == .uncertain {
+                        if let label = recoveryLabel(pending.phase) {
+                            HStack(spacing: 8) {
+                                Text(label).font(.caption).foregroundStyle(.secondary)
                                 Button("Restore draft") { conversation.restorePendingDraft() }
                                     .buttonStyle(.borderless).font(.caption)
                                     .disabled(conversation.isWorking || (pending.phase == .uncertain && !conversation.snapshot.ready))
@@ -51,10 +51,9 @@ struct ConversationPendingView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private func label(_ phase: ConversationPendingPrompt.Phase) -> String {
+    private func recoveryLabel(_ phase: ConversationPendingPrompt.Phase) -> String? {
         switch phase {
-        case .preparing: "Preparing to send…"
-        case .awaitingConfirmation: "Sending…"
+        case .preparing, .awaitingConfirmation: nil
         case .uncertain: "Delivery unconfirmed — review before retrying"
         case .notSent: "Not sent"
         }
