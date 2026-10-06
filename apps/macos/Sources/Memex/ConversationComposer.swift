@@ -12,6 +12,12 @@ struct ConversationComposer: View {
     var contextSessions: [Session] = []
     var onRevealSelection: ((TranscriptSelection) -> Void)? = nil
     @State private var catalog = ConversationComposerCatalog()
+    @State private var providerCatalog = ConversationProviderContextCatalog()
+    @State private var loadingProviderCatalog = false
+    @State private var skillsExpanded = false
+    @State private var pluginsExpanded = false
+    @State private var selectedPluginID: String?
+    @State private var providerLoadID = UUID()
     @State private var contextError: String?
     @State private var loadingContext = false
     @State private var dropTargeted = false
@@ -112,7 +118,10 @@ struct ConversationComposer: View {
         .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .task(id: "\(conversation.session.id):\(conversation.isServerOwned)") { await loadCatalog() }
-        .onChange(of: conversation.session.id) { _, _ in showingContext = false; contextQuery = "" }
+        .onChange(of: conversation.session.id) { _, _ in
+            showingContext = false; contextQuery = ""; selectedPluginID = nil
+            providerCatalog = .init()
+        }
         .sheet(isPresented: $showingDictation) {
             ConversationDictationView { text in conversation.draft = joined(conversation.draft, text); conversation.focus() }
         }
@@ -190,6 +199,7 @@ struct ConversationComposer: View {
     private var inputMenu: some View {
         Button {
             contextQuery = ""
+            selectedPluginID = nil
             showingContext.toggle()
         } label: {
             Image(systemName: "plus").font(.system(size: 14))
@@ -197,13 +207,15 @@ struct ConversationComposer: View {
         }
         .buttonStyle(.plain)
         .help("Add files and more").accessibilityLabel("Add files and more")
-        .popover(isPresented: $showingContext, arrowEdge: .top) { contextPicker }
+        .popover(isPresented: $showingContext, arrowEdge: .top) {
+            contextPicker.task { await loadProviderCatalog() }
+        }
         .disabled(conversation.isOpenElsewhere)
     }
 
     private var contextPicker: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Search files, conversations, and skills", text: $contextQuery)
+            TextField("Search skills, plugins, files, and conversations", text: $contextQuery)
                 .textFieldStyle(.roundedBorder)
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
@@ -212,6 +224,7 @@ struct ConversationComposer: View {
                             .disabled(conversation.loadingAttachments || loadingContext || conversation.connecting)
                         Divider()
                     }
+                    providerContextSections
                     if !contextChats.isEmpty {
                         Text("Conversations").font(.caption).foregroundStyle(.secondary)
                         ForEach(contextChats) { session in
@@ -233,9 +246,11 @@ struct ConversationComposer: View {
                         contextQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(contextQuery)
                             || $0.description.localizedCaseInsensitiveContains(contextQuery)
                     }
-                    let prompts = catalog.matchingPrompts(contextQuery)
+                    let prompts = catalog.matchingPrompts(contextQuery).filter {
+                        !isNativeProvider || (conversation.session.source == "claude" && $0.kind == .command)
+                    }
                     if !commands.isEmpty || !prompts.isEmpty {
-                        Text("Commands and skills").font(.caption).foregroundStyle(.secondary)
+                        Text(isNativeProvider ? "Commands" : "Commands and skills").font(.caption).foregroundStyle(.secondary)
                         ForEach(commands.prefix(8)) { command in
                             contextAction("/" + command.name, icon: "terminal", detail: command.description) {
                                 conversation.draft = "/\(command.name) " + conversation.draft
@@ -248,7 +263,11 @@ struct ConversationComposer: View {
                             }
                         }
                     }
-                    if !contextQuery.isEmpty && contextChats.isEmpty && files.isEmpty && commands.isEmpty && prompts.isEmpty {
+                    if !contextQuery.isEmpty && contextChats.isEmpty && files.isEmpty && commands.isEmpty
+                        && prompts.isEmpty
+                        && matchingProviderSkills.isEmpty && matchingProviderPlugins.isEmpty
+                        && !loadingProviderCatalog
+                    {
                         Text("No matching context").foregroundStyle(.secondary).padding(.vertical, 8)
                     }
                 }
@@ -262,6 +281,149 @@ struct ConversationComposer: View {
         .padding(12).frame(width: 360)
     }
 
+    private var isNativeProvider: Bool { ["codex", "claude"].contains(conversation.session.source) }
+
+    private var matchingProviderSkills: [ConversationProviderContextCatalog.Skill] {
+        providerCatalog.skills.filter {
+            (selectedPluginID == nil || $0.pluginID == selectedPluginID)
+                && (contextQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(contextQuery)
+                    || $0.description.localizedCaseInsensitiveContains(contextQuery))
+        }
+    }
+
+    private var matchingProviderPlugins: [ConversationProviderContextCatalog.Plugin] {
+        providerCatalog.plugins.filter {
+            contextQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(contextQuery)
+                || $0.description.localizedCaseInsensitiveContains(contextQuery)
+        }
+    }
+
+    @ViewBuilder private var providerContextSections: some View {
+        if isNativeProvider {
+            if !locallyAccessible {
+                Text("Skills and plugins must be browsed on this conversation’s execution host.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                if loadingProviderCatalog { ProgressView("Loading skills and plugins…").controlSize(.small) }
+                ForEach(providerCatalog.issues, id: \.self) { issue in
+                    Text(issue).font(.caption).foregroundStyle(.orange)
+                }
+                if let selectedPluginID {
+                    Button("All plugins") { self.selectedPluginID = nil }
+                    Text(providerCatalog.plugins.first { $0.id == selectedPluginID }?.name ?? selectedPluginID)
+                        .font(.caption).foregroundStyle(.secondary)
+                    providerSkillRows
+                } else if contextQuery.isEmpty {
+                    DisclosureGroup("Skills (\(providerCatalog.skills.count))", isExpanded: $skillsExpanded) {
+                        providerSkillRows
+                    }
+                    DisclosureGroup("Plugins (\(providerCatalog.plugins.count))", isExpanded: $pluginsExpanded) {
+                        providerPluginRows
+                    }
+                } else {
+                    if !matchingProviderSkills.isEmpty {
+                        Text("Skills").font(.caption).foregroundStyle(.secondary)
+                        providerSkillRows
+                    }
+                    if !matchingProviderPlugins.isEmpty {
+                        Text("Plugins").font(.caption).foregroundStyle(.secondary)
+                        providerPluginRows
+                    }
+                }
+                Divider()
+            }
+        }
+    }
+
+    @ViewBuilder private var providerSkillRows: some View {
+        ForEach(matchingProviderSkills) { skill in
+            contextAction(skill.name, icon: "sparkles", detail: skill.description) { selectProviderSkill(skill) }
+                .disabled(loadingProviderCatalog)
+        }
+        if matchingProviderSkills.isEmpty && !loadingProviderCatalog {
+            Text(
+                selectedPluginID == nil
+                    ? "No enabled skills available."
+                    : "This plugin has no selectable skills. Its tools are available to the provider."
+            )
+            .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder private var providerPluginRows: some View {
+        ForEach(matchingProviderPlugins) { plugin in
+            contextAction(
+                plugin.name, icon: "puzzlepiece.extension", detail: plugin.description,
+                dismiss: conversation.session.source == "codex"
+            ) {
+                if conversation.session.source == "codex" {
+                    do { try appendProviderReference(.codexPlugin(name: plugin.name, id: plugin.id)) } catch {
+                        contextError = error.localizedDescription
+                    }
+                } else {
+                    selectedPluginID = plugin.id
+                    contextQuery = ""
+                }
+            }
+            .disabled(loadingProviderCatalog)
+        }
+        if matchingProviderPlugins.isEmpty && !loadingProviderCatalog {
+            Text("No enabled plugins available.").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func selectProviderSkill(_ skill: ConversationProviderContextCatalog.Skill) {
+        do {
+            if conversation.session.source == "codex" {
+                try appendProviderReference(.codexSkill(name: skill.name, path: skill.path))
+            } else {
+                guard
+                    conversation.replaceDraft(
+                        text: "/\(skill.name) " + conversation.draft,
+                        attachments: conversation.attachments)
+                else {
+                    throw ConversationRuntimeError(
+                        message: "The draft is busy. Select the skill again when it finishes.")
+                }
+            }
+            contextError = nil
+            conversation.focus()
+        } catch { contextError = error.localizedDescription }
+    }
+
+    private func appendProviderReference(_ attachment: ConversationAttachment) throws {
+        guard conversation.appendCapturedContext([attachment]) else {
+            throw ConversationRuntimeError(
+                message: conversation.attachmentError ?? "The reference could not be added to this draft.")
+        }
+        contextError = nil
+        conversation.focus()
+    }
+
+    private func loadProviderCatalog() async {
+        guard isNativeProvider, locallyAccessible else { return }
+        let session = conversation.session
+        let loadID = UUID()
+        providerLoadID = loadID
+        loadingProviderCatalog = true
+        defer { if providerLoadID == loadID { loadingProviderCatalog = false } }
+        do {
+            let target = try InAppResumeTarget.resolve(session, requiresTranscript: false)
+            guard let provider = ProviderToolsInstallation.Provider(rawValue: session.source) else { return }
+            let installation = ProviderToolsInstallation(
+                provider: provider, executable: target.executableURL.path,
+                home: target.providerHome.path, workingDirectory: target.workingDirectory.path,
+                claudeNativeConfiguration: target.claudeNativeConfiguration)
+            let result = try await ConversationProviderContextCatalog.load(installation: installation)
+            guard !Task.isCancelled, conversation.session.id == session.id, providerLoadID == loadID else { return }
+            providerCatalog = result
+        } catch is CancellationError {} catch {
+            guard !Task.isCancelled, conversation.session.id == session.id, providerLoadID == loadID else { return }
+            providerCatalog = .init()
+            providerCatalog.issues = [error.localizedDescription]
+        }
+    }
+
     private var contextChats: [Session] {
         Array(contextSessions.reduce(into: [String: Session]()) { $0[$1.id] = $1 }.values
             .filter { $0.id != conversation.session.id && (contextQuery.isEmpty
@@ -269,10 +431,11 @@ struct ConversationComposer: View {
             .sorted { ($0.lastAt ?? "") > ($1.lastAt ?? "") }.prefix(5))
     }
 
-    private func contextAction(_ title: String, icon: String, detail: String? = nil,
+    private func contextAction(
+        _ title: String, icon: String, detail: String? = nil, dismiss: Bool = true,
                                action: @escaping () -> Void) -> some View {
         Button {
-            showingContext = false
+            if dismiss { showingContext = false }
             action()
         } label: {
             HStack(alignment: .center, spacing: 8) {
@@ -463,7 +626,14 @@ struct ConversationComposer: View {
                         conversation.focus()
                     }.help(command.hint ?? command.description)
                 }
-                ForEach(catalog.matchingPrompts(query.replacingOccurrences(of: "skill:", with: "").replacingOccurrences(of: "command:", with: ""))) { prompt in
+                ForEach(
+                    catalog.matchingPrompts(
+                        query.replacingOccurrences(of: "skill:", with: "").replacingOccurrences(
+                            of: "command:", with: "")
+                    ).filter {
+                        !isNativeProvider || (conversation.session.source == "claude" && $0.kind == .command)
+                    }
+                ) { prompt in
                     Button("/\(prompt.kind.rawValue):\(prompt.name) — \(prompt.description)") { Task { await capturePrompt(prompt) } }
                         .help(prompt.url.path)
                 }
@@ -588,7 +758,8 @@ struct ConversationComposer: View {
                 let providerHome = (try? InAppResumeTarget.providerHome(for: URL(fileURLWithPath: session.sourcePath), provider: session.source))
                     ?? (try? ConfiguredConversationManifest.read(for: session)).map { URL(fileURLWithPath: $0.provider.homePath) }
                 return try ConversationComposerCatalog.load(workspace: session.cwd.map { URL(fileURLWithPath: $0) },
-                    providerHome: providerHome, locallyAccessible: locallyAccessible)
+                    providerHome: providerHome, locallyAccessible: locallyAccessible,
+                    includePrompts: session.source != "codex")
             }.value
             guard !Task.isCancelled else { return }
             self.catalog = catalog

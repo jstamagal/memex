@@ -22,7 +22,8 @@ struct ConversationComposerCatalog: Sendable {
         machineID == "local" && !isServerOwned
     }
 
-    static func load(workspace: URL?, providerHome: URL?, locallyAccessible: Bool,
+    static func load(
+        workspace: URL?, providerHome: URL?, locallyAccessible: Bool, includePrompts: Bool = true,
                      userHome: URL = FileManager.default.homeDirectoryForCurrentUser) throws -> Self {
         guard locallyAccessible else { return Self() }
         var result = Self()
@@ -53,6 +54,7 @@ struct ConversationComposerCatalog: Sendable {
             }
             result.files.sort { $0.relativePath.localizedStandardCompare($1.relativePath) == .orderedAscending }
         }
+        guard includePrompts else { return result }
         let skills = [
             workspace?.appendingPathComponent(".agents/skills"),
             workspace?.appendingPathComponent(".claude/skills"),

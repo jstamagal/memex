@@ -18,7 +18,7 @@ send applies saved provider-specific choices before sending; an unconfirmed sett
 draft for inspection. Settings are only exposed when the provider supplies them.
 
 Inside a conversation, the composer supports captured file and image attachments,
-file/chat context, provider commands, local skills, prompt recall, and saved
+file/chat context, provider commands, skills and plugins, prompt recall, and saved
 prompt stashes. Terminal output, file contents, diff review, and browser context
 can also be added from their workspace panes. Captured context is saved as bytes,
 so a later change to the original file does not change a queued prompt.
@@ -34,8 +34,16 @@ ambiguous, Memex reports that instead of selecting unrelated text.
 Conversations open in another app must be closed there before context can be
 added here; attachment errors explain the actual failure.
 
-The composer’s **+** opens a searchable context picker for files, conversations,
-and available commands and skills. **Prompt actions** at the bottom groups
+The composer’s **+** opens a searchable context picker. **Skills** and **Plugins**
+appear above files and conversations, with counts and expandable lists. Discovery
+uses the selected conversation's provider installation and workspace, showing
+enabled entries and reporting loading or discovery failures. Codex selections
+become retained native skill/plugin references in the unsent draft. Claude skill
+selections insert their native slash command; its plugin entries open their
+skills. Plugins containing only tools remain available through the provider.
+Choosing context never sends a message. Unlike captured files, skill references
+use the provider's skill at execution time rather than copying its instructions.
+**Prompt actions** at the bottom groups
 stash/history, annotations, and active-turn controls. It also offers on-device
 dictation, with a retained recording and
 retry/export controls if transcription fails. Review the transcript before
