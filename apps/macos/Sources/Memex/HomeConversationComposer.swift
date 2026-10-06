@@ -18,6 +18,12 @@ struct HomeConversationComposer: View {
         Array(Set((repository?.localBranches ?? []) + [repository?.defaultBaseRef, store.newConversationDraft.value.baseRef].compactMap { $0 })).sorted()
     }
 
+    private var canPrepareDraft: Bool {
+        store.canPrepareConversation && !inspecting
+            && (store.newConversationDraft.value.workspaceMode == .existingDirectory
+                || (repository != nil && store.newConversationDraft.value.baseRef != nil))
+    }
+
     var body: some View {
         @Bindable var draft = store.newConversationDraft
         VStack(alignment: .leading, spacing: 12) {
@@ -54,18 +60,6 @@ struct HomeConversationComposer: View {
                 return true
             }
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(dropTargeted ? Color.accentColor : .clear, lineWidth: 2))
-            HStack(spacing: 12) {
-                Button("Open draft to choose model and permissions") {
-                    Task { await store.startConversationFromHome(sendImmediately: false) }
-                }
-                .help("Create the conversation without sending. Choose its model, effort, permissions and context before the first message.")
-                Button {
-                    Task { await attachToNewDraft() }
-                } label: { Label("Attach files", systemImage: "paperclip") }
-            }
-            .font(.caption)
-            .disabled(!store.canPrepareConversation || inspecting
-                || (draft.value.workspaceMode == .newWorktree && (repository == nil || draft.value.baseRef == nil)))
             if store.startingConversation {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -128,6 +122,13 @@ struct HomeConversationComposer: View {
     private var controls: some View {
         @Bindable var draft = store.newConversationDraft
         return HStack(spacing: 12) {
+            Button { Task { await attachToNewDraft() } } label: {
+                Image(systemName: "plus").font(.system(size: 14))
+                    .frame(width: 28, height: 28).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Attach files").accessibilityLabel("Attach files")
+            .disabled(!canPrepareDraft)
+
             Menu {
                 ForEach(providers.creatableProviders) { provider in
                     Button { draft.value.provider = provider.id } label: {
@@ -136,11 +137,15 @@ struct HomeConversationComposer: View {
                     }
                 }
                 Divider()
+                Button("Model and permissions…") {
+                    Task { await store.startConversationFromHome(sendImmediately: false) }
+                }
+                .disabled(!canPrepareDraft)
                 Button("Configure providers…") { showingProviderSetup = true }
             } label: {
                 Text(providers.providers.first(where: { $0.id == draft.value.provider })?.name ?? draft.value.provider)
             }
-            .help("Uses this provider’s configured defaults. Model and permissions are available in the conversation.")
+            .help("Choose a provider or configure the model and permissions before sending.")
             Menu {
                 Button {
                     draft.selectNoProject()

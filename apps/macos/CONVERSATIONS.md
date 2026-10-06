@@ -11,10 +11,10 @@ Choose a provider and project on Home. A projectless conversation receives a
 retained private folder. Existing projects can use their current folder or a new
 Git worktree from the selected local ref; uncommitted source files are not copied.
 
-Use **Open draft to choose model and permissions** to create an unsent conversation
-and inspect the provider's actual settings. The attachment chooser and file/image
-paste or drop also open an unsent draft. The normal Home send applies saved
-provider-specific choices before sending; an unconfirmed setting retains the
+Choose **Model and permissions…** in the composer's provider menu to open an unsent
+conversation and inspect its actual settings. The **+** button attaches files;
+the chooser and file/image paste or drop also open an unsent draft. The normal Home
+send applies saved provider-specific choices before sending; an unconfirmed setting retains the
 draft for inspection. Settings are only exposed when the provider supplies them.
 
 Inside a conversation, the composer supports captured file and image attachments,
@@ -80,7 +80,7 @@ history mutations retain an inspection marker instead of being blindly retried.
 ## Organize conversations
 
 Use row menus or multi-selection for rename, pin, archive, restore, and **Remove
-from Memex…**. Removed and archived conversations have recoverable library views;
+from Memex…**. Find removed and archived conversations in the sidebar's ellipsis menu;
 these actions do not delete provider logs or workspace data. Manual reordering
 preserves hidden rows and does not replace relevance ordering during search.
 

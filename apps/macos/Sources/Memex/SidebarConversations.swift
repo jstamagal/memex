@@ -80,10 +80,6 @@ struct BrowserSidebar: View {
                 }
                 Section {
                     sidebarOptions
-                    Picker("Conversation library", selection: $store.conversationLibraryScope) {
-                        ForEach(ConversationLibrary.Scope.allCases) { Text($0.title).tag($0) }
-                    }
-                    .labelsHidden().pickerStyle(.menu).accessibilityLabel("Conversation library")
                     if store.conversationLibraryScope == .removed {
                         Text("Removed only from Memex. Provider history, saved drafts and running agents are retained.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -237,7 +233,9 @@ struct BrowserSidebar: View {
 
     private var sidebarOptions: some View {
         HStack {
-            Text(store.sidebarMode == .projects ? "Projects" : "Chats")
+            Text(store.conversationLibraryScope == .active
+                 ? (store.sidebarMode == .projects ? "Projects" : "Chats")
+                 : store.conversationLibraryScope.title)
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Spacer()
             Menu {
@@ -249,6 +247,10 @@ struct BrowserSidebar: View {
                         }
                     }
                     Button("Manage projects…") { store.manageProjects() }
+                }
+                Divider()
+                Picker("Conversations", selection: $store.conversationLibraryScope) {
+                    ForEach(ConversationLibrary.Scope.allCases) { Text($0.title).tag($0) }
                 }
                 Divider()
                 Picker("Show chats", selection: $store.sidebarMode) {
