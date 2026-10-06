@@ -43,19 +43,16 @@ struct ConversationListState: Equatable, Sendable {
     var activity: ConversationActivity?
     var hasDraft = false
 
-    var label: String? {
-        [activity?.label, hasDraft ? "Draft" : nil].compactMap { $0 }.joined(separator: " · ").nilIfBlank
-    }
-    var symbol: String { activity?.symbol ?? "square.and.pencil" }
+    var label: String? { activity?.label }
 }
 
 struct ConversationStateLabel: View {
     let state: ConversationListState
 
     var body: some View {
-        if let label = state.label {
-            Label(label, systemImage: state.symbol)
-                .font(.caption).foregroundStyle(state.activity?.color ?? .secondary)
+        if let activity = state.activity {
+            Label(activity.label, systemImage: activity.symbol)
+                .font(.caption).foregroundStyle(activity.color)
                 .lineLimit(1)
         }
     }

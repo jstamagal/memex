@@ -161,7 +161,6 @@ struct NativeConversationList: NSViewControllerRepresentable {
     private let preview = NSTextField(wrappingLabelWithString: "")
     private let metadata = NSTextField(labelWithString: "")
     private let activityIcon = NSImageView()
-    private let draftIcon = NSImageView()
     private var previewHeight: CGFloat = 16
 
     override init(frame: NSRect) {
@@ -184,13 +183,8 @@ struct NativeConversationList: NSViewControllerRepresentable {
         title.cell?.wraps = true
         preview.maximumNumberOfLines = 1
         date.alignment = .right
-        for icon in [activityIcon, draftIcon] {
-            icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
-            addSubview(icon)
-        }
-        draftIcon.image = NSImage(systemSymbolName: "square.and.pencil", accessibilityDescription: "Draft")
-        draftIcon.contentTintColor = .secondaryLabelColor
-        draftIcon.toolTip = "Draft"
+        activityIcon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .regular)
+        addSubview(activityIcon)
         setAccessibilityElement(true)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -212,7 +206,6 @@ struct NativeConversationList: NSViewControllerRepresentable {
         activityIcon.image = row.state.activity.flatMap { NSImage(systemSymbolName: $0.symbol, accessibilityDescription: $0.label) }
         activityIcon.contentTintColor = row.state.activity.map { NSColor($0.color) } ?? .secondaryLabelColor
         activityIcon.toolTip = row.state.activity?.label
-        draftIcon.isHidden = !row.state.hasDraft
         toolTip = row.state.label
         setAccessibilityLabel([row.title, row.metadata, row.date, row.preview, row.state.label].compactMap { $0?.nilIfBlank }.joined(separator: ", "))
         needsLayout = true
@@ -223,7 +216,6 @@ struct NativeConversationList: NSViewControllerRepresentable {
         let dateWidth = min(width, ceil(date.intrinsicContentSize.width) + 4)
         title.frame = NSRect(x: 8, y: 7, width: max(0, width - 20), height: 34)
         activityIcon.frame = NSRect(x: 8 + width - 14, y: 8, width: 14, height: 14)
-        draftIcon.frame = NSRect(x: 8 + width - 14, y: 26, width: 14, height: 14)
         metadata.frame = NSRect(x: 8, y: 43, width: max(0, width - dateWidth - 6), height: 15)
         date.frame = NSRect(x: 8 + width - dateWidth, y: 43, width: dateWidth, height: 15)
         preview.frame = NSRect(x: 8, y: 61, width: width, height: previewHeight)

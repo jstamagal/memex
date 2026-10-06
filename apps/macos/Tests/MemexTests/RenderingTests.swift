@@ -266,7 +266,7 @@ struct RenderingTests {
         #expect(controller.measurement(at: 0).body == "Complete instructions")
     }
 
-    @Test func longMessagesRetainFullSelectableTextBehindShowAll() throws {
+    @Test func longMessagesShowFullSelectableTextWithoutCollapseControls() throws {
         let controller = TranscriptController()
         controller.view.frame = NSRect(x: 0, y: 0, width: 700, height: 600)
         let text = String(repeating: "Complete message content. ", count: 400) + "END OF MESSAGE"
@@ -278,8 +278,10 @@ struct RenderingTests {
             #expect(controller.measurement(at: row).body == text)
             let cell = try #require(controller.table.view(atColumn: 0, row: row, makeIfNecessary: true))
             #expect(descendants(of: cell, as: NSTextView.self).contains { $0.string.hasSuffix("END OF MESSAGE") })
-            #expect(descendants(of: cell, as: NSButton.self).contains { !$0.isHidden && $0.title == "Show all" })
-            #expect(controller.measurement(at: row).textHeight < controller.measurement(at: row).fullTextHeight)
+            #expect(!descendants(of: cell, as: NSButton.self).contains {
+                !$0.isHidden && ["Show all", "Show less"].contains($0.title)
+            })
+            #expect(controller.measurement(at: row).textHeight == controller.measurement(at: row).fullTextHeight)
             controller.toggleFullBody(controller.rows[row].id)
             #expect(controller.measurement(at: row).textHeight == controller.measurement(at: row).fullTextHeight)
         }

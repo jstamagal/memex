@@ -111,34 +111,35 @@ import Testing
         let cell = try #require(reader.tableView(reader.table, viewFor: reader.table.tableColumns.first, row: 0))
         cell.frame = NSRect(x: 0, y: 0, width: 700, height: value.height)
         cell.layoutSubtreeIfNeeded()
-        let show = try #require(cell.subviews.compactMap { $0 as? NSButton }.first { $0.title == "Show all" })
+        #expect(!cell.subviews.compactMap { $0 as? NSButton }.contains {
+            !$0.isHidden && ["Show all", "Show less"].contains($0.title)
+        })
         let copy = try #require(cell.subviews.compactMap { $0 as? NSButton }.first { $0.accessibilityLabel() == "Copy message" })
         let rich = try #require(value.richContent)
         let clip = try #require(rich.superview)
         #expect(clip.isFlipped)
         #expect(rich.frame.minY == 0)
-        #expect(show.frame.minY >= clip.frame.maxY)
-        #expect(copy.frame.minY >= show.frame.maxY)
+        #expect(clip.frame.height == rich.frame.height)
+        #expect(value.textHeight == value.fullTextHeight)
+        #expect(copy.frame.minY >= clip.frame.maxY)
         #expect(copy.frame.maxY <= cell.bounds.maxY)
         #expect(copy.alphaValue == 0)
     }
 
-    @Test func longMessagesExpandWithoutDiscardingCopyText() {
+    @Test func longMessagesAlwaysShowCompleteCopyableText() {
         let source = String(repeating: "A complete line of source content.\n\n", count: 120)
         let records = [record("long", "user", source)]
         let reader = controller(records)
-        let collapsed = reader.measurement(at: 0)
-        #expect(collapsed.isLong)
-        #expect(collapsed.textHeight == 360)
-        #expect(collapsed.body == source)
-        #expect(collapsed.attributedBody.string.contains("source content."))
+        let full = reader.measurement(at: 0)
+        #expect(full.showsFullBody)
+        #expect(full.textHeight > 440)
+        #expect(full.textHeight == full.fullTextHeight)
+        #expect(full.body == source)
+        #expect(full.attributedBody.string.contains("source content."))
         reader.toggleFullBody(reader.rows[0].id)
-        let expanded = reader.measurement(at: 0)
-        #expect(expanded.showsFullBody)
-        #expect(expanded.textHeight == expanded.fullTextHeight)
-        #expect(expanded.height > collapsed.height)
+        #expect(reader.measurement(at: 0).height == full.height)
         reader.toggleFullBody(reader.rows[0].id)
-        #expect(reader.measurement(at: 0).textHeight == collapsed.textHeight)
+        #expect(reader.measurement(at: 0).height == full.height)
     }
 
     @Test func findShowsExactOccurrenceInsideSuppressedMixedContext() throws {

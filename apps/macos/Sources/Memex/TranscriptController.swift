@@ -709,6 +709,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         let indent: CGFloat
         var symbolName: String?
         var hasFailure = false
+        var isConversationMessage = false
         switch row {
         case .group(let item):
             title = item.activitySummary
@@ -724,6 +725,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             indent = nested ? 20 : 0
             if isExpanded { fullText = entry.body }
         case .message(let entry):
+            isConversationMessage = ["user", "assistant"].contains(entry.record.role)
             isUser = !rawTranscript && entry.record.role == "user"
             isDisclosure = !rawTranscript && !["user", "assistant"].contains(entry.record.role)
             isTool = false; indent = 0
@@ -814,8 +816,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             }
         }
         let fullTextHeight = richLayout?.height(for: bodyWidth) ?? textLayout.height(for: bodyWidth)
-        let isLong = fullTextHeight > 440
-        let showsFullBody = fullBodies.contains(row.id) || !findQuery.isEmpty
+        let isLong = !isConversationMessage && fullTextHeight > 440
+        let showsFullBody = isConversationMessage || fullBodies.contains(row.id) || !findQuery.isEmpty
         let textHeight = isLong && !showsFullBody ? 360 : fullTextHeight
         let hasBody = !body.isEmpty || richLayout != nil
         let showsRawControl = isTool && isExpanded && !body.isEmpty && !findQuery.isEmpty && showsRaw

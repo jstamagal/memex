@@ -39,11 +39,11 @@ import Testing
         #expect(title.frame.maxY <= metadata.frame.minY)
         #expect(preview.maximumNumberOfLines == 2)
         #expect(fields.allSatisfy { $0.frame.maxY <= height })
-        #expect(cell.accessibilityLabel()?.contains("Approval needed · Draft") == true)
+        #expect(cell.accessibilityLabel()?.contains("Approval needed") == true)
+        #expect(cell.accessibilityLabel()?.contains("Draft") == false)
         let icons = cell.subviews.compactMap { $0 as? NSImageView }.filter { !$0.isHidden }
-        #expect(icons.count == 2)
+        #expect(icons.count == 1)
         #expect(icons.contains { $0.toolTip == "Approval needed" })
-        #expect(icons.contains { $0.toolTip == "Draft" })
     }
 
     @Test func nativeCellsShowSubagentsAndKeepMetadataInsideTheRow() throws {
@@ -88,7 +88,11 @@ import Testing
                 cell.layoutSubtreeIfNeeded()
                 #expect(row.height == baseline.height)
                 #expect(cell.subviews.map(\.frame) == initialFrames)
-                #expect(cell.toolTip == state.label)
+                #expect(cell.toolTip == activity?.label)
+                #expect(state.label == activity?.label)
+                #expect(cell.accessibilityLabel()?.contains("Draft") == false)
+                let icons = cell.subviews.compactMap { $0 as? NSImageView }.filter { !$0.isHidden }
+                #expect(icons.count == (activity == nil ? 0 : 1))
                 if let label = state.label { #expect(cell.accessibilityLabel()?.contains(label) == true) }
             }
         }
