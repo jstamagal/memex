@@ -275,13 +275,17 @@ struct ConversationComposer: View {
             showingContext = false
             action()
         } label: {
-            Label {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .frame(width: 22, height: 22)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title).lineLimit(1)
                     if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                 }
-            } icon: { Image(systemName: icon).frame(width: 18) }
+            }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
                 .padding(.vertical, 4).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
