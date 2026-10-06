@@ -14,8 +14,6 @@ struct ConversationComposer: View {
     @State private var catalog = ConversationComposerCatalog()
     @State private var providerCatalog = ConversationProviderContextCatalog()
     @State private var loadingProviderCatalog = false
-    @State private var skillsExpanded = false
-    @State private var pluginsExpanded = false
     @State private var selectedPluginID: String?
     @State private var providerLoadID = UUID()
     @State private var contextError: String?
@@ -313,21 +311,14 @@ struct ConversationComposer: View {
                     Text(providerCatalog.plugins.first { $0.id == selectedPluginID }?.name ?? selectedPluginID)
                         .font(.caption).foregroundStyle(.secondary)
                     providerSkillRows
-                } else if contextQuery.isEmpty {
-                    DisclosureGroup("Skills (\(providerCatalog.skills.count))", isExpanded: $skillsExpanded) {
-                        providerSkillRows
-                    }
-                    DisclosureGroup("Plugins (\(providerCatalog.plugins.count))", isExpanded: $pluginsExpanded) {
-                        providerPluginRows
-                    }
                 } else {
-                    if !matchingProviderSkills.isEmpty {
-                        Text("Skills").font(.caption).foregroundStyle(.secondary)
-                        providerSkillRows
-                    }
-                    if !matchingProviderPlugins.isEmpty {
+                    if contextQuery.isEmpty || !matchingProviderPlugins.isEmpty {
                         Text("Plugins").font(.caption).foregroundStyle(.secondary)
                         providerPluginRows
+                    }
+                    if contextQuery.isEmpty || !matchingProviderSkills.isEmpty {
+                        Text("Skills").font(.caption).foregroundStyle(.secondary)
+                        providerSkillRows
                     }
                 }
                 Divider()

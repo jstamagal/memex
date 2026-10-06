@@ -35,7 +35,7 @@ Conversations open in another app must be closed there before context can be
 added here; attachment errors explain the actual failure.
 
 The composer’s **+** opens a searchable context picker. **Skills** and **Plugins**
-appear above files and conversations, with counts and expandable lists. Discovery
+appear directly in the main list under plain headings, with plugins first. Discovery
 uses the selected conversation's provider installation and workspace, showing
 enabled entries and reporting loading or discovery failures. Codex selections
 become retained native skill/plugin references in the unsent draft. Claude skill
