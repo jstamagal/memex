@@ -57,9 +57,37 @@ import Testing
         try showActions(in: text)
         #expect(controller.selectionActions.popover?.isShown == true)
         #expect(text is TranscriptSelectionTextView)
+        try expectActionsAboveSelection(controller.selectionActions, text: text)
         try addButton(controller.selectionActions).performClick(nil)
         #expect(received == TranscriptSelection(text: expected, sourceIDs: [source.sourceID]))
         #expect(controller.selectionActions.popover == nil)
+    }
+
+    private func expectActionsAboveSelection(_ actions: TranscriptSelectionActions, text: NSTextView) throws {
+        let window = try #require(text.window)
+        let manager = try #require(text.layoutManager)
+        let container = try #require(text.textContainer)
+        let glyphs = manager.glyphRange(forCharacterRange: text.selectedRange(), actualCharacterRange: nil)
+        let rect = manager.boundingRect(forGlyphRange: glyphs, in: container)
+            .offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+        let selectedOnScreen = window.convertToScreen(text.convert(rect, to: nil))
+        let popup = try #require(actions.popover?.contentViewController?.view.window)
+        #expect(popup.frame.minY >= selectedOnScreen.maxY + 5)
+        #expect(!popup.frame.intersects(selectedOnScreen))
+    }
+
+    @Test func wrappedSelectionKeepsActionsAboveAllHighlightedLines() throws {
+        let controller = TranscriptController()
+        let window = window(controller)
+        defer { controller.selectionActions.dismiss(); window.close() }
+        controller.update(sessionID: "wrapped", records: [record(String(repeating: "selected words ", count: 30))], provider: "codex")
+        controller.onAddSelection = { _ in nil }
+        let cell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        cell.layoutSubtreeIfNeeded()
+        let text = try #require(textViews(in: cell).first { !$0.isHidden })
+        text.setSelectedRange(NSRange(location: 10, length: 180))
+        try showActions(in: text)
+        try expectActionsAboveSelection(controller.selectionActions, text: text)
     }
 
     @Test func emptyAndWhitespaceSelectionsHaveNoAction() {

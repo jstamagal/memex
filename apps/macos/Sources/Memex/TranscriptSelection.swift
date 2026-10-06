@@ -56,7 +56,7 @@ struct TranscriptSelection: Equatable {
     func show(in textView: NSTextView, sourceIDs: [String],
               isCurrent: @escaping () -> Bool, add: @escaping (TranscriptSelection) -> String?) {
         dismiss()
-        guard let selected = Self.selectedText(in: textView), textView.window != nil,
+        guard let selected = Self.selectedText(in: textView), let anchorView = textView.window?.contentView,
               !sourceIDs.isEmpty, let manager = textView.layoutManager, let container = textView.textContainer else { return }
         let range = textView.selectedRange()
         manager.ensureLayout(for: container)
@@ -92,7 +92,11 @@ struct TranscriptSelection: Equatable {
         popover.delegate = self
         popover.contentViewController = controller
         self.popover = popover
-        popover.show(relativeTo: selectionRect, of: textView, preferredEdge: .maxY)
+        // Anchor in the window's content view so the gap is not clipped to a
+        // one-line NSTextView. The upper edge depends on that view's coordinates.
+        let anchorRect = anchorView.convert(selectionRect, from: textView).insetBy(dx: 0, dy: -6)
+        popover.show(relativeTo: anchorRect, of: anchorView,
+                     preferredEdge: anchorView.isFlipped ? .minY : .maxY)
     }
 
     func dismiss() {

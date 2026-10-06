@@ -23,7 +23,7 @@ prompt stashes. Terminal output, file contents, diff review, and browser context
 can also be added from their workspace panes. Captured context is saved as bytes,
 so a later change to the original file does not change a queued prompt.
 
-Select text in the transcript to open **Add to chat** beside the selection.
+Select text in the transcript to open **Add to chat** above the selection.
 It adds exactly the highlighted text and its source to the existing draft without
 sending. This also works in code blocks. Find highlights do not open the popover.
 Conversations open in another app must be closed there before context can be
