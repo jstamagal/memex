@@ -54,7 +54,7 @@ struct ConversationPendingView: View {
     private func label(_ phase: ConversationPendingPrompt.Phase) -> String {
         switch phase {
         case .preparing: "Preparing to send…"
-        case .awaitingConfirmation: "Awaiting confirmation…"
+        case .awaitingConfirmation: "Sending…"
         case .uncertain: "Delivery unconfirmed — review before retrying"
         case .notSent: "Not sent"
         }
