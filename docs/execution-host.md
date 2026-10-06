@@ -23,6 +23,13 @@ For access from another machine, use HTTPS at a trusted reverse proxy or an SSH 
 
 In the native pairing form, enter the **exact Memex machine identifier** used by the historical record, plus the gateway URL and execution token. Remote resume verifies host identity, provider, native session ID, exact transcript path, and original workspace before connecting. A native ID alone is insufficient. Local source files and executables are never opened by the remote adapter.
 
+The native SSH form starts a loopback forwarding tunnel to an already configured
+host. It uses the exact hostname, existing SSH authentication and strict host-key
+checking; unknown keys or interactive authentication must be resolved in the
+user's SSH client. Pairing never installs software or sends a prompt. Failed
+pairing closes only a tunnel created by that attempt; Memex closes its own tunnels
+when it quits.
+
 ## Delivery and recovery
 
 Every mutation has a client-generated `commandId`. The host persists the exact request before crossing a provider boundary. Retrying that ID with the same request returns the existing receipt; changing its contents is an error. Keep the original `issuedAt` as well as the command ID when retrying provider commands.
@@ -34,6 +41,74 @@ After a host restart, sessions remain disconnected until explicitly resumed, und
 Schedules use the same durable queue and provider dispatch as interactive messages. CRUD, pause/resume, and run-now are available through the native connection view, web UI, and control API. Choose either an interval of 60 seconds to one year (with an optional first run timestamp), or a fixed local `HH:mm` time on selected ISO weekdays (Monday 1 through Sunday 7) in an explicit timezone. The saved timezone governs execution even when the host or viewer changes its system timezone. Editing a prompt without changing recurrence preserves its due time and paused state.
 
 Missed intervals coalesce into one occurrence. For local-time schedules, a time that does not exist during a spring daylight-saving transition is skipped; an autumn repeated time runs only at its first occurrence. A local-time occurrence missed by at least 60 seconds is skipped and recorded in `lastSkippedAt`, with the next run recomputed in its timezone. It is never replayed as a catch-up burst. Held queues and disconnected sessions prevent provider delivery until resumed. Schedule run-now uses the same durable queue and does not silently release a held queue.
+
+A schedule can instead select `newConversation: {workspaceId, provider, title}`
+to create a fresh native chat for each occurrence. Creation is recorded before
+crossing the provider boundary; an uncertain creation is retained for inspection
+and never automatically allocated again. A named `eventName` replaces recurrence.
+An authenticated caller emits `schedule.event` with that exact name and a stable
+`eventId`; repeated occurrences with the same event identity do not enqueue again.
+This is an explicit API trigger, not an implicit filesystem or external webhook
+subscription.
+
+`schedule.runs` retains occurrence status, exact conversation identity when known,
+errors and read state. Acknowledged dispatch is distinct from a terminal native
+turn. `notificationPolicy` accepts `attention` (failures, uncertainty, held work or
+input), `all` (also completion/interruption), or `never`. Marking a run read changes
+inbox attention, not its provider state. The native app polls paired hosts while
+running, quietly baselines existing runs, and uses the existing opt-in macOS
+notification settings. Web/mobile exposes the inbox without claiming an OS push
+notification channel.
+
+## Remote workspace panes
+
+Files, diff and terminal operations resolve a currently registered workspace on
+the execution host. Relative paths cannot cross symlinks or access Git metadata;
+file reads/edits accept regular singly linked UTF-8 files up to 2 MiB. Saves require
+the exact loaded revision and retain the viewer's draft on conflict. The native
+remote editor keys drafts by host, workspace and path. Diff output is bounded.
+
+Terminals are host-owned PTYs with exact workspace/terminal identifiers, bounded
+output and cursor-based reads. Opening a remote terminal does not spawn a local
+shell. Closing the native pane detaches the viewer; closing the terminal is a
+separate explicit action. Host restart ends those shell processes. Removing a
+workspace grant revokes file/diff/terminal access.
+
+## Moving the same native chat
+
+The native Execution hosts view offers a reviewed same-host workspace move and a
+paired-host transfer for idle Codex conversations. Both preserve the native session
+ID, host conversation ID, raw transcript, exact staged index, tracked/untracked/ignored
+working files, symlinks and commit history. The destination is a separately granted
+clean Git checkout, or the exact unchanged retained snapshot from an earlier move.
+The original checkout stays available. Pending turns, requests, queued commands,
+enabled schedules, open host terminals, unsupported Git states or oversized payloads
+block the operation before ownership changes. Workspace snapshots are limited to
+16 MiB/10,000 entries and native JSONL history to 8 MiB; limits reject the entire
+transfer rather than omit files. Submodules, split/sparse indexes and hardlinked or
+special files require an explicit manual workflow.
+
+Pairings pin the host's signing key. Cross-host transfers persist source export,
+private destination installation, source commitment and destination activation separately.
+Installed destination history stays outside native lookup until the signed source
+commitment is durable, so stopping either host cannot expose two native sessions.
+The destination cannot resume before the source's signed commitment. Before issuing
+that commitment, the source fences the actual native writer, verifies the exact
+exported bytes, and retires its lookup rollout into private recovery outside the
+provider home. That retirement survives host shutdown. Duplicate active, archived
+or indexed native histories block commitment. Cancellation first records the source
+abort decision, then the destination retains its private staged import and signs
+an abort tombstone, and only then the source restores ownership. Stale receipts
+cannot reverse a later transfer. Continue and recovery controls inspect recorded
+phases after a lost response; they never send a prompt.
+
+Codex native resume uses the installed provider's explicit rollout-path protocol
+and verifies the returned native ID and destination working directory. Claude
+same-session migration is unavailable because its helper loads history by original
+working directory and there is no verified exclusive native writer transfer in this
+adapter. Explicit context forks remain available for other providers. Native session
+sidecars and provider-specific external assets are not claimed as a universal
+migration format.
 
 ## Managed worktrees
 
@@ -79,9 +154,15 @@ Responses contain the same `id` and either `result` or `error: {code,message}`. 
 | `conversation.fork`, `.delegate` | `commandId`, parent `conversationId`, optional `title`, `provider`, `workspaceId`, `text` |
 | `command.read` | Original `commandId` |
 | `schedule.list` | None |
-| `schedule.upsert` | `commandId`, `scheduleId`, `conversationId`, `text`, optional `paused`; either `intervalSeconds` plus optional `nextRunAt` (RFC3339), or `wallClock: {localTime:"09:00", weekdays:[1,2,3,4,5], timeZone:"America/Los_Angeles"}` |
+| `schedule.upsert` | `commandId`, `scheduleId`, `text`, optional `paused`/`notificationPolicy`; target `conversationId` or `newConversation: {workspaceId,provider,title}`; trigger `eventName`, `intervalSeconds` plus optional `nextRunAt`, or `wallClock: {localTime:"09:00", weekdays:[1,2,3,4,5], timeZone:"America/Los_Angeles"}` |
 | `schedule.pause` | `commandId`, `scheduleId`, `paused` |
 | `schedule.delete`, `schedule.run` | `commandId`, `scheduleId` |
+| `schedule.event` | `commandId`, `eventName`, stable `eventId` |
+| `schedule.runs` | Optional `scheduleId` |
+| `schedule.run.read` | `commandId`, `runId`, `read` |
+| `workspace.files`, `workspace.file.read` | `workspaceId`, relative `path` (empty path lists root) |
+| `workspace.file.write` | `commandId`, `workspaceId`, relative `path`, loaded `revision`, UTF-8 `text` |
+| `workspace.diff` | `workspaceId`, optional `staged` |
 | `browser.describe` | `conversationId`; requires attached desktop and explicit per-chat browser grant |
 | `browser.dispatch` | `commandId`, `conversationId`, `request` containing the exact desktop host/grant/chat/tab identities returned by describe |
 
@@ -93,7 +174,27 @@ Control request bodies are limited to 4 MiB, responses to 32 MiB, socket concurr
 
 `memex-control --root /Users/me/.memex` is a separate, opt-in stdio MCP server. Starting it grants the caller same-user execution authority over that root. Its `control` tool accepts the method and params above. The ordinary `memex mcp` server remains retrieval-only.
 
-The native app may attach `desktop.sock` under the same private execution directory. Browser operations are limited to app-owned tabs with an explicit live UI grant. Grants are scoped to the desktop instance, exact conversation, tab, and capability, and do not survive app restart. `browser.describe` reveals no ungranted tabs. The execution host derives the exact native conversation key rather than accepting an arbitrary application target. Browser actions have durable host command receipts; unknown outcomes are not automatically retried. There is no general-purpose remote application or shell-control endpoint.
+The native app may attach `desktop.sock` under the same private execution directory. Browser operations are limited to app-owned tabs with an explicit live UI grant. Grants are scoped to the desktop instance, exact conversation, registered tab, and capability, and do not survive app restart. `browser.describe` reveals no ungranted tabs. The execution host derives the exact native conversation key rather than accepting an arbitrary application target. Browser actions have durable host command receipts; unknown outcomes are not automatically retried.
+
+Browser dispatch supports `snapshot`, `click`, `type`, `scroll`, `evaluate`,
+`navigate`, `back`, `forward`, `reload`, `wait`, `key`, `selectTab`, `record`, and
+`stopRecording`. Navigation accepts HTTP(S) URLs; wait is bounded to 10 seconds.
+Keys dispatch DOM events and do not emulate OS shortcuts. JavaScript evaluation
+and viewport recording each require an explicit corresponding grant.
+`record` accepts `durationSeconds` and `framesPerSecond`, each 1–5 (default 3).
+It captures a silent H.264 MP4 from that WebKit viewport, at most 1280×2048 and
+8 MiB. The response's `recording` contains the path, media type, duration, frame
+and byte counts, and desktop ownership notice. The temporary file stays on the
+Memex desktop; it is not uploaded or copied to an execution host. Revocation,
+tab closure, cancellation, and capture/encoding failure remove partial output.
+`stopRecording` cancels an in-progress capture and discards it.
+
+`desktop.describe` and `desktop.dispatch` expose only an exact running application
+chosen in the native grant UI, using macOS Accessibility permission and ephemeral
+element handles. `desktop.panel`, `desktop.preferences`, and `desktop.organization`
+have separate native grants and advertise their operation schemas. These grants
+cannot be issued by the control API. Workspace terminals use the authenticated
+host-owned workspace boundary described above.
 
 ## Verification
 

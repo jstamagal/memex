@@ -25,6 +25,8 @@ if let runtimeRoot, !runtimeRoot.isEmpty {
     runtimeDependencies = [.product(name: "SQACP", package: "sq-acp"), .product(name: "SQACPHost", package: "sq-acp")]
     appDependencies += runtimeDependencies
     appDependencies.append(.product(name: "SQACPUI", package: "sq-ui"))
+    appDependencies.append(.product(name: "SQMcpApps", package: "sq-acp"))
+    appDependencies.append(.product(name: "SQMcpAppsUI", package: "sq-acp"))
     let archive = ProcessInfo.processInfo.environment["MEMEX_AGENT_RUNTIME_LIBRARY"]
         ?? runtimeRoot + "/packages/sq-acp/target/runtime-native/aarch64-apple-darwin/release/libsq_acp_runtime.a"
     linkerSettings = [.unsafeFlags(["-Xlinker", archive]),

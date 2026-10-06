@@ -37,6 +37,39 @@ final class NativeExecutionProviderTests: XCTestCase {
         return file
     }
 
+    func testNativeTransferStagesOutsideLookupAndReturnRebindsExactPathWithoutPrompt() throws {
+        let (sourceProvider, sourceHome, sourceWorkspace, _) = try fixture()
+        let (targetProvider, targetHome, targetWorkspace, _) = try fixture()
+        let native = UUID().uuidString.lowercased()
+        let sourcePath = try transcript(home: sourceHome, nativeID: native, cwd: sourceWorkspace)
+        let source = try sourceProvider.importConversation(id: "same-native-chat", provider: "codex", nativeSessionID: native,
+            sourcePath: sourcePath.path, workspaceID: sourceWorkspace.path, cwd: sourceWorkspace.path, title: "Move")
+        try sourceProvider.detachForHandoff(source)
+        let exported = try sourceProvider.exportForHandoff(source)
+        let staged = try targetProvider.adoptHandoff(exported, id: source.id, workspaceID: targetWorkspace.path, cwd: targetWorkspace.path)
+        XCTAssertFalse(staged.transcriptPath!.hasPrefix(targetHome.path + "/"))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: targetHome.appendingPathComponent("sessions").path).isEmpty)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staged.transcriptPath!)), exported.transcript)
+        try sourceProvider.retireHandoff(exported, operationID: UUID().uuidString)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sourcePath.path))
+        let active = try targetProvider.activateHandoff(exported, conversation: staged)
+        XCTAssertTrue(active.transcriptPath!.hasPrefix(targetHome.appendingPathComponent("sessions").path + "/"))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: active.transcriptPath!)), exported.transcript)
+        let returning = try targetProvider.exportForHandoff(active)
+        let stagedReturn = try sourceProvider.adoptHandoff(returning, id: source.id, workspaceID: sourceWorkspace.path, cwd: sourceWorkspace.path)
+        try targetProvider.retireHandoff(returning, operationID: UUID().uuidString)
+        let returned = try sourceProvider.activateHandoff(returning, conversation: stagedReturn)
+        XCTAssertEqual(returned.nativeSessionID, source.nativeSessionID)
+        XCTAssertNotEqual(returned.transcriptPath, source.transcriptPath)
+        let state = try sourceProvider.read(returned)
+        XCTAssertEqual(state["warning"], .null)
+        let nativeFiles = FileManager.default.enumerator(atPath: sourceHome.appendingPathComponent("sessions").path)!.allObjects.compactMap { $0 as? String }.filter { $0.hasSuffix(".jsonl") }
+        XCTAssertEqual(nativeFiles.count, 1)
+        for home in [sourceHome, targetHome] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("provider-was-launched").path))
+        }
+    }
+
     func testNativeImportConfirmsOriginalIdentityWithoutStartingProvider() throws {
         let (provider, home, workspace, _) = try fixture()
         let source = try transcript(home: home, nativeID: "native-original", cwd: workspace)

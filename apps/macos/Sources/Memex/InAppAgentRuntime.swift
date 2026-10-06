@@ -131,7 +131,8 @@ actor NativeConversationRuntime: ConversationRuntime {
                 try service.connectCodex(binding, executablePath: target.executableURL.path, environment: target.environment)
             } else if let helper = target.helperURL {
                 try service.connectClaude(binding, hostExecutablePath: helper.path,
-                    claudeExecutablePath: target.executableURL.path, environment: target.environment)
+                    claudeExecutablePath: target.executableURL.path, environment: target.environment,
+                    pluginLocalPaths: ProviderLocalPlugins.paths(home: target.providerHome.path))
             }
         } catch {
             throw conversationProviderError(error)
@@ -211,6 +212,10 @@ actor NativeConversationRuntime: ConversationRuntime {
         snapshot.canSteer = actions.contains(.steer)
         snapshot.canMutateHistory = service.supportsConversationMutation(sessionID: sessionID)
         snapshot.deliveries = deliveries
+        snapshot.childHistories = service.children(sessionID: sessionID).map(ConversationChildHistory.init)
+        snapshot.mcpAppConnection = service.mcpAppTransportIdentity(sessionID: sessionID).map {
+            NativeMcpAppConnection(identity: $0, sessionID: sessionID, service: service)
+        }
         snapshot.warning = snapshot.warning ?? warning
         if snapshot.ready, let target, target.configuredProvider != nil {
             try ConfiguredConversationHistory.save(conversation: conversation, target: target)
@@ -251,6 +256,15 @@ actor NativeConversationRuntime: ConversationRuntime {
         let session = try NativeConversationLocation.session(nativeID: nativeID, source: target)
         if request.operation == .revert { disconnect() }
         return session
+    }
+
+    func readChild(_ id: String) async throws -> ConversationChildHistory {
+        guard let service, let sessionID else { throw ConversationRuntimeError(message: "The parent conversation is disconnected.") }
+        try service.readChild(sessionID: sessionID, childID: id)
+        guard let child = service.children(sessionID: sessionID).first(where: { $0.id == id }) else {
+            throw ConversationRuntimeError(message: "The provider did not identify this child in the parent conversation.")
+        }
+        return ConversationChildHistory(child)
     }
 
     func perform(_ command: ConversationCommand) async throws {

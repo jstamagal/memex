@@ -34,14 +34,17 @@ struct WorkspaceBrowserTabView: View {
         }
         .confirmationDialog("Allow agents to control this chat’s browser tabs?", isPresented: $grantingAccess) {
             Button("Allow reading and interaction") {
-                _ = try? automation.allow(conversationID: tabs.conversationID, capabilities: [.snapshot, .click, .type, .scroll])
+                _ = try? automation.allow(conversationID: tabs.conversationID, capabilities: Set(WorkspaceBrowserCapability.allCases).subtracting([.evaluate, .record, .stopRecording]))
             }
             Button("Allow interaction and JavaScript evaluation") {
-                _ = try? automation.allow(conversationID: tabs.conversationID, capabilities: Set(WorkspaceBrowserCapability.allCases))
+                _ = try? automation.allow(conversationID: tabs.conversationID, capabilities: Set(WorkspaceBrowserCapability.allCases).subtracting([.record, .stopRecording]))
+            }
+            Button("Allow interaction and viewport recording") {
+                _ = try? automation.allow(conversationID: tabs.conversationID, capabilities: Set(WorkspaceBrowserCapability.allCases).subtracting([.evaluate]))
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Agents can read pages and interact with signed-in sites in these app-owned tabs. Access lasts until revoked or Memex quits. Other apps and conversations are excluded.")
+            Text("Agents can read pages and interact with signed-in sites in these app-owned tabs. Access lasts until revoked or Memex quits. Recording is separately granted and saves short silent MP4 clips on this desktop. Other apps and conversations are excluded.")
         }
     }
 }

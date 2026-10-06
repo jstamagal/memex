@@ -77,9 +77,16 @@ struct ConversationRecoveryView: View {
     }
 
     static func signInCommand(_ target: InAppResumeTarget) -> String {
-        let variable = target.session.source == "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"
         let arguments = target.session.source == "codex" ? "login" : "auth login"
-        return "\(variable)=\(ResumeLaunchPlan.shellQuote(target.providerHome.path)) "
-            + "\(ResumeLaunchPlan.shellQuote(target.executableURL.path)) \(arguments)"
+        // An empty Claude override is an unset contract. Passing an empty
+        // variable to the CLI still changes its backup-file location.
+        var overrides = target.environment
+        let unsetClaudeHome = overrides["CLAUDE_CONFIG_DIR"] == ""
+        if unsetClaudeHome { overrides.removeValue(forKey: "CLAUDE_CONFIG_DIR") }
+        let environment = overrides.sorted { $0.key < $1.key }.map {
+            "\($0.key)=\(ResumeLaunchPlan.shellQuote($0.value))"
+        }.joined(separator: " ")
+        let launcher = unsetClaudeHome ? "/usr/bin/env -u CLAUDE_CONFIG_DIR " : ""
+        return "\(launcher)\(environment) \(ResumeLaunchPlan.shellQuote(target.executableURL.path)) \(arguments)"
     }
 }

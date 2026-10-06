@@ -124,6 +124,56 @@ import Testing
         #expect(store.librarySessions.isEmpty)
     }
 
+    @Test func sectionsReadStateAndDeletionPreserveExistingMetadata() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = ConversationLibrary(directory: directory)
+        let row = session("one")
+        #expect(library.createSection(named: "Research"))
+        let section = try #require(library.sections.first)
+        #expect(library.move([row], toSection: section.id))
+        #expect(library.markRead([row], read: false))
+        #expect(library.pin([row], pinned: true))
+        #expect(library.archive([row], archived: true))
+        #expect(library.renameSection(section.id, to: "Reading"))
+        let reopened = ConversationLibrary(directory: directory)
+        #expect(reopened.sections.first?.name == "Reading")
+        #expect(reopened.sectionID(for: row) == section.id)
+        #expect(reopened.isUnread(row))
+        #expect(reopened.deleteSection(section.id))
+        #expect(reopened.sectionID(for: row) == nil)
+        #expect(reopened.isPinned(row))
+        #expect(reopened.includes(row, in: .archived))
+        #expect(reopened.markRead([row], read: true))
+        #expect(!ConversationLibrary(directory: directory).isUnread(row))
+    }
+
+    @Test func versionOneMetadataMigratesAndTwoWritersPreserveSections() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let row = session("one")
+        let first = ConversationLibrary(directory: directory)
+        #expect(first.rename(row, to: "Kept title"))
+        let file = directory.appendingPathComponent("organization.json")
+        var legacy = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        legacy["version"] = 1
+        legacy.removeValue(forKey: "sections")
+        try JSONSerialization.data(withJSONObject: legacy).write(to: file)
+        let second = ConversationLibrary(directory: directory)
+        #expect(second.sections.isEmpty)
+        #expect(!second.isUnread(row))
+        #expect(second.title(for: row) == "Kept title")
+        #expect(first.createSection(named: "One"))
+        #expect(second.createSection(named: "Two"))
+        #expect(first.markRead([row], read: false))
+        let reopened = ConversationLibrary(directory: directory)
+        #expect(reopened.sections.map(\.name) == ["One", "Two"])
+        #expect(reopened.isUnread(row))
+        #expect(reopened.title(for: row) == "Kept title")
+        #expect(reopened.moveSection(reopened.sections[1].id, by: -1))
+        #expect(reopened.sections.map(\.name) == ["Two", "One"])
+    }
+
     @Test func nativeFilterIncludesAntigravityAndZcode() {
         #expect(ConversationProvider.antigravity.argument == "antigravity")
         #expect(ConversationProvider.zcode.argument == "zcode")

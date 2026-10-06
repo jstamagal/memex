@@ -148,7 +148,9 @@ struct HomeView: View {
 
 private struct HomeConversationSkeletonRow: View {
     let index: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.memexReduceMotion) private var appReduceMotion
+    private var reduceMotion: Bool { systemReduceMotion || appReduceMotion }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.8)) { context in

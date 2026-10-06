@@ -183,6 +183,54 @@ import WebKit
         #expect(try await session.runBrowserScript("return document.querySelector('#entry').value;") == "Captured input")
     }
 
+    @Test func navigationWaitAndDOMKeyUseTheGrantedTab() async throws {
+        let suite = "memex-browser-actions-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let server = try WorkspaceBrowserHTTPFixture()
+        defer { server.stop() }
+        try await waitUntil { server.port != nil }
+        let port = try #require(server.port)
+        let store = WorkspaceBrowserStore(defaults: defaults)
+        let tabs = store.tabs(for: "action-chat")
+        let session = tabs.selected
+        let grant = try store.automation.allow(conversationID: tabs.conversationID,
+            capabilities: [.navigate, .back, .forward, .reload, .wait, .key, .selectTab])
+        func request(_ action: WorkspaceBrowserCapability) -> WorkspaceBrowserAutomationRequest {
+            .init(hostID: grant.hostID, grantID: grant.id, conversationID: tabs.conversationID, tabID: session.id, action: action)
+        }
+        var navigation = request(.navigate)
+        navigation.url = "file:///tmp/forbidden"
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(navigation) }
+        navigation.url = "http://localhost:\(port)/one"
+        _ = try await store.automation.dispatch(navigation)
+        try await waitUntil { session.title == "Page one" && !session.isLoading }
+        var waiting = request(.wait)
+        waiting.selector = "#entry"
+        _ = try await store.automation.dispatch(waiting)
+        waiting.selector = "#missing"
+        waiting.timeoutMilliseconds = 20
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(waiting) }
+        _ = try await session.runBrowserScript("document.querySelector('#entry').addEventListener('keydown', e => document.body.dataset.key=e.key); return 'ready';")
+        var key = request(.key)
+        key.selector = "#entry"; key.key = "Enter"
+        _ = try await store.automation.dispatch(key)
+        #expect(try await session.runBrowserScript("return document.body.dataset.key;") == "Enter")
+        navigation.url = "http://localhost:\(port)/two"
+        _ = try await store.automation.dispatch(navigation)
+        try await waitUntil { session.title == "Page two" && !session.isLoading }
+        _ = try await store.automation.dispatch(request(.back))
+        try await waitUntil { session.title == "Page one" && !session.isLoading }
+        _ = try await store.automation.dispatch(request(.forward))
+        try await waitUntil { session.title == "Page two" && !session.isLoading }
+        let second = try #require(tabs.add())
+        #expect(tabs.selectedID == second.id)
+        _ = try await store.automation.dispatch(request(.selectTab))
+        #expect(tabs.selectedID == session.id)
+        store.automation.revoke(conversationID: tabs.conversationID)
+        await #expect(throws: (any Error).self) { try await store.automation.dispatch(navigation) }
+    }
+
     private func waitUntil(_ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(10)
         while !condition(), Date() < deadline { try await Task.sleep(for: .milliseconds(20)) }

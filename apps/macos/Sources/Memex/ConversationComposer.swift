@@ -15,6 +15,8 @@ struct ConversationComposer: View {
     @State private var loadingContext = false
     @State private var dropTargeted = false
     @State private var showingSettings = false
+    @State private var showingDictation = false
+    @State private var annotating: ConversationAttachment?
     @State private var recall = ConversationPromptRecall()
     @State private var library = ConversationPromptLibrary.shared
     @AppStorage("conversation.followUpBehavior") private var followUpBehavior = "queue"
@@ -23,6 +25,11 @@ struct ConversationComposer: View {
         VStack(alignment: .leading, spacing: 8) {
             ConversationQueueView(conversation: conversation)
             ConversationQuestionsView(conversation: conversation)
+            ForEach(conversation.snapshot.approvals.filter { $0.kind == "mcp_elicitation" }) { approval in
+                ConversationElicitationView(approval: approval,
+                    canRespond: conversation.snapshot.connected && !conversation.submitting,
+                    onRespond: { response in Task { await conversation.respondToElicitation(approval, response: response) } })
+            }
             if let error = contextError ?? library.error {
                 HStack(alignment: .top) {
                     Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
@@ -47,9 +54,9 @@ struct ConversationComposer: View {
                     ? "Close this conversation in the other Codex app or CLI to continue here."
                     : "Ask the agent…",
                 isRunning: conversation.isWorking,
-                canSend: conversation.canSubmit && conversation.hasPrompt && !loadingContext,
+                canSend: (conversation.canSubmit || (conversation.isWorking && conversation.canQueue)) && conversation.hasPrompt && !loadingContext,
                 focusRequestID: conversation.focusRequest,
-                pendingApprovals: conversation.snapshot.approvals.map { approval in
+                pendingApprovals: conversation.snapshot.approvals.filter { $0.kind != "mcp_elicitation" }.map { approval in
                     var item = AcpComposerPendingApprovalItem(
                         id: approval.id, title: approval.title, subtitle: nil,
                         diffPreview: approval.detail,
@@ -91,26 +98,29 @@ struct ConversationComposer: View {
                 return true
             }
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(dropTargeted ? Color.accentColor : .clear, lineWidth: 2))
-            if conversation.isWorking && conversation.hasPrompt {
-                HStack {
-                    Picker("While working", selection: $followUpBehavior) {
-                        Text("Queue after this turn").tag("queue")
-                        if conversation.canSteer { Text("Steer current turn").tag("steer") }
-                    }.labelsHidden().fixedSize()
-                    Spacer()
-                    Button("Queue message") { Task { await conversation.enqueueDraft() } }
-                        .disabled(!conversation.canQueue || loadingContext)
-                    if conversation.canSteer {
-                        Button("Steer now") { Task { await conversation.steerDraft() } }
-                            .disabled(loadingContext)
-                    }
-                }.font(.caption)
-            }
         }
         .frame(maxWidth: ConversationReadingLane.maximumWidth)
         .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .task(id: "\(conversation.session.id):\(conversation.isServerOwned)") { await loadCatalog() }
+        .sheet(isPresented: $showingDictation) {
+            ConversationDictationView { text in conversation.draft = joined(conversation.draft, text); conversation.focus() }
+        }
+        .sheet(item: $annotating) { item in
+            ConversationAnnotationEditor(attachment: item, capturedSource: conversation.attachments.first {
+                $0.id == (item.annotation?.attachmentID ?? item.id)
+            }) { passage, comment in
+                do {
+                    let annotation = try item.annotated(passage: passage, comment: comment)
+                    var items = conversation.attachments
+                    guard items.contains(item) else { return false }
+                    if item.annotation != nil { items.removeAll { $0.id == item.id } }
+                    items.append(annotation)
+                    try ConversationAttachment.validate(items, controls: conversation.snapshot.controls ?? ConversationControls())
+                    return conversation.replaceDraft(text: conversation.draft, attachments: items)
+                } catch { conversation.reportAttachmentError(error.localizedDescription); return false }
+            }
+        }
         .sheet(isPresented: $showingSettings) { settingsSheet }
     }
 
@@ -176,6 +186,33 @@ struct ConversationComposer: View {
 
     private var inputMenu: some View {
         Menu {
+            Button("Dictate a prompt…") { showingDictation = true }
+            Divider()
+            if conversation.isWorking {
+                Picker("While working", selection: $followUpBehavior) {
+                    Text("Queue after this turn").tag("queue")
+                    if conversation.canSteer { Text("Steer current turn").tag("steer") }
+                }
+                Button("Queue message") { Task { await conversation.enqueueDraft() } }
+                    .disabled(!conversation.canQueue || !conversation.hasPrompt || loadingContext)
+                if conversation.canSteer {
+                    Button("Steer current turn") { Task { await conversation.steerDraft() } }
+                        .disabled(!conversation.hasPrompt || loadingContext)
+                }
+                if conversation.canInterruptAndRestart {
+                    Button("Stop and send draft as a new turn") { Task { await conversation.interruptAndRestartDraft() } }
+                        .disabled(!conversation.hasPrompt || loadingContext)
+                }
+                Divider()
+            }
+            if !conversation.attachments.isEmpty {
+                Menu("Annotate captured context") {
+                    ForEach(conversation.attachments) { item in
+                        Button(item.title) { annotating = item }
+                    }
+                }
+                Divider()
+            }
             Button("Stash current prompt") { Task { await stashPrompt() } }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!conversation.hasPrompt || library.saving || loadingContext)

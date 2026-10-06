@@ -74,6 +74,7 @@ public struct HostedConversation: Codable, Equatable, Sendable {
     public var title: String
     public var parentID: String?
     public var createdAt: String
+    public var handoffResume: Bool? = nil
 }
 
 public struct HostedCommand: Codable, Equatable, Sendable {
@@ -87,6 +88,15 @@ public struct HostedCommand: Codable, Equatable, Sendable {
     public var promptContent: HostValue?
 }
 
+public struct NativeConversationTransfer: Codable, Sendable {
+    public var conversation: HostedConversation
+    public var transcript: Data
+    public var transcriptSHA256: String
+    public init(conversation: HostedConversation, transcript: Data, transcriptSHA256: String) {
+        self.conversation = conversation; self.transcript = transcript; self.transcriptSHA256 = transcriptSHA256
+    }
+}
+
 /// Process execution stays in SQACPHost. Test implementations supply provider events,
 /// not a second implementation of native protocol behavior.
 public protocol ExecutionProvider: AnyObject {
@@ -96,11 +106,36 @@ public protocol ExecutionProvider: AnyObject {
     func importConversation(id: String, provider: String, nativeSessionID: String, sourcePath: String,
                             workspaceID: String, cwd: String, title: String) throws -> HostedConversation
     func read(_ conversation: HostedConversation) throws -> HostValue
+    func readChild(_ conversation: HostedConversation, childID: String) throws -> HostValue
     func perform(_ command: HostedCommand) throws -> HostValue
     func isConnected(_ id: String) -> Bool
+    /// Nil means this concrete conversation has a verified native transfer path.
+    func handoffUnavailableReason(_ conversation: HostedConversation) -> String?
+    func detachForHandoff(_ conversation: HostedConversation) throws
+    func exportForHandoff(_ conversation: HostedConversation) throws -> NativeConversationTransfer
+    func retireHandoff(_ transfer: NativeConversationTransfer, operationID: String) throws
+    func restoreRetiredHandoff(_ transfer: NativeConversationTransfer, operationID: String) throws
+    /// Installs retained native history without connecting or sending any prompt.
+    func adoptHandoff(_ transfer: NativeConversationTransfer, id: String, workspaceID: String, cwd: String) throws -> HostedConversation
+    func activateHandoff(_ transfer: NativeConversationTransfer, conversation: HostedConversation) throws -> HostedConversation
+    func relocate(_ conversation: HostedConversation, workspaceID: String, cwd: String) throws -> HostedConversation
+    /// Called only after the host's explicit recovery/ownership decision.
+    func releaseHandoffFence(_ conversation: HostedConversation) throws
 }
 
 extension ExecutionProvider {
+    public func readChild(_ conversation: HostedConversation, childID: String) throws -> HostValue {
+        throw HostFailure("capability_unavailable", "This provider does not support parent-bound child history")
+    }
+    public func handoffUnavailableReason(_ conversation: HostedConversation) -> String? { "This provider has no verified native-session handoff implementation" }
+    public func detachForHandoff(_ conversation: HostedConversation) throws { throw HostFailure("handoff_unsupported", handoffUnavailableReason(conversation) ?? "Handoff unavailable") }
+    public func exportForHandoff(_ conversation: HostedConversation) throws -> NativeConversationTransfer { throw HostFailure("handoff_unsupported", handoffUnavailableReason(conversation) ?? "Handoff unavailable") }
+    public func retireHandoff(_ transfer: NativeConversationTransfer, operationID: String) throws { throw HostFailure("handoff_unsupported", "Durable native retirement is unavailable") }
+    public func restoreRetiredHandoff(_ transfer: NativeConversationTransfer, operationID: String) throws { throw HostFailure("handoff_unsupported", "Durable native retirement recovery is unavailable") }
+    public func adoptHandoff(_ transfer: NativeConversationTransfer, id: String, workspaceID: String, cwd: String) throws -> HostedConversation { throw HostFailure("handoff_unsupported", "Native session import is unavailable") }
+    public func activateHandoff(_ transfer: NativeConversationTransfer, conversation: HostedConversation) throws -> HostedConversation { throw HostFailure("handoff_unsupported", "Native session activation is unavailable") }
+    public func relocate(_ conversation: HostedConversation, workspaceID: String, cwd: String) throws -> HostedConversation { throw HostFailure("handoff_unsupported", handoffUnavailableReason(conversation) ?? "Handoff unavailable") }
+    public func releaseHandoffFence(_ conversation: HostedConversation) throws {}
     public func importConversation(id: String, provider: String, nativeSessionID: String, sourcePath: String,
                                    workspaceID: String, cwd: String, title: String) throws -> HostedConversation {
         throw HostFailure("capability_unavailable", "This provider does not support importing native sessions")

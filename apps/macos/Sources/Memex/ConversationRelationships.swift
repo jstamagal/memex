@@ -5,7 +5,7 @@ import Observation
 @MainActor @Observable
 final class ConversationRelationships {
     struct Link: Codable, Equatable, Identifiable {
-        enum Kind: String, Codable { case nativeFork, contextBranch, providerTransition, rewind }
+        enum Kind: String, Codable { case nativeFork, contextBranch, providerTransition, rewind, queueTransfer }
         let parent: Session
         let child: Session
         let kind: Kind
@@ -21,13 +21,23 @@ final class ConversationRelationships {
         let issuedAt: Date
         var result: Session?
     }
+    struct QueueTransfer: Codable, Equatable, Identifiable {
+        let id: String
+        let source: Session
+        let entry: ConversationQueuedPrompt
+        let context: CreatedConversationCatalog.Context
+        var result: Session?
+        var completed = false
+    }
     private struct Saved: Codable {
         var version = 1
         var links: [Link] = []
         var pending: [Pending] = []
+        var queueTransfers: [QueueTransfer]? = nil
     }
     private(set) var links: [Link] = []
     private(set) var pending: [Pending] = []
+    private(set) var queueTransfers: [QueueTransfer] = []
     private(set) var error: String?
     @ObservationIgnored private let directory: URL?
 
@@ -69,6 +79,56 @@ final class ConversationRelationships {
     }
     func acknowledge(_ operation: Pending) throws { try finish(operation, link: nil) }
 
+    /// Reservation is durable before native creation. An existing reservation
+    /// without a result means creation may have happened; it cannot be replayed.
+    func reserveQueueTransfer(source: Session, entry: ConversationQueuedPrompt,
+                              context: CreatedConversationCatalog.Context) throws -> (QueueTransfer, Bool) {
+        let key = source.id + ":" + entry.id
+        var result: QueueTransfer?
+        var reserved = false
+        try mutate { saved in
+            if let existing = saved.queueTransfers?.first(where: { $0.id == key }) {
+                guard existing.entry == entry else {
+                    throw ConversationRuntimeError(message: "This queued message changed after its transfer began. Inspect the saved side-chat draft before moving it again.")
+                }
+                result = existing
+            } else {
+                let transfer = QueueTransfer(id: key, source: source, entry: entry, context: context)
+                saved.queueTransfers = (saved.queueTransfers ?? []) + [transfer]
+                result = transfer
+                reserved = true
+            }
+        }
+        guard let result else { throw ConversationRuntimeError(message: "The queue transfer could not be reserved.") }
+        return (result, reserved)
+    }
+
+    func recordQueueTransferResult(_ session: Session, transferID: String) throws {
+        try mutate { saved in
+            guard let index = saved.queueTransfers?.firstIndex(where: { $0.id == transferID }) else {
+                throw ConversationRuntimeError(message: "The queue transfer reservation is missing.")
+            }
+            if let previous = saved.queueTransfers?[index].result, previous.id != session.id {
+                throw ConversationRuntimeError(message: "The queue transfer already names another native session.")
+            }
+            saved.queueTransfers?[index].result = session
+        }
+    }
+
+    func finishQueueTransfer(_ transfer: QueueTransfer, result: Session) throws {
+        try mutate { saved in
+            guard let index = saved.queueTransfers?.firstIndex(where: { $0.id == transfer.id }),
+                  saved.queueTransfers?[index].result?.id == result.id else {
+                throw ConversationRuntimeError(message: "The saved side-chat identity does not match this transfer.")
+            }
+            saved.queueTransfers?[index].completed = true
+            if !saved.links.contains(where: { $0.child.id == result.id }) {
+                saved.links.append(.init(parent: transfer.source, child: result, kind: .queueTransfer,
+                    sourceRecordID: transfer.entry.id, createdAt: Date()))
+            }
+        }
+    }
+
     private func read(_ directory: URL) throws -> Saved {
         let file = directory.appendingPathComponent("relationships.json")
         do {
@@ -77,7 +137,7 @@ final class ConversationRelationships {
             return saved
         } catch let error as CocoaError where error.code == .fileReadNoSuchFile { return Saved() }
     }
-    private func install(_ saved: Saved) { links = saved.links; pending = saved.pending; error = nil }
+    private func install(_ saved: Saved) { links = saved.links; pending = saved.pending; queueTransfers = saved.queueTransfers ?? []; error = nil }
     private func mutate(_ body: (inout Saved) throws -> Void) throws {
         do {
             if let directory {
@@ -94,7 +154,7 @@ final class ConversationRelationships {
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
                 install(saved)
             } else {
-                var saved = Saved(links: links, pending: pending)
+                var saved = Saved(links: links, pending: pending, queueTransfers: queueTransfers)
                 try body(&saved)
                 install(saved)
             }

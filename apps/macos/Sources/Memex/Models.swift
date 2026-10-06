@@ -157,6 +157,7 @@ struct Message: Decodable, Equatable, Sendable {
     var sourceRecordType: String? = nil
     var sourceContent: String? = nil
     var toolResultIsError: Bool? = nil
+    var mcpAppJSON: String? = nil
     var structuredActivity: String? = nil
     var activityStatus: String? = nil
     var outputCompleteness: String? = nil
@@ -170,6 +171,7 @@ struct Message: Decodable, Equatable, Sendable {
         case sourceTurnID = "source_turn_id", assistantPhase = "assistant_phase"
         case lifecycleEvent = "lifecycle_event", sourceRecordType = "source_record_type"
         case sourceContent = "source_content"
+        case mcpAppJSON = "mcp_app"
         case toolResultIsError = "tool_result_is_error"
         case structuredActivity = "structured_activity", activityStatus = "activity_status"
         case outputCompleteness = "output_completeness"

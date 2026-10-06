@@ -9,16 +9,27 @@ enum ConversationWork {
         let text: String
         let status: String
     }
-    struct Plan: Equatable {
+    struct Plan: Equatable, Identifiable {
         let recordID: String
         let steps: [Step]
-        var text: String { steps.map { "[\($0.status)] \($0.text)" }.joined(separator: "\n") }
+        var markdown: String? = nil
+        var savedSource: String? = nil
+        var id: String { recordID }
+        var text: String { markdown ?? steps.map { "[\($0.status)] \($0.text)" }.joined(separator: "\n") }
+        func provenance(session: Session) -> String { savedSource ?? "\(session.id)#\(recordID)" }
     }
     struct Agent: Identifiable, Equatable {
         let id: String
         var prompt: String?
         var status: String
         var parentID: String? = nil
+        var group: String {
+            switch status.lowercased() {
+            case "running", "pending_init", "in_progress", "inprogress", "waiting": "Active"
+            case "completed", "failed", "errored", "interrupted", "cancelled", "stopped": "Done"
+            default: "Status unavailable"
+            }
+        }
     }
     struct State: Equatable {
         var plan: Plan?
@@ -58,7 +69,9 @@ enum ConversationWork {
                       !text.isEmpty else { return nil }
                 return Step(id: index, text: text, status: step["status"].string ?? "pending")
             }
-            if !steps.isEmpty { state.plan = Plan(recordID: record.id, steps: steps) }
+            if let text = activity["planDocument"]["text"].string, !text.isEmpty {
+                state.plan = Plan(recordID: record.id, steps: steps, markdown: text)
+            } else if !steps.isEmpty { state.plan = Plan(recordID: record.id, steps: steps) }
             let subagent = activity["subagent"]["_0"]
             for id in subagent["agentIDs"].array.compactMap(\.string) {
                 // Tool completion means the orchestration operation finished;
@@ -106,6 +119,8 @@ struct ConversationWorkView: View {
     let branchPlan: (ConversationWork.Plan) -> Void
     @State private var expanded = false
     @State private var contextError: String?
+    @State private var editingPlan: ConversationWork.Plan?
+    @State private var selectedChild: ConversationWork.Agent?
 
     var body: some View {
         if state.plan != nil || !state.agents.isEmpty {
@@ -114,6 +129,7 @@ struct ConversationWorkView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         if let contextError { Text(contextError).foregroundStyle(.orange) }
                         if let plan = state.plan {
+                            Button("Open plan document…") { editingPlan = plan }
                             ForEach(plan.steps) { step in
                                 Label(step.text, systemImage: step.status == "completed" ? "checkmark.circle.fill" : step.status == "in_progress" ? "circle.lefthalf.filled" : "circle")
                                     .help(step.status).textSelection(.enabled)
@@ -129,38 +145,47 @@ struct ConversationWorkView: View {
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                         }
-                        ForEach(state.agents) { agent in
-                            let target = sessions.first { $0.sessionID == agent.id && $0.source == session.source && $0.machineID == session.machineID }
-                            HStack(alignment: .top) {
-                                Image(systemName: "person.crop.circle.badge.clock")
-                                VStack(alignment: .leading) {
-                                    Text(agent.prompt ?? agent.id).lineLimit(2)
-                                    Text(agent.status == "unknown" ? "Status unavailable" : agent.status)
-                                        .font(.caption2).foregroundStyle(.secondary)
+                        ForEach(["Active", "Done", "Status unavailable"], id: \.self) { group in
+                            let agents = state.agents.filter { $0.group == group }
+                            if !agents.isEmpty {
+                                Text("\(group) · \(agents.count)").fontWeight(.medium)
+                                ForEach(agents) { agent in
+                                    Button { selectedChild = agent } label: {
+                                        HStack {
+                                            Image(systemName: "person.crop.circle")
+                                            Text(agent.prompt ?? agent.id).lineLimit(2)
+                                            Spacer()
+                                            Text(agent.status).foregroundStyle(.secondary)
+                                            Image(systemName: "chevron.right")
+                                        }.contentShape(Rectangle())
+                                    }.buttonStyle(.plain)
                                 }
-                                Spacer()
-                                if let parentID = agent.parentID, parentID != session.sessionID,
-                                   let parent = sessions.first(where: { $0.sessionID == parentID && $0.source == session.source && $0.machineID == session.machineID }) {
-                                    Button("Parent") { navigate(parent) }
-                                }
-                                Button("Open") { if let target { navigate(target) } }.disabled(target == nil)
-                                    .help(target == nil ? "This child session has not been indexed on its execution host yet." : "Open child conversation")
                             }
                         }
                     }.padding(.top, 6)
                 }.frame(maxHeight: 220)
             } label: {
                 HStack {
-                    if let plan = state.plan { Text("Plan · \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)") }
+                    if let plan = state.plan { Text(plan.steps.isEmpty ? "Plan document" : "Plan · \(plan.steps.filter { $0.status == "completed" }.count)/\(plan.steps.count)") }
                     if !state.agents.isEmpty { Text("Agents · \(state.agents.count)") }
                 }
             }
             .font(.caption).padding(.horizontal, 20).padding(.vertical, 8)
+            .sheet(item: $editingPlan) { plan in
+                ConversationPlanEditor(plan: plan, session: session, canImplement: conversation != nil && conversation?.isOpenElsewhere != true,
+                    implement: { edited in
+                        if let conversation { _ = prepare(edited, prompt: "Implement this plan.", conversation: conversation) }
+                    }, branch: branchPlan)
+            }
+            .sheet(item: $selectedChild) { child in
+                ConversationChildView(agent: child, conversation: conversation, session: session,
+                                      sessions: sessions, navigate: navigate)
+            }
         }
     }
 
     @discardableResult private func prepare(_ plan: ConversationWork.Plan, prompt: String, conversation: LiveConversation) -> Bool {
-        guard conversation.appendContext(title: "Plan", text: plan.text, source: "\(session.id)#\(plan.recordID)") else {
+        guard conversation.appendContext(title: "Plan", text: plan.text, source: plan.provenance(session: session)) else {
             contextError = "The plan could not be attached. Check conversation access and the attachment limit."
             return false
         }

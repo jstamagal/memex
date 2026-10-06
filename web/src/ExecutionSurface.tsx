@@ -3,12 +3,12 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { MessageContent } from "@/MessageContent"
+import { ExecutionSchedules } from "@/ExecutionSchedules"
 import { ExecutionQuestions } from "@/ExecutionQuestions"
 import { ExecutionClient, captureExecutionAttachment, type ExecutionDraft, type ExecutionRequest, type HostConversation,
   type HostInfo, type HostSnapshot, type HostWorkspace, type HostSchedule, type HostEntity, type HostWorktree } from "@/execution"
 
 const pairingKey = "memex-execution-pairing-v1"
-const weekdays = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 function rememberedClient(): ExecutionClient | null {
   try {
     const pairing = JSON.parse(sessionStorage.getItem(pairingKey) || "null") as { token: string; hostId: string } | null
@@ -62,13 +62,6 @@ export function ExecutionSurface({ onBack }: { onBack: () => void }) {
   const [draft, setDraft] = useState<ExecutionDraft>({ text: "", attachments: [] })
   const [outbox, setOutbox] = useState<ExecutionRequest[]>([])
   const [schedules, setSchedules] = useState<HostSchedule[]>([])
-  const [scheduleId, setScheduleId] = useState(() => crypto.randomUUID() as string)
-  const [scheduleText, setScheduleText] = useState("")
-  const [interval, setIntervalSeconds] = useState(3600)
-  const [scheduleKind, setScheduleKind] = useState("interval")
-  const [localTime, setLocalTime] = useState("09:00")
-  const [scheduleDays, setScheduleDays] = useState([1, 2, 3, 4, 5])
-  const [timeZone, setTimeZone] = useState(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")
   const [error, setError] = useState("")
   const [receipt, setReceipt] = useState("")
   const [busy, setBusy] = useState(false)
@@ -212,40 +205,7 @@ export function ExecutionSurface({ onBack }: { onBack: () => void }) {
             </div>)}
           </div>
         </details>}
-        <details className="rounded-md border p-3">
-          <summary className="text-sm font-medium">Schedules</summary>
-          <div className="mt-3 space-y-3">
-            {schedules.map(schedule => <div key={schedule.id} className="space-y-1 border-b pb-2 text-xs">
-              <p className="line-clamp-3">{schedule.prompt}</p><p className="text-muted-foreground">{schedule.paused ? "Paused" : `Next: ${new Date(schedule.nextRunAt).toLocaleString()}`}</p>
-              <div className="flex flex-wrap gap-1">
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => {
-                  setScheduleId(schedule.id); setScheduleText(schedule.prompt); setIntervalSeconds(schedule.intervalSeconds || 3600); setSelected(schedule.conversationID)
-                  setScheduleKind(schedule.wallClock ? "wallClock" : "interval")
-                  if (schedule.wallClock) { setLocalTime(schedule.wallClock.localTime); setScheduleDays(schedule.wallClock.weekdays); setTimeZone(schedule.wallClock.timeZone) }
-                }}>Edit</Button>
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void operate("schedule.pause", { scheduleId: schedule.id, paused: !schedule.paused })}>{schedule.paused ? "Resume" : "Pause"}</Button>
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void operate("schedule.run", { scheduleId: schedule.id })}>Run now</Button>
-                <Button size="sm" variant="ghost" disabled={busy} onClick={() => void operate("schedule.delete", { scheduleId: schedule.id })}>Delete</Button>
-              </div>
-            </div>)}
-            <Textarea aria-label="Scheduled prompt" placeholder="Prompt for the selected conversation" value={scheduleText} onChange={event => setScheduleText(event.target.value)} />
-            <label className="block text-xs">Recurrence<select aria-label="Schedule recurrence" className="mt-1 w-full rounded border bg-background p-2" value={scheduleKind} onChange={event => setScheduleKind(event.target.value)}>
-              <option value="interval">Fixed interval</option><option value="wallClock">Local time and weekdays</option>
-            </select></label>
-            {scheduleKind === "interval" ? <label className="block text-xs">Repeat every (seconds)<Input aria-label="Schedule interval in seconds" type="number" min={60} value={interval} onChange={event => setIntervalSeconds(Number(event.target.value))} /></label> : <>
-              <label className="block text-xs">Local time<Input aria-label="Schedule local time" type="time" value={localTime} onChange={event => setLocalTime(event.target.value)} /></label>
-              <label className="block text-xs">Time zone<Input aria-label="Schedule time zone" placeholder="America/Los_Angeles" value={timeZone} onChange={event => setTimeZone(event.target.value)} /></label>
-              <fieldset className="flex flex-wrap gap-2"><legend className="mb-1 text-xs">Weekdays</legend>{weekdays.map((day, index) => <label key={day} className="flex items-center gap-1 text-xs">
-                <input type="checkbox" aria-label={day} checked={scheduleDays.includes(index + 1)} onChange={() => setScheduleDays(current => current.includes(index + 1) ? current.filter(value => value !== index + 1) : [...current, index + 1].sort())} />{day.slice(0, 3)}
-              </label>)}</fieldset>
-              <p className="text-xs text-muted-foreground">Times skipped by daylight saving changes are skipped. Repeated times run once. Occurrences missed by more than a minute are skipped.</p>
-            </>}
-            <Button size="sm" disabled={busy || !selected || !scheduleText.trim() || (scheduleKind === "interval" ? interval < 60 || !Number.isFinite(interval) : !localTime || !timeZone.trim() || !scheduleDays.length)} onClick={async () => {
-              const recurrence = scheduleKind === "interval" ? { intervalSeconds: interval } : { wallClock: { localTime, weekdays: scheduleDays, timeZone } }
-              if (await operate("schedule.upsert", { scheduleId, conversationId: selected, text: scheduleText, ...recurrence })) { setScheduleId(crypto.randomUUID()); setScheduleText("") }
-            }}>Save schedule</Button>
-          </div>
-        </details>
+        {info && <ExecutionSchedules key={info.hostId} client={client} info={info} schedules={schedules} conversations={conversations} workspaces={workspaces} selected={selected} busy={busy} operate={operate} openConversation={setSelected} />}
         {!!outbox.length && <details className="rounded-md border p-3" open><summary className="text-sm font-medium">Unconfirmed commands ({outbox.length})</summary>
           {outbox.map(request => <div key={request.id} className="mt-3 space-y-2 text-xs">
             <p>{request.method}</p><code className="break-all">{request.id}</code>

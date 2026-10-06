@@ -25,7 +25,7 @@ enum ConversationProjection {
                 detail: payload["rawInputJSON"].string, options: payload["options"].array.compactMap {
                     guard let id = $0["id"].string else { return nil }
                     return .init(id: id, title: $0["name"].string ?? id, kind: $0["kind"].string ?? "")
-                })
+                }, kind: payload["kind"].string)
         }
         let questions = pending.filter { $0["kind"].string == "user_input" }.compactMap { request -> ConversationQuestion? in
             guard let id = request["requestId"].string else { return nil }
@@ -69,6 +69,7 @@ enum ConversationProjection {
         var liveMetadata: [String: RawTranscriptJSON] = [:]
         var emitted: Set<String> = []
         var records: [TranscriptRecord] = []
+        var emittedPlanIDs: Set<String> = []
 
         init(conversation: RawTranscriptJSON, ownedLiveUserTurns: Set<String>) {
             persisted = conversation["presentation"].array
@@ -97,9 +98,15 @@ enum ConversationProjection {
                 let payload = entity["body"]["data"]["payload"]
                 if payload["data"]["namespace"].string == "memex/live",
                    let target = payload["data"]["value"]["item_id"].string {
-                    liveMetadata[target] = payload["data"]["value"]
+                    liveMetadata[target] = Self.merge(liveMetadata[target] ?? .null, payload["data"]["value"])
                 }
             }
+        }
+
+        private static func merge(_ older: RawTranscriptJSON, _ newer: RawTranscriptJSON) -> RawTranscriptJSON {
+            guard case .object(let next) = newer else { return older }
+            guard case .object(let previous) = older else { return newer }
+            return .object(previous.merging(next) { _, new in new })
         }
 
         /// Metadata is joined by exact retained evidence, never text or proximity.
@@ -172,6 +179,15 @@ enum ConversationProjection {
                 }
             }
             for entity in live { emit(entity) }
+            // A completed native plan can be restored as metadata without a
+            // surviving tool row. Retain the exact plan ID and full text once.
+            for key in liveMetadata.keys.sorted() {
+                guard let metadata = liveMetadata[key], let planID = metadata["planDocument"]["id"].string,
+                      !emittedPlanIDs.contains(planID), metadata["planDocument"]["text"].string != nil else { continue }
+                let entity: RawTranscriptJSON = .object(["item_id": .string(key), "body": .object([
+                    "kind": .string("tool_invocation"), "data": .object(["native_call_id": .string(key), "name": .string("Plan")])])])
+                append(entity, suffix: "plan", role: "tool_use", text: "", nativeID: key, toolName: "Plan")
+            }
             return records
         }
 
@@ -371,9 +387,17 @@ enum ConversationProjection {
                 sourceContent: sourceContent,
                 toolResultIsError: isError, contextLabel: context)
             var decorated = message
-            if let phase = liveMetadata[identity]?["phase"].string { decorated.assistantPhase = phase }
-            decorated.structuredActivity = activity ?? liveMetadata[identity]?["activity"].jsonText
-            decorated.activityStatus = liveMetadata[identity]?["status"].string ?? data["status"].string
+            let callID = data["native_call_id"].string ?? data["native_correlation_key"].string
+            let liveDetails = Self.merge(liveMetadata[identity] ?? .null, callID.flatMap { liveMetadata[$0] } ?? .null)
+            if let phase = liveDetails["phase"].string { decorated.assistantPhase = phase }
+            decorated.structuredActivity = activity ?? liveDetails["activity"].jsonText
+            if let planID = liveDetails["planDocument"]["id"].string {
+                let original = decorated.structuredActivity.flatMap { try? JSONDecoder().decode(RawTranscriptJSON.self, from: Data($0.utf8)) } ?? .null
+                decorated.structuredActivity = Self.merge(original, .object(["planDocument": liveDetails["planDocument"]])).jsonText
+                emittedPlanIDs.insert(planID)
+            }
+            decorated.mcpAppJSON = liveDetails["mcpApp"].jsonText
+            decorated.activityStatus = liveDetails["status"].string ?? data["status"].string
             decorated.outputCompleteness = data["completeness"].string
             records.append(TranscriptRecord(recordID: "runtime:\(identity):\(suffix)", record: decorated,
                                             rawJSON: try? entity.prettyPrinted(), isRawOnly: rawOnly))

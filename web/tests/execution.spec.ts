@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test"
-import type { HostSchedule, HostWorktree } from "../src/execution"
+import type { HostSchedule, HostScheduleRun, HostWorktree } from "../src/execution"
 
-async function hostFixture(page: Page, failFirstSend = false) {
+async function hostFixture(page: Page, failFirstSend = false, modernSchedules = false) {
   const calls: { method: string; params: Record<string, unknown> }[] = []
   let created = false
   let interrupted = false
@@ -9,6 +9,7 @@ async function hostFixture(page: Page, failFirstSend = false) {
   let model = "model-one"
   const worktrees: HostWorktree[] = []
   const schedules: HostSchedule[] = []
+  const runs: HostScheduleRun[] = modernSchedules ? [{ id: "run-exact", scheduleID: "old-schedule", conversationID: "run-conversation", createdAt: "2026-10-05T12:00:00Z", updatedAt: "2026-10-05T12:00:00Z", status: "failed", error: "Provider rejected request", read: false, needsAttention: true, notificationPolicy: "attention" }] : []
   const conversation = { id: "host-conversation", nativeSessionID: "native-conversation", provider: "codex", providerInstanceID: "codex:/home/user/.codex",
     workspaceID: "/work/project", cwd: "/work/project", transcriptPath: "/home/user/.codex/sessions/session.jsonl", title: "Test conversation", connected: true }
   await page.route("**/api/**", async route => {
@@ -22,7 +23,7 @@ async function hostFixture(page: Page, failFirstSend = false) {
     calls.push(request)
     let result: unknown
     switch (request.method) {
-      case "host.info": result = { hostId: "test-host", providers: ["codex"], capabilities: ["conversation", "queue", "schedules", "schedules.wall_clock", "worktree.lifecycle"] }; break
+      case "host.info": result = { hostId: "test-host", providers: ["codex"], capabilities: ["conversation", "queue", "schedules", "schedules.wall_clock", "worktree.lifecycle", ...(modernSchedules ? ["schedules.runs", "schedules.new_conversation", "schedules.events"] : [])] }; break
       case "workspace.list": result = [{ id: "/work/project", path: "/work/project" }, ...worktrees.filter(tree => !tree.archived && !tree.removed).map(tree => ({ id: tree.workspaceId, path: tree.path, worktreeID: tree.id, repositoryWorkspaceID: tree.repositoryWorkspaceId }))]; break
       case "worktree.list": result = worktrees; break
       case "worktree.create": {
@@ -44,8 +45,16 @@ async function hostFixture(page: Page, failFirstSend = false) {
       }
       case "conversation.list": result = created ? [conversation] : []; break
       case "schedule.list": result = schedules; break
+      case "schedule.runs": result = runs; break
+      case "schedule.run.read": {
+        const run = runs.find(item => item.id === request.params.runId)!
+        run.read = request.params.read === true; run.needsAttention = !run.read
+        result = run; break
+      }
       case "schedule.upsert": {
-        const schedule: HostSchedule = { id: String(request.params.scheduleId), conversationID: String(request.params.conversationId), prompt: String(request.params.text),
+        const schedule: HostSchedule = { id: String(request.params.scheduleId), conversationID: String(request.params.conversationId ?? ""), prompt: String(request.params.text),
+          newConversation: request.params.newConversation ? { ...(request.params.newConversation as { provider: string; title: string }), workspaceID: (request.params.newConversation as { workspaceId: string }).workspaceId } : undefined,
+          eventName: request.params.eventName as string | undefined, notificationPolicy: request.params.notificationPolicy as string | undefined,
           intervalSeconds: request.params.intervalSeconds as number | undefined, wallClock: request.params.wallClock as HostSchedule["wallClock"], paused: false, nextRunAt: "2026-10-06T16:30:00Z" }
         const prior = schedules.findIndex(item => item.id === schedule.id)
         if (prior < 0) schedules.push(schedule); else schedules[prior] = schedule
@@ -177,4 +186,68 @@ test("worktree lifecycle uses returned identities and makes checkout available t
   expect(calls.filter(call => call.method === "worktree.cleanup" || call.method === "worktree.reattach").map(call => call.params.worktreeId)).toEqual(["owned-worktree", "owned-worktree"])
   await page.getByText("New conversation", { exact: true }).click()
   await expect(page.getByLabel("Execution workspace").locator("option").filter({ hasText: "/private/host/worktrees/owned/checkout" })).toHaveCount(1)
+})
+
+
+test("event schedule creates a fresh-chat target and round-trips notification policy", async ({ page }) => {
+  const calls = await hostFixture(page, false, true)
+  await page.getByText("Schedules", { exact: true }).click()
+  await page.getByLabel("Schedule target").selectOption("new")
+  await page.getByLabel("Schedule workspace").selectOption("/work/project")
+  await page.getByLabel("Schedule provider").selectOption("codex")
+  await page.getByLabel("Run conversation title").fill("Event analysis")
+  await page.getByLabel("Scheduled prompt").fill("Inspect completed import")
+  await page.getByLabel("Schedule recurrence").selectOption("event")
+  await page.getByLabel("Schedule event name").fill("import.completed")
+  await page.getByLabel("Schedule notification policy").selectOption("never")
+  await page.getByRole("button", { name: "Save schedule", exact: true }).click()
+  await expect.poll(() => calls.filter(call => call.method === "schedule.upsert").length).toBe(1)
+  const saved = calls.find(call => call.method === "schedule.upsert")!.params
+  expect(saved.newConversation).toEqual({ workspaceId: "/work/project", provider: "codex", title: "Event analysis" })
+  expect(saved.conversationId).toBeUndefined()
+  expect(saved.intervalSeconds).toBeUndefined()
+  expect(saved.wallClock).toBeUndefined()
+  expect(saved.eventName).toBe("import.completed")
+  expect(saved.notificationPolicy).toBe("never")
+  await page.getByRole("button", { name: "Edit", exact: true }).click()
+  await expect(page.getByLabel("Schedule target")).toHaveValue("new")
+  await expect(page.getByLabel("Schedule workspace")).toHaveValue("/work/project")
+  await expect(page.getByLabel("Schedule event name")).toHaveValue("import.completed")
+  await expect(page.getByLabel("Schedule notification policy")).toHaveValue("never")
+  await page.getByLabel("Schedule target").selectOption("existing")
+  await page.getByLabel("Schedule recurrence").selectOption("interval")
+  await page.getByRole("button", { name: "Save schedule", exact: true }).click()
+  await expect.poll(() => calls.filter(call => call.method === "schedule.upsert").length).toBe(2)
+  const edited = calls.filter(call => call.method === "schedule.upsert")[1].params
+  expect(edited.newConversation).toBeUndefined()
+  expect(edited.eventName).toBeUndefined()
+  expect(edited.conversationId).toBe("host-conversation")
+  expect(edited.intervalSeconds).toBe(3600)
+})
+
+test("run inbox opens exact run conversation and persists read state", async ({ page }) => {
+  const calls = await hostFixture(page, false, true)
+  await page.getByText("Schedule run inbox (1 unread)", { exact: true }).click()
+  const run = page.getByRole("article", { name: "Schedule run run-exact" })
+  await expect(run.getByText("Provider rejected request", { exact: true })).toBeVisible()
+  await run.getByRole("button", { name: "Mark read", exact: true }).click()
+  await expect(run.getByRole("button", { name: "Mark unread", exact: true })).toBeVisible()
+  expect(calls.find(call => call.method === "schedule.run.read")!.params).toMatchObject({ runId: "run-exact", read: true })
+  await run.getByRole("button", { name: "Open run conversation", exact: true }).click()
+  await expect.poll(() => calls.some(call => call.method === "conversation.read" && call.params.conversationId === "run-conversation")).toBe(true)
+  await run.getByRole("button", { name: "Mark unread", exact: true }).click()
+  await expect(run.getByText("Needs attention", { exact: true })).toBeVisible()
+})
+
+test("older hosts do not receive schedule extension requests or fields", async ({ page }) => {
+  const calls = await hostFixture(page)
+  await page.getByText("Schedules", { exact: true }).click()
+  await expect(page.getByLabel("Schedule target")).toHaveCount(0)
+  await expect(page.getByLabel("Schedule notification policy")).toHaveCount(0)
+  await expect(page.getByLabel("Schedule recurrence").locator('option[value="event"]')).toHaveCount(0)
+  await page.getByLabel("Scheduled prompt").fill("Legacy recurring prompt")
+  await page.getByRole("button", { name: "Save schedule", exact: true }).click()
+  await expect.poll(() => calls.some(call => call.method === "schedule.upsert")).toBe(true)
+  expect(calls.some(call => call.method === "schedule.runs")).toBe(false)
+  expect(calls.find(call => call.method === "schedule.upsert")!.params.notificationPolicy).toBeUndefined()
 })

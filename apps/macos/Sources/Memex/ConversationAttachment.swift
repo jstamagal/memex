@@ -1,4 +1,5 @@
 import Foundation
+import UniformTypeIdentifiers
 
 #if canImport(SQACPHost)
 import SQACP
@@ -11,7 +12,18 @@ extension ConversationAttachment {
         #if canImport(SQACPHost)
         let capabilities = controls.promptCapabilities
         let captured = try urls.map { url in
-            let block = try AgentPromptAttachments.loadFile(url, capabilities: capabilities)
+            let values = try url.resourceValues(forKeys: [.contentTypeKey, .isRegularFileKey, .fileSizeKey])
+            let block: AcpPromptContentBlock
+            if (values.contentType ?? UTType(filenameExtension: url.pathExtension))?.conforms(to: .image) == true {
+                guard capabilities.image else { throw ConversationRuntimeError(message: "The selected provider/model does not support image attachments.") }
+                guard values.isRegularFile == true, (values.fileSize ?? 0) <= ConversationImageNormalization.maximumInputBytes else {
+                    throw ConversationRuntimeError(message: "Attach an image file no larger than 20 MB.")
+                }
+                let image = try ConversationImageNormalization.normalize(Data(contentsOf: url))
+                block = .image(.init(data: image.data.base64EncodedString(), mimeType: image.mimeType, uri: url.absoluteString))
+            } else {
+                block = try AgentPromptAttachments.loadFile(url, capabilities: capabilities)
+            }
             return Self(id: UUID().uuidString, title: url.lastPathComponent, path: url.path,
                         content: try JSONEncoder().encode(block))
         }

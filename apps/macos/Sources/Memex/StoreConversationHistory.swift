@@ -52,7 +52,7 @@ extension Store {
         var attachments = [attachment]
         if let plan {
             attachments.append(try ConversationAttachment.text(title: "Plan", text: plan.text,
-                source: "\(source.id)#\(plan.recordID)"))
+                source: plan.provenance(session: source)))
         }
         let workspace: ConversationWorkspace
         if canAccessLocalFiles(for: source), let cwd = source.cwd?.nilIfBlank {

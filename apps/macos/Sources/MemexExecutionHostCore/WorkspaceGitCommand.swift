@@ -18,19 +18,20 @@ public enum WorkspaceGitCommand {
     }
 
     public static func data(_ directory: URL, _ arguments: [String], command: CommandRun,
-                     environment: [String: String] = [:], timeout: TimeInterval = 30, inputFile: URL? = nil) throws -> Data {
+                     environment: [String: String] = [:], timeout: TimeInterval = 30, inputFile: URL? = nil,
+                     maximumOutputBytes: Int? = nil) throws -> Data {
         let unset = ProcessInfo.processInfo.environment.keys.filter { $0.hasPrefix("GIT_") }.sorted().flatMap { ["-u", $0] }
         let overrides = environment.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
         return try command.execute(executable: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: unset + ["LC_ALL=C", "GIT_TERMINAL_PROMPT=0"] + overrides
                 + ["/usr/bin/git", "--no-optional-locks", "-c", "core.fsmonitor=false",
                    "-c", "core.hooksPath=/dev/null", "-c", "submodule.recurse=false", "-C", directory.path] + arguments,
-            timeout: timeout, inputFile: inputFile)
+            timeout: timeout, inputFile: inputFile, maximumOutputBytes: maximumOutputBytes)
     }
 
     public static func text(_ directory: URL, _ arguments: [String], command: CommandRun,
-                     environment: [String: String] = [:], timeout: TimeInterval = 30) throws -> String {
-        let bytes = try data(directory, arguments, command: command, environment: environment, timeout: timeout)
+                     environment: [String: String] = [:], timeout: TimeInterval = 30, maximumOutputBytes: Int? = nil) throws -> String {
+        let bytes = try data(directory, arguments, command: command, environment: environment, timeout: timeout, maximumOutputBytes: maximumOutputBytes)
         let value = String(decoding: bytes, as: UTF8.self)
         return value.hasSuffix("\n") ? String(value.dropLast()) : value
     }
@@ -46,4 +47,3 @@ public enum WorkspaceGitCommand {
         }
     }
 }
-

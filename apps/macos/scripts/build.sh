@@ -150,6 +150,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSAppleEventsUsageDescription</key><string>Memex opens your selected terminal to resume the conversation you choose.</string>
+<key>NSMicrophoneUsageDescription</key><string>Memex records audio when you start dictation and keeps it locally for transcription and recovery.</string>
+<key>NSSpeechRecognitionUsageDescription</key><string>Memex transcribes your dictation on this Mac so you can review and insert it into a draft.</string>
 </dict></plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist"

@@ -1,36 +1,37 @@
 import AppKit
 import SwiftUI
+import MemexExecutionHostCore
 
 @main
 struct MemexApp: App {
     @NSApplicationDelegateAdaptor(MemexApplicationDelegate.self) private var delegate
 
     var body: some Scene {
-        Settings { EmptyView() }
+        Settings { MemexSettingsView(preferences: .shared) { ProviderToolsSettingsView() } }
             .commands {
                 CommandGroup(replacing: .newItem) {
                     Button("New Conversation") {
                         delegate.showBrowser()
                         delegate.store.beginNewConversation()
                     }
-                        .keyboardShortcut("n")
+                        .keyboardShortcut(AppPreferences.shared.shortcut(for: .newConversation))
                         .disabled(!InAppAgentRuntime.isAvailable)
                 }
                 CommandGroup(after: .newItem) {
                     Button("Refresh Conversations") { Task { await delegate.store.refresh() } }
-                        .keyboardShortcut("r")
+                        .keyboardShortcut(AppPreferences.shared.shortcut(for: .refresh))
                     Button("Find in Conversation") { delegate.store.findConversationRequest += 1 }
-                        .keyboardShortcut("f")
+                        .keyboardShortcut(AppPreferences.shared.shortcut(for: .find))
                         .disabled(delegate.store.selected == nil)
                     Button("Workspace Changes") { delegate.store.reviewWorkspaceChange(nil) }
-                        .keyboardShortcut("d", modifiers: [.command, .shift])
-                        .disabled(delegate.store.selectedWorkspace == nil)
+                        .keyboardShortcut(AppPreferences.shared.shortcut(for: .workspaceChanges))
+                        .disabled(!delegate.store.hasSelectedWorkspace)
                     Button("Browser") { delegate.store.showWorkspaceBrowser() }
-                        .keyboardShortcut("b", modifiers: [.command, .shift])
+                        .keyboardShortcut(AppPreferences.shared.shortcut(for: .browser))
                         .disabled(delegate.store.selected == nil)
                     Button("Toggle Terminal Drawer") { delegate.store.toggleTerminalDrawer() }
-                        .keyboardShortcut("j")
-                        .disabled(delegate.store.selectedWorkspace == nil && !delegate.store.showingTerminalDrawer)
+                        .keyboardShortcut(AppPreferences.shared.shortcut(for: .terminal))
+                        .disabled(!delegate.store.hasSelectedWorkspace && !delegate.store.showingTerminalDrawer)
                     Button("Add New Project") { delegate.store.addNewProject() }
                     Button("Execution Hosts and Schedules…") { delegate.store.showingExecutionHosts = true }
                 }
@@ -44,6 +45,7 @@ struct MemexApp: App {
                       conversationRelationships: .persistent(), executionHosts: .shared,
                       localProjects: .persistent(), newConversationDraft: .persistent())
     private var browser: NSWindowController?
+    private var scheduleObserver: HostScheduleObserver?
     private var terminating = false
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -65,6 +67,8 @@ struct MemexApp: App {
         }
         terminating = true
         Task {
+            scheduleObserver?.stop()
+            ExecutionHostSSHTunnels.shared.stopAll()
             store.workspaceBrowserExecution.stop()
             store.workspaceTerminals.shutdown()
             await store.newConversationDraft.flush()
@@ -77,7 +81,13 @@ struct MemexApp: App {
     func applicationDidFinishLaunching(_ notification: Notification) {
         let root = store.client.root.map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".memex")
-        do { try store.workspaceBrowserExecution.start(root: root, automation: store.workspaceBrowser.automation) }
+        do {
+            try store.workspaceBrowserExecution.start(root: root, automation: store.workspaceBrowser.automation,
+                desktopAutomation: store.desktopAutomation, desktopHandler: { [weak store] request in
+                    guard let store else { throw HostFailure("desktop_unavailable", "The app window is unavailable") }
+                    return try await store.handleDesktopControl(request)
+                })
+        }
         catch { store.executionHostError = "Browser control is unavailable: \(error.localizedDescription)" }
         store.conversationNotifications.activate()
         store.conversationNotifications.isConversationVisible = { [weak self] id in
@@ -89,6 +99,23 @@ struct MemexApp: App {
             self.showBrowser()
             self.store.openNotifiedConversation(id)
         }
+        store.conversationNotifications.isHostedConversationVisible = { [weak self] hostID, conversationID in
+            guard let self, NSApp.isActive, let session = self.store.selected,
+                  self.store.executionHosts.connection(for: session)?.id == hostID else { return false }
+            return self.store.selectedLiveConversation?.snapshot.hostConversationID == conversationID
+        }
+        store.conversationNotifications.openHostedConversation = { [weak self] hostID, conversationID in
+            guard let self else { return }
+            self.showBrowser()
+            Task { await self.store.openScheduledConversation(hostID: hostID, conversationID: conversationID) }
+        }
+        store.conversationNotifications.openHostSchedules = { [weak self] hostID in
+            self?.showBrowser()
+            self?.store.executionHostSelection = hostID
+            self?.store.showingExecutionHosts = true
+        }
+        scheduleObserver = HostScheduleObserver(notifications: store.conversationNotifications, connections: store.executionHosts)
+        scheduleObserver?.start()
         showBrowser()
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -129,8 +156,8 @@ struct MemexApp: App {
 
 @MainActor struct BrowserContent {
     let store: Store
-    var sidebar: some View { BrowserSidebar(store: store) }
-    var reader: some View { BrowserReader(store: store) }
+    var sidebar: some View { BrowserSidebar(store: store).memexAppearance() }
+    var reader: some View { BrowserReader(store: store).memexAppearance() }
 }
 
 private struct BrowserReader: View {
@@ -147,7 +174,8 @@ private struct BrowserReader: View {
         .sheet(isPresented: $store.showingExecutionHosts) {
             VStack(spacing: 0) {
                 if let error = store.executionHostError { Text(error).foregroundStyle(.orange).padding() }
-                ExecutionHostConnectionsView(onOpen: store.openHostedConversation)
+                ExecutionHostConnectionsView(onOpen: store.openHostedConversation,
+                    initialHostID: store.executionHostSelection)
             }
         }
         .inspector(isPresented: $store.showingWorkspaceChanges) {

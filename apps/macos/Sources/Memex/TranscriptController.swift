@@ -21,6 +21,7 @@ struct NativeTranscript: NSViewControllerRepresentable {
     var findGeneration = 0
     var rawTranscript = false
     var isLocalHost = false
+    var mcpAppTransport: NativeMcpAppTransport? = nil
     var sourcePath = ""
     var requestedRecordID: String?
     var requestGeneration = 0
@@ -36,7 +37,8 @@ struct NativeTranscript: NSViewControllerRepresentable {
                           findQuery: findQuery, findHit: findHit, findGeneration: findGeneration,
                           rawTranscript: rawTranscript, isLocalHost: isLocalHost, sourcePath: sourcePath,
                           requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
-                          followLatest: followLatest, bottomInset: bottomInset)
+                          followLatest: followLatest, bottomInset: bottomInset, mcpAppTransport: mcpAppTransport,
+                          bodyFont: AppPreferences.shared.bodyNSFont, codeFont: AppPreferences.shared.codeNSFont)
     }
 }
 
@@ -76,6 +78,9 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     private var fullBodies = Set<String>()
     private var rawTranscript = false
     private var isLocalHost = false
+    private var mcpAppTransport: NativeMcpAppTransport?
+    private var bodyFont = NSFont.systemFont(ofSize: 14)
+    private var codeFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private var sourcePath = ""
     private var appliedRequestGeneration = -1
     private var measurements: [String: Measurement] = [:]
@@ -192,7 +197,9 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 findQuery: String = "", findHit: ConversationFindHit? = nil, findGeneration: Int = 0,
                 rawTranscript: Bool = false, isLocalHost: Bool = false, sourcePath: String = "",
                 requestedRecordID: String? = nil, requestGeneration: Int = 0, followLatest: Bool = false,
-                bottomInset: CGFloat = 0) {
+                bottomInset: CGFloat = 0, mcpAppTransport: NativeMcpAppTransport? = nil,
+                bodyFont: NSFont = .systemFont(ofSize: 14),
+                codeFont: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)) {
         _ = view
         let changedSession = self.sessionID != sessionID
         let wasAtEnd = !rows.isEmpty && table.rect(ofRow: rows.count - 1).maxY
@@ -203,6 +210,14 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             self.bottomInset = max(0, bottomInset)
             scrollView.contentInsets.bottom = self.bottomInset
             scrollView.scrollerInsets.bottom = self.bottomInset
+        }
+        let changedFonts = self.bodyFont != bodyFont || self.codeFont != codeFont
+        self.bodyFont = bodyFont
+        self.codeFont = codeFont
+        let changedTransport = self.mcpAppTransport != mcpAppTransport
+        self.mcpAppTransport = mcpAppTransport
+        if changedTransport || changedFonts {
+            measurements.removeAll(); richLayouts.removeAll(); textLayouts.removeAll()
         }
         let changedMode = self.rawTranscript != rawTranscript
         self.rawTranscript = rawTranscript
@@ -252,7 +267,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         self.hasMore = hasMore
         self.isLoading = isLoading
         self.onLoadMore = onLoadMore
-        guard changedSession || changedMode || changedFind || self.records != records || self.provider != provider else {
+        guard changedSession || changedTransport || changedFonts || changedMode || changedFind || self.records != records || self.provider != provider else {
             if shouldFollow { scrollToEnd() }
             if changedQuery { table.reloadData() }
             return
@@ -283,8 +298,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         }
         // Both paging directions retain unchanged layouts; rebuildRows invalidates
         // boundary groups whose records or nesting changed.
-        rebuildRows(resetMeasurements: changedSession || changedProvider || changedMode || changedQuery,
-                    incrementally: followLatest && !changedSession && !changedProvider && !changedMode && !changedFind)
+        rebuildRows(resetMeasurements: changedSession || changedProvider || changedMode || changedQuery || changedTransport || changedFonts,
+                    incrementally: followLatest && !changedTransport && !changedFonts && !changedSession && !changedProvider && !changedMode && !changedFind)
         if needsInitialPosition {
             applyInitialPosition()
         } else if shouldFollow, !rows.isEmpty {
@@ -704,20 +719,21 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         else { rawMessage = rawTranscript || rawTools.contains(row.id) || row.records.contains(where: \.isRawOnly) }
         if rawMessage { fullText = row.records.map { $0.rawTranscriptBody }.joined(separator: "\n\n") }
         let body = fullText
-        let font: NSFont = isTool ? .monospacedSystemFont(ofSize: 12, weight: .regular) : .systemFont(ofSize: 14)
+        let font: NSFont = isTool ? codeFont : bodyFont
         let laneWidth = ConversationReadingLane.width(in: width)
         let laneX = ConversationReadingLane.origin(in: width)
         let available = max(120, laneWidth - indent)
         let maximumContentWidth = isUser ? available * 0.77 : available
         var showsRaw = rawMessage || rawTools.contains(row.id)
         let attachments = !showsRaw && (!isTool || isExpanded) ? row.records.flatMap { SourceContent.blocks($0.record) } : []
+        let hasMcpApp = isTool && isExpanded && !ToolContentRenderer.mcpApps(row.records).isEmpty
         let hasPartialOutput = isTool && isExpanded && row.records.contains { $0.record.outputCompleteness == "partial" }
         var textLayout: TranscriptTextLayout
         var renderedTool: NSAttributedString?
         if body.isEmpty { textLayout = TranscriptTextLayout(text: "", font: font) }
         else if let cached = textLayouts[row.id] { textLayout = cached }
         else if rawMessage {
-            textLayout = TranscriptTextLayout(rendered: NSAttributedString(string: body, attributes: [.font: NSFont.monospacedSystemFont(ofSize: 12, weight: .regular), .foregroundColor: NSColor.labelColor]), trimEdges: false)
+            textLayout = TranscriptTextLayout(rendered: NSAttributedString(string: body, attributes: [.font: codeFont, .foregroundColor: NSColor.labelColor]), trimEdges: false)
         } else if isTool && isExpanded && !body.isEmpty {
             let rendered = ToolContentRenderer.render(row.records, raw: showsRaw)
             renderedTool = rendered
@@ -751,7 +767,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         let bodyWidth = contentWidth - (isUser || isDisclosure ? 24 : 0)
         var richLayout: RichContentLayout?
         let mayHaveRichBlocks = !PromptSections.hasOpeningSection(body) && (body.contains("```") || body.contains("~~~") || body.contains("![") || body.contains("](/") || body.contains("](file:"))
-        if !showsRaw && findQuery.isEmpty && (hasPartialOutput || !attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
+        if !showsRaw && findQuery.isEmpty && (hasMcpApp || hasPartialOutput || !attachments.isEmpty || (!body.isEmpty && (isTool || (mayHaveRichBlocks && RichContentDocument(body).hasRichBlocks)))) {
             if let cached = richLayouts[row.id] { richLayout = cached }
             else {
                 let blocks: [RichContentBlock]
@@ -760,7 +776,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                 } else {
                     blocks = RichContentDocument(body).blocks + attachments
                 }
-                let layout = RichContentLayout(blocks: blocks, font: font, context: RichContentContext(isLocalHost: isLocalHost))
+                let layout = RichContentLayout(blocks: blocks, font: font, context: RichContentContext(isLocalHost: isLocalHost, mcpAppTransport: mcpAppTransport))
                 richLayouts[row.id] = layout
                 richLayout = layout
             }

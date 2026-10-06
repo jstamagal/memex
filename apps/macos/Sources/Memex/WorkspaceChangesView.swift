@@ -22,6 +22,8 @@ struct WorkspaceChangesView: View {
     @State private var actionError: String?
     @State private var indexBusy = false
     @State private var showingSetup = false
+    @State private var showingPullRequest = false
+    @State private var pullRequestURL: URL?
     private let client = WorkspaceChangesClient()
 
     private var displayedRoot: String {
@@ -69,7 +71,9 @@ struct WorkspaceChangesView: View {
                     .onSubmit { if branchRef.nilIfBlank != nil { scope = .branch(branchRef) } }
                 Toggle("Split", isOn: $splitDiff).toggleStyle(.button)
                 Spacer()
-                WorkspaceGitActionsView(directory: directory, refreshKey: refreshID.uuidString + String(isWorking), didChange: { refreshID = UUID() })
+                Button("Pull request…") { pullRequestURL = nil; showingPullRequest = true }
+                WorkspaceGitActionsView(directory: directory, refreshKey: refreshID.uuidString + String(isWorking), didChange: { refreshID = UUID() },
+                    didCreatePullRequest: { pullRequestURL = $0; showingPullRequest = true })
                     .disabled(isWorking)
                 if setupCommand?.nilIfBlank != nil {
                     Button("Run setup…") { showingSetup = true }.disabled(isWorking)
@@ -166,6 +170,9 @@ struct WorkspaceChangesView: View {
                 state.select(path)
                 refreshID = UUID()
             }
+        }
+        .sheet(isPresented: $showingPullRequest) {
+            WorkspacePullRequestView(directory: directory, initialURL: pullRequestURL, addReviewContext: addReviewContext)
         }
         .sheet(isPresented: $showingSetup) {
             if let setupCommand { WorkspaceSetupView(directory: directory, script: setupCommand) }

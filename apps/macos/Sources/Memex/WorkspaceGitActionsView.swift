@@ -5,6 +5,7 @@ struct WorkspaceGitActionsView: View {
     let directory: URL
     var refreshKey: String = ""
     var didChange: () -> Void = {}
+    var didCreatePullRequest: ((URL) -> Void)? = nil
     @State private var status: WorkspaceGitStatus?
     @State private var action: Action?
     @State private var message = ""
@@ -97,7 +98,8 @@ struct WorkspaceGitActionsView: View {
             case .pullRequest:
                 let url = try await client.createPullRequest(directory: directory, title: title, body: bodyText, base: base)
                 result = url.absoluteString
-                NSWorkspace.shared.open(url)
+                if let didCreatePullRequest { didCreatePullRequest(url) }
+                else { NSWorkspace.shared.open(url) }
             }
             self.action = nil
             didChange()

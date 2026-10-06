@@ -15,15 +15,18 @@ extension Store {
     var sidebarGroups: [SidebarConversationGroup] {
         let groups = Dictionary(grouping: sidebarSessions, by: projectName(for:))
             .map { SidebarConversationGroup(name: $0.key, sessions: $0.value) }
+        let sort = projectSort
+        let projectCounts = Dictionary(projects.map { ($0.project, $0.sessionCount) },
+                                       uniquingKeysWith: { first, _ in first })
         return groups.sorted { lhs, rhs in
-            switch projectSort {
+            switch sort {
             case .recent:
                 let left = lhs.sessions.map { $0.lastAt ?? "" }.max() ?? ""
                 let right = rhs.sessions.map { $0.lastAt ?? "" }.max() ?? ""
                 if left != right { return left > right }
             case .conversations:
-                let left = projects.first { $0.project == lhs.name }?.sessionCount ?? lhs.sessions.count
-                let right = projects.first { $0.project == rhs.name }?.sessionCount ?? rhs.sessions.count
+                let left = projectCounts[lhs.name] ?? lhs.sessions.count
+                let right = projectCounts[rhs.name] ?? rhs.sessions.count
                 if left != right { return left > right }
             case .name: break
             }
@@ -42,6 +45,9 @@ struct BrowserSidebar: View {
     @State private var removal: [Session] = []
     @State private var showingRemoval = false
     @State private var showingNotifications = false
+    @State private var editingSectionID: String?
+    @State private var sectionName = ""
+    @State private var showingSectionEditor = false
 
     private enum Selection: Hashable { case home, all, conversation(String) }
     private var selection: Binding<Set<Selection>> {
@@ -66,12 +72,29 @@ struct BrowserSidebar: View {
         guard store.conversationLibraryScope == .active, store.query.nilIfBlank == nil else { return [] }
         return store.sidebarSessions.filter { store.conversationLibrary.isPinned($0) }
     }
+    private var showsCustomSections: Bool {
+        store.conversationLibraryScope == .active && store.query.nilIfBlank == nil
+    }
+    private func customRows(_ section: ConversationLibrary.CustomSection) -> [Session] {
+        store.sidebarSessions.filter {
+            !store.conversationLibrary.isPinned($0) && store.conversationLibrary.sectionID(for: $0) == section.id
+        }
+    }
     private var unpinned: [Session] {
         let ids = Set(pinned.map(\.id))
-        return store.sidebarSessions.filter { !ids.contains($0.id) }
+        return store.sidebarSessions.filter {
+            !ids.contains($0.id) && (!showsCustomSections || store.conversationLibrary.sectionID(for: $0) == nil)
+        }
     }
 
     var body: some View {
+        let pinned = self.pinned
+        let unpinned = self.unpinned
+        let unpinnedIDs = Set(unpinned.map(\.id))
+        // SwiftUI prepares row menus during layout; resolve native rows once.
+        let nativeSessions = Dictionary(store.sessions.map { ($0.id, $0) },
+                                        uniquingKeysWith: { first, _ in first })
+        let managedSelection = selectedConversations.isEmpty ? [] : store.librarySelection(selectedConversations)
         VStack(spacing: 0) {
             List(selection: selection) {
                 Section {
@@ -102,24 +125,54 @@ struct BrowserSidebar: View {
                     }
                     if !pinned.isEmpty {
                         Section("Pinned") {
-                            conversationRows(pinned, showsProject: true)
+                            conversationRows(pinned, showsProject: true, nativeSessions: nativeSessions,
+                                             managedSelection: managedSelection)
+                        }
+                    }
+                    if showsCustomSections {
+                        ForEach(store.conversationLibrary.sections) { section in
+                            Section {
+                                conversationRows(customRows(section), showsProject: true, nativeSessions: nativeSessions,
+                                                 managedSelection: managedSelection)
+                            } header: {
+                                HStack {
+                                    Text(section.name)
+                                    Spacer()
+                                    Menu {
+                                        Button("Rename section…") {
+                                            editingSectionID = section.id
+                                            sectionName = section.name
+                                            showingSectionEditor = true
+                                        }
+                                        Button("Move section up") { store.conversationLibrary.moveSection(section.id, by: -1) }
+                                            .disabled(store.conversationLibrary.sections.first?.id == section.id)
+                                        Button("Move section down") { store.conversationLibrary.moveSection(section.id, by: 1) }
+                                            .disabled(store.conversationLibrary.sections.last?.id == section.id)
+                                        Button("Delete section", role: .destructive) { store.conversationLibrary.deleteSection(section.id) }
+                                    } label: { Image(systemName: "ellipsis") }
+                                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                                    .accessibilityLabel("Options for \(section.name)")
+                                }
+                            }
                         }
                     }
                     if store.sidebarMode == .projects {
                         ForEach(store.sidebarGroups) { group in
-                            let rows = group.sessions.filter { session in !pinned.contains { $0.id == session.id } }
+                            let rows = group.sessions.filter { unpinnedIDs.contains($0.id) }
                             if !rows.isEmpty {
                                 DisclosureGroup(isExpanded: Binding(get: { !collapsedProjects.contains(group.id) }, set: {
                                     if $0 { collapsedProjects.remove(group.id) } else { collapsedProjects.insert(group.id) }
                                 })) {
-                                    conversationRows(rows, showsProject: false)
+                                    conversationRows(rows, showsProject: false, nativeSessions: nativeSessions,
+                                                     managedSelection: managedSelection)
                                 } label: {
                                     Label(group.name, systemImage: "folder").lineLimit(1)
                                 }
                             }
                         }
                     } else {
-                        conversationRows(unpinned, showsProject: true)
+                        conversationRows(unpinned, showsProject: true, nativeSessions: nativeSessions,
+                                         managedSelection: managedSelection)
                     }
                     if store.loadingSessions {
                         ProgressView().controlSize(.small).frame(maxWidth: .infinity)
@@ -168,6 +221,15 @@ struct BrowserSidebar: View {
         .onChange(of: store.librarySessions.map(\.id)) { _, ids in
             selectedConversations.formIntersection(ids)
         }
+        .alert(editingSectionID == nil ? "New section" : "Rename section", isPresented: $showingSectionEditor) {
+            TextField("Section name", text: $sectionName)
+            Button("Cancel", role: .cancel) { editingSectionID = nil }
+            Button("Save") {
+                if let id = editingSectionID { store.conversationLibrary.renameSection(id, to: sectionName) }
+                else { store.conversationLibrary.createSection(named: sectionName) }
+                editingSectionID = nil
+            }.disabled(sectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
         .alert("Rename conversation", isPresented: $showingRename) {
             TextField("Title", text: $renamedTitle)
             Button("Cancel", role: .cancel) { renameSession = nil }
@@ -193,8 +255,13 @@ struct BrowserSidebar: View {
         }
     }
 
-    private func conversationRows(_ sessions: [Session], showsProject: Bool) -> some View {
-        ForEach(sessions) { session in row(session, showsProject: showsProject) }
+    private func conversationRows(_ sessions: [Session], showsProject: Bool,
+                                  nativeSessions: [String: Session], managedSelection: [Session]) -> some View {
+        ForEach(sessions) { session in
+            let native = nativeSessions[session.id] ?? store.conversationLibrary.savedSession(id: session.id) ?? session
+            row(session, showsProject: showsProject,
+                managedSessions: selectedConversations.contains(session.id) ? managedSelection : [native])
+        }
             .onMove { offsets, destination in
                 let native = sessions.map(store.nativeLibrarySession)
                 _ = store.conversationLibrary.reorder(native, from: offsets, to: destination)
@@ -218,6 +285,16 @@ struct BrowserSidebar: View {
             if store.conversationLibraryScope == .removed {
                 Button("Restore to conversations") { store.finishLibraryAction(store.conversationLibrary.restore(sessions)) }
             } else {
+                let allRead = sessions.allSatisfy { !store.conversationLibrary.isUnread($0) }
+                Button(allRead ? "Mark unread" : "Mark read") {
+                    store.conversationLibrary.markRead(sessions, read: !allRead)
+                }
+                Menu("Move to section") {
+                    Button("No custom section") { store.conversationLibrary.move(sessions, toSection: nil) }
+                    ForEach(store.conversationLibrary.sections) { section in
+                        Button(section.name) { store.conversationLibrary.move(sessions, toSection: section.id) }
+                    }
+                }
                 let allPinned = sessions.allSatisfy { store.conversationLibrary.isPinned($0) }
                 Button(allPinned ? "Unpin" : "Pin") { _ = store.conversationLibrary.pin(sessions, pinned: !allPinned) }
                 if store.conversationLibraryScope == .archived {
@@ -239,6 +316,11 @@ struct BrowserSidebar: View {
                 .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
             Spacer()
             Menu {
+                Button("New section…") {
+                    editingSectionID = nil
+                    sectionName = ""
+                    showingSectionEditor = true
+                }
                 Button("Add New Project") { store.addNewProject() }
                 if !store.localProjects.projects.isEmpty {
                     Menu("New chat in project") {
@@ -278,10 +360,17 @@ struct BrowserSidebar: View {
         .accessibilityElement(children: .contain)
     }
 
-    private func row(_ session: Session, showsProject: Bool) -> some View {
+    private func row(_ session: Session, showsProject: Bool, managedSessions: [Session]) -> some View {
         let state = store.liveConversations.listState(for: session)
         return VStack(alignment: .leading, spacing: 4) {
-            Text(session.title).font(.system(size: 13)).lineLimit(2)
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                if store.conversationLibrary.isUnread(session) {
+                    Circle().fill(.tint).frame(width: 6, height: 6).accessibilityLabel("Unread")
+                }
+                Text(session.title)
+                    .font(.system(size: 13, weight: store.conversationLibrary.isUnread(session) ? .semibold : .regular))
+                    .lineLimit(2)
+            }
             HStack(spacing: 4) {
                 if store.conversationLibrary.isPinned(session) { Image(systemName: "pin.fill").accessibilityLabel("Pinned") }
                 Text(showsProject ? store.projectName(for: session) : session.source).lineLimit(1)
@@ -305,8 +394,7 @@ struct BrowserSidebar: View {
         .help(session.title)
         .accessibilityElement(children: .combine)
         .contextMenu {
-            managementActions(store.librarySelection(selectedConversations.contains(session.id)
-                ? selectedConversations : [session.id]))
+            managementActions(managedSessions)
         }
     }
 }

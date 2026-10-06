@@ -24,7 +24,8 @@ extension ConversationAttachment {
 
     static func image(title: String, pngData: Data, source: String) throws -> Self {
         #if canImport(SQACPHost)
-        let block = AcpPromptContentBlock.image(.init(data: pngData.base64EncodedString(), mimeType: "image/png", uri: source))
+        let image = try ConversationImageNormalization.normalize(pngData)
+        let block = AcpPromptContentBlock.image(.init(data: image.data.base64EncodedString(), mimeType: image.mimeType, uri: source))
         return Self(id: UUID().uuidString, title: title, path: source, content: try JSONEncoder().encode(block))
         #else
         throw ConversationRuntimeError(message: "This build does not include image attachments.")
@@ -78,7 +79,7 @@ extension ConversationAttachment {
 /// File drops and image-only clipboard items share the explicit chooser's
 /// capture/validation path. The returned items are installed atomically.
 enum ConversationClipboard {
-    static let supportedTypes: [UTType] = [.fileURL, .png, .tiff, .jpeg]
+    static let supportedTypes: [UTType] = [.fileURL, .png, .tiff, .jpeg, .heic]
 
     @MainActor static func capture(_ providers: [NSItemProvider], controls: ConversationControls) async throws -> [ConversationAttachment] {
         var items: [ConversationAttachment] = []
@@ -91,15 +92,12 @@ enum ConversationClipboard {
                 items += try await Task.detached {
                     try ConversationAttachment.capture([url], controls: controls, existing: [])
                 }.value
-            } else if let type = [UTType.png, .tiff, .jpeg].first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) {
+            } else if let type = [UTType.png, .tiff, .jpeg, .heic].first(where: { provider.hasItemConformingToTypeIdentifier($0.identifier) }) {
                 let data = try await load(provider, type: type)
                 guard data.count <= 20 * 1024 * 1024 else {
                     throw ConversationRuntimeError(message: "The clipboard image exceeds 20 MB. Resize it before attaching.")
                 }
-                guard let image = NSBitmapImageRep(data: data), let png = image.representation(using: .png, properties: [:]) else {
-                    throw ConversationRuntimeError(message: "The pasted image could not be decoded.")
-                }
-                items.append(try .image(title: provider.suggestedName ?? "Pasted image", pngData: png,
+                items.append(try .image(title: provider.suggestedName ?? "Pasted image", pngData: data,
                     source: "memex-context://clipboard/\(UUID().uuidString)"))
             }
         }

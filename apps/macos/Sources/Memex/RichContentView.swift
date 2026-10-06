@@ -5,6 +5,7 @@ import Markdown
 /// Local paths are meaningful only when the session's exact host is this host.
 struct RichContentContext: Equatable {
     var isLocalHost = false
+    var mcpAppTransport: NativeMcpAppTransport? = nil
 }
 
 struct ContentLocation: Equatable {
@@ -44,6 +45,7 @@ struct ContentLocation: Equatable {
 }
 
 enum RichContentBlock: Equatable {
+    case mcpApp(NativeMcpAppDescriptor)
     case attributed(NSAttributedString)
     case markdown(String)
     case code(String, language: String)
@@ -111,12 +113,14 @@ struct RichContentDocument {
 /// owns the materialized view; recycling that cell can release its entire tree.
 @MainActor final class RichContentLayout {
     @MainActor enum Item {
+        case mcpApp(NativeMcpAppDescriptor)
         case text(RichContentTextLayout)
         case code(CodeContentLayout)
         case attachment(AttachmentContent)
 
         func height(for width: CGFloat) -> CGFloat {
             switch self {
+            case .mcpApp: NativeMcpAppHost.height
             case .text(let text): text.size(for: width).height
             case .code(let code): code.height(for: width)
             case .attachment(let attachment): attachment.height
@@ -132,6 +136,13 @@ struct RichContentDocument {
         self.context = context
         items = blocks.map { block in
             switch block {
+            case .mcpApp(let app):
+                guard app.allowsInteraction, context.mcpAppTransport != nil else {
+                    return .text(RichContentTextLayout(NSAttributedString(
+                        string: "Interactive app unavailable for this connection. The original tool result remains below.",
+                        attributes: [.font: NSFont.systemFont(ofSize: 12), .foregroundColor: NSColor.secondaryLabelColor])))
+                }
+                return .mcpApp(app)
             case .markdown, .attributed:
                 let rendered: NSAttributedString
                 if case .markdown(let source) = block { rendered = RichTextRenderer.renderMarkdown(source, font: font) }
@@ -190,6 +201,7 @@ struct RichContentDocument {
         items.forEach { $0.removeFromSuperview() }
         items = layout.items.map { item in
             switch item {
+            case .mcpApp(let app): return NativeMcpAppHost.view(app: app, transport: context.mcpAppTransport)
             case .text(let text):
                 let view = Self.textView(container: text.container)
                 view.delegate = self

@@ -4,7 +4,8 @@ History browsing, search, workspace tools and external resume remain buildable
 without private source. `MEMEX_HISTORY_ONLY=1` explicitly selects that graph even
 when a local runtime path has previously been configured.
 
-The runtime-enabled app consumes `SQACP`, `SQACPHost`, `SQACPUI`, a Rust static
+The runtime-enabled app consumes `SQACP`, `SQACPHost`, `SQACPUI`, `SQMcpApps`,
+`SQMcpAppsUI`, a Rust static
 archive and the compiled Claude SDK helper from one source checkout. The private
 repository and full immutable revision are recorded in
 [`runtime-source.json`](runtime-source.json). Obtain that checkout through your

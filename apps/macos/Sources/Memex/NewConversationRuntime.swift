@@ -8,6 +8,7 @@ import SQACPHost
 struct NewConversationRequest: Sendable {
     let provider: String
     let workingDirectory: URL
+    var providerHome: URL? = nil
 }
 
 struct CreatedConversation: Sendable {
@@ -79,8 +80,16 @@ enum NewConversationRuntime {
             }
             let manager = FileManager.default
             let key = request.provider == "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"
-            let providerHome = environment[key].map { URL(fileURLWithPath: $0) }
-                ?? manager.homeDirectoryForCurrentUser.appendingPathComponent(request.provider == "codex" ? ".codex" : ".claude")
+            var environment = environment
+            let userHome = environment["HOME"]?.nilIfBlank.map { URL(fileURLWithPath: $0) }
+                ?? manager.homeDirectoryForCurrentUser
+            let providerHome = request.providerHome
+                ?? environment[key]?.nilIfBlank.map { URL(fileURLWithPath: $0) }
+                ?? userHome.appendingPathComponent(request.provider == "codex" ? ".codex" : ".claude")
+            if request.provider == "claude" {
+                environment.merge(ClaudeNativeConfiguration.resolve(providerHome: providerHome,
+                    environment: environment).environment) { _, selected in selected }
+            } else if let home = request.providerHome { environment[key] = home.path }
             let cwd = request.workingDirectory.standardizedFileURL.resolvingSymlinksInPath()
             // Resolve configuration before starting a process. This is only a
             // location for validation; no transcript is written at this path.
@@ -98,7 +107,8 @@ enum NewConversationRuntime {
                     throw ConversationRuntimeError(message: "The Claude session helper is missing from this build.")
                 }
                 creation = try .claude(hostExecutablePath: helper.path, claudeExecutablePath: config.executableURL.path,
-                    cwd: cwd.path, environment: config.environment)
+                    cwd: cwd.path, environment: config.environment,
+                    pluginLocalPaths: ProviderLocalPlugins.paths(home: config.providerHome.path))
             }
             let sourcePath: String
             if request.provider == "codex" {

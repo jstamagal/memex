@@ -15,6 +15,13 @@ struct ConversationProviderDescriptor: Identifiable, Equatable, Sendable {
     let steer: Capability
     let configuration: Capability
     var executablePath: String? = nil
+
+    var capabilitySummary: String {
+        if transport == "ACP over stdio" {
+            return "Create via ACP · resume, models and permissions negotiated at connection · steering unavailable"
+        }
+        return "Native create, resume and steering · models and permissions discovered from the provider"
+    }
 }
 
 struct ConfiguredConversationProvider: Codable, Equatable, Identifiable, Sendable {
@@ -29,6 +36,12 @@ struct ConfiguredConversationProvider: Codable, Equatable, Identifiable, Sendabl
         .init(id: id, name: name, transport: "ACP over stdio", create: .supported,
               resume: .negotiated, steer: .unavailable, configuration: .negotiated,
               executablePath: executablePath)
+    }
+
+    /// Configuration stays visible when a binary or home disappears; history is
+    /// still readable and retains the original launch receipt.
+    var availabilityIssue: String? {
+        do { try validate(); return nil } catch { return error.localizedDescription }
     }
 
     func validate(requireExecutable: Bool = true) throws {

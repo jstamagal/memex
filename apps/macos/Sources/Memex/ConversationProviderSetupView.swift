@@ -10,6 +10,7 @@ struct ConversationProviderSetupView: View {
     @State private var home = FileManager.default.homeDirectoryForCurrentUser.path
     @State private var homeKey = "HOME"
     @State private var error: String?
+    @State private var showTools = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -21,14 +22,23 @@ struct ConversationProviderSetupView: View {
             Text("Codex and Claude Code use their native runtimes. Add another installed agent that speaks ACP over standard input and output.")
                 .font(.callout).foregroundStyle(.secondary)
             ForEach(ConversationProviderCatalog.builtins) { provider in
-                HStack { Text(provider.name); Spacer(); Text(provider.transport).foregroundStyle(.secondary) }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack { Text(provider.name); Spacer(); Text(provider.transport).foregroundStyle(.secondary) }
+                    Text(provider.capabilitySummary).font(.caption).foregroundStyle(.secondary)
+                }
             }
+            Button("Manage native plugins & MCP servers…") { showTools = true }
             Divider()
             HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading) {
                     ForEach(catalog.configured) { provider in
-                        Button(provider.name) { select(provider) }.buttonStyle(.plain)
-                            .fontWeight(selection == provider.id ? .semibold : .regular)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Button(provider.name) { select(provider) }.buttonStyle(.plain)
+                                .fontWeight(selection == provider.id ? .semibold : .regular)
+                            if provider.availabilityIssue != nil {
+                                Text("Installation unavailable").font(.caption).foregroundStyle(.orange)
+                            }
+                        }
                     }
                     Button("Add provider") { reset() }
                 }.frame(width: 160, alignment: .leading)
@@ -47,12 +57,15 @@ struct ConversationProviderSetupView: View {
                     }
                     Text("Changes apply to new conversations. Existing chats retain their original provider home and executable.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("Imported Cursor, OpenCode, Pi and other history does not establish an executable integration. Add a documented ACP executable only when that installed agent supports ACP. Manage its tools through that agent's native settings.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if let error { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
         }
         .padding(24).frame(width: 700)
         .task { do { catalog = try .load() } catch { self.error = error.localizedDescription } }
+        .sheet(isPresented: $showTools) { ProviderToolsSettingsView().frame(width: 740, height: 680) }
     }
 
     private func select(_ provider: ConfiguredConversationProvider) {

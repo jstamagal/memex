@@ -40,7 +40,7 @@ import AppKit
     /// values keep their original attributed presentation and exact ordering.
     static func richBlocks(_ records: [TranscriptRecord], rendered: NSAttributedString? = nil) -> [RichContentBlock] {
         let rendered = rendered ?? render(records)
-        var blocks: [RichContentBlock] = []
+        var blocks: [RichContentBlock] = mcpApps(records).map { .mcpApp($0) }
         rendered.enumerateAttribute(ToolPresentationSupport.codeLanguageAttribute, in: NSRange(location: 0, length: rendered.length)) { language, range, _ in
             let part = rendered.attributedSubstring(from: range)
             if let language = language as? String { blocks.append(.code(part.string, language: language)) }
@@ -75,6 +75,17 @@ import AppKit
                 detail: "Only part of this result was captured. Any full output reference is a provider location and may no longer be available."))
         }
         return blocks
+    }
+
+    static func mcpApps(_ records: [TranscriptRecord]) -> [NativeMcpAppDescriptor] {
+        var seen = Set<String>()
+        return records.compactMap { record in
+            let message = record.record
+            guard let json = message.mcpAppJSON,
+                  let app = NativeMcpAppDescriptor.decode(json, expectedCallID: message.eventID ?? message.parentToolUseID),
+                  seen.insert(app.toolCallID).inserted else { return nil }
+            return app
+        }
     }
 
     static func render(_ records: [TranscriptRecord], raw: Bool = false,

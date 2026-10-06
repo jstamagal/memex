@@ -19,6 +19,7 @@ struct ConversationApproval: Identifiable, Equatable, Sendable {
     let title: String
     let detail: String?
     let options: [Option]
+    var kind: String? = nil
 }
 
 struct ConversationQuestion: Identifiable, Equatable, Sendable {
@@ -39,6 +40,7 @@ struct ConversationQuestion: Identifiable, Equatable, Sendable {
 }
 
 struct ConversationSnapshot: Equatable, Sendable {
+    var hostConversationID: String? = nil
     var records: [TranscriptRecord] = []
     var connected = false
     var ready = false
@@ -52,6 +54,8 @@ struct ConversationSnapshot: Equatable, Sendable {
     var warning: String?
     var controls: ConversationControls?
     var deliveries: [ConversationDelivery] = []
+    var childHistories: [ConversationChildHistory] = []
+    var mcpAppConnection: NativeMcpAppConnection? = nil
 }
 
 struct ConversationCommand: Sendable, Equatable {
@@ -79,7 +83,14 @@ protocol ConversationRuntime: Sendable {
                  receive: @escaping @Sendable (Result<ConversationSnapshot, ConversationRuntimeError>) -> Void) async throws
     func perform(_ command: ConversationCommand) async throws
     func mutateHistory(_ request: ConversationHistoryMutation) async throws -> Session
+    func readChild(_ id: String) async throws -> ConversationChildHistory
     func disconnect() async
+}
+
+extension ConversationRuntime {
+    func readChild(_ id: String) async throws -> ConversationChildHistory {
+        throw ConversationRuntimeError(message: "This provider does not expose child conversation history.")
+    }
 }
 
 @MainActor @Observable
@@ -117,6 +128,8 @@ final class LiveConversation {
     private(set) var completion: ConversationActivity?
     private var deliveryUncertain = false
     private var stopping = false
+    private var restartRequested = false
+    private(set) var transferringQueue = false
     private var adoptingCreatedSession: Bool
     @ObservationIgnored private let drafts: ConversationDraftStore?
     @ObservationIgnored private var runtime: (any ConversationRuntime)?
@@ -126,6 +139,7 @@ final class LiveConversation {
     @ObservationIgnored private let resolveTarget: @Sendable (Session) throws -> InAppResumeTarget
     @ObservationIgnored private let checkOwnership: (Session) throws -> Bool
     @ObservationIgnored var onNotificationState: ((Session, ConversationNotificationState) -> Void)?
+    @ObservationIgnored var onTransferQueuedPrompt: ((Session, ConversationQueuedPrompt) async throws -> Void)?
     @ObservationIgnored var beforePrompt: ((Session, ConversationCommand) async -> Void)?
     @ObservationIgnored var afterTurn: ((Session, ConversationSnapshot) async -> Void)?
     @ObservationIgnored private var stopTimeout: Task<Void, Never>?
@@ -147,7 +161,6 @@ final class LiveConversation {
         self.adoptingCreatedSession = adoptingCreatedSession
         self.stopTimeoutDuration = stopTimeoutDuration
         if let saved = drafts?.drafts[session.id] {
-            draft = saved.text
             attachments = saved.attachments
             pendingPrompt = saved.pendingPrompt
             deliveryUncertain = saved.deliveryUncertain
@@ -160,6 +173,9 @@ final class LiveConversation {
                 error = "The previous send could not be confirmed. Reload and review the conversation before sending again."
                 connectionAttempted = true
             }
+            // The draft observer saves the entire state. Restore it last so a
+            // viewer opened without further edits cannot erase saved intent.
+            draft = saved.text
         }
         refreshOwnership()
     }
@@ -217,6 +233,15 @@ final class LiveConversation {
             && pendingPrompt == nil && !submitting && !stopping && snapshot.controls?.pendingChanges != true
             && snapshot.approvals.isEmpty && snapshot.questions.isEmpty && !capturingCheckpoint
     }
+    var canInterruptAndRestart: Bool {
+        canQueue && snapshot.connected && snapshot.ready && snapshot.running && !snapshot.canSteer
+            && snapshot.canCancel && !stopping && !submitting && pendingPrompt == nil
+            && snapshot.approvals.isEmpty && snapshot.questions.isEmpty
+            && snapshot.controls?.pendingChanges != true && !capturingCheckpoint
+    }
+    var canTransferQueuedPrompt: Bool {
+        onTransferQueuedPrompt != nil && !transferringQueue && !isServerOwned && session.machineID == "local"
+    }
     var canChangeSettings: Bool { canSend && !preparingPrompt && pendingPrompt == nil }
     var isWorking: Bool { connecting || preparingPrompt || submitting || snapshot.running || snapshot.pendingPrompt || changingHistory || capturingCheckpoint }
     var canMutateHistory: Bool { canSend && !preparingPrompt && snapshot.canMutateHistory && pendingPrompt == nil && queue.isEmpty }
@@ -264,6 +289,23 @@ final class LiveConversation {
     func focus() { focusRequest += 1 }
 
     func reportAttachmentError(_ message: String?) { attachmentError = message }
+
+    func readChild(_ id: String) async {
+        guard snapshot.connected, let runtime, !id.isEmpty else { return }
+        let token = generation
+        snapshot.childHistories.removeAll { $0.id == id }
+        snapshot.childHistories.append(.init(id: id, loading: true))
+        do {
+            let history = try await runtime.readChild(id)
+            guard generation == token, history.id == id else { return }
+            snapshot.childHistories.removeAll { $0.id == id }
+            snapshot.childHistories.append(history)
+        } catch {
+            guard generation == token else { return }
+            snapshot.childHistories.removeAll { $0.id == id }
+            snapshot.childHistories.append(.init(id: id, error: error.localizedDescription))
+        }
+    }
 
     func mutateHistory(_ request: ConversationHistoryMutation) async throws -> Session {
         guard canMutateHistory, let runtime,
@@ -584,6 +626,44 @@ final class LiveConversation {
         waiter?.continuation.resume(returning: success)
     }
 
+    /// Explicit fallback: stop first, then submit this retained draft only after
+    /// the provider reports idle. A failure, timeout, reconnect or edit cancels it.
+    func interruptAndRestartDraft() async {
+        guard canInterruptAndRestart, hasPrompt else { return }
+        let text = draft
+        let captured = attachments
+        let token = generation
+        restartRequested = true
+        await stop(preservingRestart: true)
+        while (stopping || capturingCheckpoint) && generation == token && error == nil {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { restartRequested = false; return }
+        }
+        guard restartRequested, generation == token, error == nil,
+              draft == text, attachments == captured, canSend else { restartRequested = false; return }
+        restartRequested = false
+        await send()
+    }
+
+    func transferQueuedPrompt(id: String) async {
+        guard !transferringQueue, let transfer = onTransferQueuedPrompt,
+              let entry = queue.first(where: { $0.id == id }) else { return }
+        holdQueue()
+        transferringQueue = true
+        defer { transferringQueue = false }
+        await drafts?.flush()
+        guard draftSaveError == nil else { return }
+        do {
+            try await transfer(session, entry)
+            guard let index = queue.firstIndex(where: { $0 == entry }) else {
+                error = "The side-chat draft was saved, but the original queued message changed. Review both drafts before sending."
+                return
+            }
+            queue.remove(at: index)
+            persistDraft()
+            await drafts?.flush()
+        } catch { self.error = error.localizedDescription }
+    }
+
     func enqueueDraft() async {
         guard canQueue, hasPrompt else { return }
         queue.append(ConversationQueuedPrompt(ConversationCommand(.prompt,
@@ -602,7 +682,7 @@ final class LiveConversation {
     }
 
     func editQueued(id: String, text: String, attachments: [ConversationAttachment]? = nil) {
-        guard let index = queue.firstIndex(where: { $0.id == id }) else { return }
+        guard !transferringQueue, let index = queue.firstIndex(where: { $0.id == id }) else { return }
         let updatedAttachments = attachments ?? queue[index].attachments
         guard text.nilIfBlank != nil || !updatedAttachments.isEmpty else { return }
         queue[index].text = text
@@ -613,19 +693,20 @@ final class LiveConversation {
     func moveQueued(id: String, offset: Int) {
         guard let index = queue.firstIndex(where: { $0.id == id }), !queue.isEmpty else { return }
         let destination = max(0, min(queue.count - 1, index + offset))
-        guard index != destination else { return }
+        guard !transferringQueue, index != destination else { return }
         let item = queue.remove(at: index)
         queue.insert(item, at: destination)
         persistDraft()
     }
 
     func cancelQueued(id: String) {
+        guard !transferringQueue else { return }
         queue.removeAll { $0.id == id }
         persistDraft()
     }
 
     func resumeQueue() async {
-        guard !queue.isEmpty, !deliveryUncertain, pendingPrompt == nil else { return }
+        guard !transferringQueue, !queue.isEmpty, !deliveryUncertain, pendingPrompt == nil else { return }
         if !snapshot.connected || !snapshot.ready {
             guard await connect() else { return }
         }
@@ -637,7 +718,7 @@ final class LiveConversation {
     }
 
     func promoteQueued(id: String) async {
-        guard let index = queue.firstIndex(where: { $0.id == id }) else { return }
+        guard !transferringQueue, let index = queue.firstIndex(where: { $0.id == id }) else { return }
         moveQueued(id: id, offset: -index)
         if canSteer {
             await dispatchQueued(steer: true)
@@ -714,7 +795,8 @@ final class LiveConversation {
         persistDraft()
     }
 
-    func stop() async {
+    func stop(preservingRestart: Bool = false) async {
+        if !preservingRestart { restartRequested = false }
         queueHeld = true
         persistDraft()
         if connecting {
@@ -757,6 +839,11 @@ final class LiveConversation {
     func approve(_ approval: ConversationApproval, option: ConversationApproval.Option) async {
         guard snapshot.connected, !submitting, snapshot.approvals.contains(approval), approval.options.contains(option) else { return }
         _ = await perform(ConversationCommand(.approval, text: option.id, requestID: approval.id))
+    }
+
+    func respondToElicitation(_ approval: ConversationApproval, response: String) async {
+        guard snapshot.connected, !submitting, snapshot.approvals.contains(approval), approval.kind == "mcp_elicitation" else { return }
+        _ = await perform(ConversationCommand(.approval, text: response, requestID: approval.id))
     }
 
     func answer(_ question: ConversationQuestion, text: String) async {
@@ -820,6 +907,7 @@ final class LiveConversation {
     }
 
     func disconnect() async {
+        restartRequested = false
         queueHeld = true
         settleStop()
         finishSettings(false)
@@ -850,11 +938,28 @@ final class LiveConversation {
 @MainActor @Observable
 final class LiveConversations {
     private(set) var sessions: [String: LiveConversation] = [:]
+    private struct HostedBinding: Equatable {
+        let hostID: String
+        let endpoint: URL
+        let machineID: String
+        let conversationID: String?
+        init(_ connection: ExecutionHostConnection, conversationID: String?) {
+            hostID = connection.id
+            endpoint = connection.endpoint
+            machineID = connection.machineID
+            self.conversationID = conversationID
+        }
+    }
+    @ObservationIgnored private var hostedBindings: [String: HostedBinding] = [:]
+    @ObservationIgnored private var hostedRefreshes: [String: UUID] = [:]
     let drafts: ConversationDraftStore
     private let executionHosts: ExecutionHostConnections?
     @ObservationIgnored private let makeConversation: (Session, ConversationDraftStore) -> LiveConversation
     @ObservationIgnored var onNotificationState: ((Session, ConversationNotificationState) -> Void)? {
         didSet { for conversation in sessions.values { conversation.onNotificationState = onNotificationState } }
+    }
+    @ObservationIgnored var onTransferQueuedPrompt: ((Session, ConversationQueuedPrompt) async throws -> Void)? {
+        didSet { for conversation in sessions.values { conversation.onTransferQueuedPrompt = onTransferQueuedPrompt } }
     }
     @ObservationIgnored var beforePrompt: ((Session, ConversationCommand) async -> Void)? {
         didSet { for conversation in sessions.values { conversation.beforePrompt = beforePrompt } }
@@ -885,6 +990,7 @@ final class LiveConversations {
               sessions[session.id] == nil else { return }
         let conversation = makeConversation(session, drafts)
         conversation.onNotificationState = onNotificationState
+        conversation.onTransferQueuedPrompt = onTransferQueuedPrompt
         conversation.beforePrompt = beforePrompt
         conversation.afterTurn = afterTurn
         sessions[session.id] = conversation
@@ -901,9 +1007,33 @@ final class LiveConversations {
             resolveTarget: { try RemoteConversationRuntime.target(for: $0, connection: connection) },
             checkOwnership: { _ in false }, drafts: drafts, isServerOwned: true)
         conversation.onNotificationState = onNotificationState
+        conversation.onTransferQueuedPrompt = onTransferQueuedPrompt
         conversation.beforePrompt = beforePrompt
         conversation.afterTurn = afterTurn
         sessions[session.id] = conversation
+        hostedBindings[session.id] = HostedBinding(connection, conversationID: conversationID)
+    }
+
+    /// An explicit host read may relocate the same native conversation without
+    /// changing its transcript identity. Replace only its stale viewer, retaining
+    /// durable draft/queue state and never resuming provider work automatically.
+    func refreshHosted(_ session: Session, connection: ExecutionHostConnection, conversationID: String) async throws {
+        let requested = HostedBinding(connection, conversationID: conversationID)
+        if let current = sessions[session.id] {
+            guard current.session.cwd != session.cwd || hostedBindings[session.id] != requested else { return }
+            guard current.isServerOwned || !current.isWorking else {
+                throw ConversationRuntimeError(message: "Stop this app-owned conversation before opening it on an execution host.")
+            }
+            let token = UUID()
+            hostedRefreshes[session.id] = token
+            await current.disconnect()
+            await drafts.flush()
+            guard hostedRefreshes[session.id] == token, sessions[session.id] === current else { throw CancellationError() }
+            hostedRefreshes.removeValue(forKey: session.id)
+            if let error = drafts.error { throw ConversationRuntimeError(message: error) }
+            sessions.removeValue(forKey: session.id)
+        }
+        prepareHosted(session, connection: connection, conversationID: conversationID)
     }
 
     @discardableResult
@@ -913,6 +1043,7 @@ final class LiveConversations {
             drafts: drafts, adoptingCreatedSession: true)
         sessions[created.session.id] = conversation
         conversation.onNotificationState = onNotificationState
+        conversation.onTransferQueuedPrompt = onTransferQueuedPrompt
         conversation.beforePrompt = beforePrompt
         conversation.afterTurn = afterTurn
         _ = await conversation.connect()

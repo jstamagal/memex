@@ -30,7 +30,8 @@ public final class CommandRun: @unchecked Sendable {
     }
 
     public func execute(executable: URL, arguments: [String], timeout: TimeInterval, progress: ActivityProgressHandler? = nil,
-                 inputFile: URL? = nil) throws -> Data {
+                 inputFile: URL? = nil, maximumOutputBytes: Int? = nil) throws -> Data {
+        if let maximumOutputBytes, maximumOutputBytes < 0 || maximumOutputBytes == Int.max { throw ClientError(message: "Output limit must be a nonnegative bounded integer.") }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -90,13 +91,21 @@ public final class CommandRun: @unchecked Sendable {
         }
         var stoppingSince: Date?
         var timedOut = false
+        var outputLimitExceeded = false
+        func exceedsOutputLimit() -> Bool {
+            guard let limit = maximumOutputBytes else { return false }
+            let stdoutBytes = (try? FileManager.default.attributesOfItem(atPath: outputURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            let stderrBytes = (try? FileManager.default.attributesOfItem(atPath: errorURL.path)[.size] as? NSNumber)?.int64Value ?? 0
+            return stdoutBytes > Int64(limit) || stderrBytes > Int64(limit) - stdoutBytes
+        }
         while child.isRunning {
             consumeProgress()
             lock.lock()
             let shouldCancel = cancelled
             lock.unlock()
-            if stoppingSince == nil && (shouldCancel || ContinuousClock.now >= deadline) {
-                timedOut = !shouldCancel
+            outputLimitExceeded = outputLimitExceeded || exceedsOutputLimit()
+            if stoppingSince == nil && (shouldCancel || outputLimitExceeded || ContinuousClock.now >= deadline) {
+                timedOut = !shouldCancel && !outputLimitExceeded
                 stoppingSince = Date()
                 stop(SIGTERM)
             }
@@ -113,16 +122,26 @@ public final class CommandRun: @unchecked Sendable {
         lock.unlock()
         // The CLI can exit on SIGTERM while SSH or another descendant ignores
         // it. Clean up the owned group even after the direct child has exited.
-        if wasCancelled || timedOut { stop(SIGKILL) }
+        outputLimitExceeded = outputLimitExceeded || exceedsOutputLimit()
+        if wasCancelled || timedOut || outputLimitExceeded { stop(SIGKILL) }
         if wasCancelled { throw CancellationError() }
+        if outputLimitExceeded || exceedsOutputLimit() { throw ClientError(message: "Command output exceeded the \(maximumOutputBytes ?? 0) byte limit.") }
         if timedOut { throw ClientError(message: "Memex took too long to respond. Try again.") }
         guard child.terminationStatus == 0 else {
-            let message = (try? String(contentsOf: errorURL, encoding: .utf8)) ?? "Memex could not complete the request."
+            let errorReader = try? FileHandle(forReadingFrom: errorURL)
+            let errorBytes = try? errorReader?.read(upToCount: 8192)
+            try? errorReader?.close()
+            let message = errorBytes.map { String(decoding: $0, as: UTF8.self) } ?? "Memex could not complete the request."
             let failure = message.split(separator: "\n", omittingEmptySubsequences: false)
                 .filter { !$0.hasPrefix("MEMEX_PROGRESS ") }.joined(separator: "\n")
             throw ClientError(message: String(failure.prefix(4000)))
         }
+        if let maximumOutputBytes {
+            let reader = try FileHandle(forReadingFrom: outputURL); defer { try? reader.close() }
+            let bytes = try reader.read(upToCount: maximumOutputBytes + 1) ?? Data()
+            guard bytes.count <= maximumOutputBytes else { throw ClientError(message: "Command output exceeded the \(maximumOutputBytes) byte limit.") }
+            return bytes
+        }
         return try Data(contentsOf: outputURL)
     }
 }
-

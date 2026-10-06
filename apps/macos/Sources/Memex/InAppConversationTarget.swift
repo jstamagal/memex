@@ -11,10 +11,14 @@ struct InAppResumeTarget: Sendable, Equatable {
     let helperURL: URL?
     let storageURL: URL
     var configuredProvider: ConfiguredConversationProvider? = nil
+    var claudeNativeConfiguration: ClaudeNativeConfiguration? = nil
 
     var environment: [String: String] {
         if let configuredProvider { return [configuredProvider.homeEnvironmentKey: providerHome.path] }
-        return [session.source == "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR": providerHome.path]
+        if session.source == "claude" {
+            return (claudeNativeConfiguration ?? .resolve(providerHome: providerHome)).environment
+        }
+        return ["CODEX_HOME": providerHome.path]
     }
     var providerInstanceID: String { "\(session.source):\(Self.digest(providerHome.path))" }
     var workspaceID: String { Self.digest(workingDirectory.path) }
@@ -82,7 +86,9 @@ struct InAppResumeTarget: Sendable, Equatable {
             .appendingPathComponent("dev.memex.app/Resume", isDirectory: true)
         return Self(session: session, sourceURL: sourceURL, workingDirectory: workingDirectory,
                     providerHome: providerHome, executableURL: URL(fileURLWithPath: executablePath), helperURL: helper,
-                    storageURL: support.appendingPathComponent(digest(session.id), isDirectory: true))
+                    storageURL: support.appendingPathComponent(digest(session.id), isDirectory: true),
+                    claudeNativeConfiguration: session.source == "claude"
+                        ? .resolve(providerHome: providerHome, environment: environment) : nil)
     }
 
     private static func resolveConfigured(_ session: Session, applicationSupport: URL?, requiresResume: Bool) throws -> Self {

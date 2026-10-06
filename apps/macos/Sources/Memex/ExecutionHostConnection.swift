@@ -9,6 +9,8 @@ struct ExecutionHostConnection: Codable, Identifiable, Equatable, Sendable {
     var name: String
     var machineID: String
     var endpoint: URL
+    var ssh: ExecutionHostSSHConfiguration? = nil
+    var handoffPublicKey: String? = nil
 }
 
 enum ExecutionHostCredential {
@@ -52,13 +54,13 @@ actor ExecutionHostHTTPClient {
     private let session: URLSession
     private let outbox: URL
 
-    init(endpoint: URL, token: String, hostID: String? = nil, outbox: URL? = nil) throws {
+    init(endpoint: URL, token: String, hostID: String? = nil, outbox: URL? = nil, requestTimeout: TimeInterval = 65) throws {
         self.endpoint = try Self.validatedEndpoint(endpoint)
         self.token = token
         self.hostID = hostID
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 65
-        configuration.timeoutIntervalForResource = 70
+        configuration.timeoutIntervalForRequest = requestTimeout
+        configuration.timeoutIntervalForResource = requestTimeout + 5
         session = URLSession(configuration: configuration, delegate: ExecutionHTTPDelegate(), delegateQueue: nil)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         self.outbox = outbox ?? support.appendingPathComponent("dev.memex.app/ExecutionOutbox/" + Self.digest(hostID ?? endpoint.absoluteString))
@@ -121,6 +123,7 @@ actor ExecutionHostHTTPClient {
         }
         guard data.count <= 32 * 1024 * 1024 else { throw HostFailure("response_limit", "Execution response is too large") }
         let decoded = try JSONDecoder().decode(HostResponse.self, from: data)
+        guard decoded.id == request.id else { throw HostFailure("response_identity", "Execution response does not match this command") }
         if let error = decoded.error { throw error }
         guard let result = decoded.result else { throw HostFailure("response", "Execution host returned no result") }
         if mutation { try FileManager.default.removeItem(at: outgoing) }
@@ -172,7 +175,8 @@ final class ExecutionHostConnections {
         }
         try ExecutionHostCredential.save(token, id: id)
         let connection = ExecutionHostConnection(id: id, name: name.isEmpty ? machineID : name,
-            machineID: machineID, endpoint: try ExecutionHostHTTPClient.validatedEndpoint(endpoint))
+            machineID: machineID, endpoint: try ExecutionHostHTTPClient.validatedEndpoint(endpoint),
+            handoffPublicKey: info["handoffPublicKey"].string)
         hosts.removeAll { $0.id == id }; hosts.append(connection)
         try save()
         return connection
@@ -182,10 +186,37 @@ final class ExecutionHostConnections {
         hosts.removeAll { $0.id == connection.id }
         try save()
         ExecutionHostCredential.remove(connection.id)
+        if let ssh = connection.ssh { ExecutionHostSSHTunnels.shared.stop(ssh) }
     }
     func connection(for session: Session) -> ExecutionHostConnection? { hosts.first { $0.machineID == session.machineID } }
     func client(_ connection: ExecutionHostConnection) throws -> ExecutionHostHTTPClient {
-        try ExecutionHostHTTPClient(endpoint: connection.endpoint, token: ExecutionHostCredential.read(connection.id), hostID: connection.id)
+        if let ssh = connection.ssh { try ExecutionHostSSHTunnels.shared.start(ssh) }
+        return try ExecutionHostHTTPClient(endpoint: connection.endpoint, token: ExecutionHostCredential.read(connection.id), hostID: connection.id)
+    }
+    func pairSSH(_ configuration: ExecutionHostSSHConfiguration, machineID: String, token: String) async throws -> ExecutionHostConnection {
+        let started = try ExecutionHostSSHTunnels.shared.start(configuration)
+        do {
+            // Probe the loopback gateway before pairing; never retry a mutation.
+            var connected = false
+            for _ in 0..<10 {
+                guard ExecutionHostSSHTunnels.shared.isRunning(configuration) else {
+                    throw HostFailure("ssh_connection", "SSH could not establish the tunnel. Check authentication, trusted host key, and ports with your SSH client.")
+                }
+                do {
+                    _ = try await ExecutionHostHTTPClient(endpoint: configuration.endpoint, token: token, requestTimeout: 1).call("host.info")
+                    connected = true; break
+                } catch { try await Task.sleep(for: .milliseconds(250)) }
+            }
+            guard connected else { throw HostFailure("ssh_connection", "The SSH tunnel did not reach the configured Memex execution gateway") }
+            var host = try await pair(name: configuration.hostname, machineID: machineID, endpoint: configuration.endpoint, token: token)
+            host.ssh = configuration
+            hosts.removeAll { $0.id == host.id }; hosts.append(host)
+            try save()
+            return host
+        } catch {
+            if started { ExecutionHostSSHTunnels.shared.stop(configuration) }
+            throw error
+        }
     }
     private func save() throws { defaults?.set(try JSONEncoder().encode(hosts), forKey: Self.key) }
 }

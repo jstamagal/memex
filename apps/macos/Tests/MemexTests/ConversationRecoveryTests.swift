@@ -17,12 +17,32 @@ import Testing
 @MainActor @Test func signInUsesTheOriginalProviderInstallation() {
     for provider in ["codex", "claude"] {
         let session = Session(source: provider, sessionID: "native", sourcePath: "/provider/sessions/native.jsonl", project: "test")
-        let target = InAppResumeTarget(session: session, sourceURL: URL(fileURLWithPath: session.sourcePath),
+        var target = InAppResumeTarget(session: session, sourceURL: URL(fileURLWithPath: session.sourcePath),
             workingDirectory: URL(fileURLWithPath: "/workspace"), providerHome: URL(fileURLWithPath: "/custom provider's home"),
             executableURL: URL(fileURLWithPath: "/custom bin/\(provider)"), helperURL: nil, storageURL: URL(fileURLWithPath: "/runtime"))
+        if provider == "claude" {
+            target.claudeNativeConfiguration = .resolve(providerHome: target.providerHome,
+                environment: ["HOME": "/native user"])
+        }
         let command = ConversationRecoveryView.signInCommand(target)
         let variable = provider == "codex" ? "CODEX_HOME" : "CLAUDE_CONFIG_DIR"
+        let home = provider == "claude" ? " HOME='/native user'" : ""
         let arguments = provider == "codex" ? "login" : "auth login"
-        #expect(command == "\(variable)='/custom provider'\\''s home' '/custom bin/\(provider)' \(arguments)")
+        #expect(command == "\(variable)='/custom provider'\\''s home'\(home) '/custom bin/\(provider)' \(arguments)")
+    }
+}
+
+@MainActor @Test func signInPreservesClaudeDefaultAndExplicitHomeDistinction() {
+    let session = Session(source: "claude", sessionID: "native", sourcePath: "/native user/.claude/projects/work/native.jsonl", project: "test")
+    for explicit in [false, true] {
+        var target = InAppResumeTarget(session: session, sourceURL: URL(fileURLWithPath: session.sourcePath),
+            workingDirectory: URL(fileURLWithPath: "/workspace"), providerHome: URL(fileURLWithPath: "/native user/.claude"),
+            executableURL: URL(fileURLWithPath: "/bin/claude"), helperURL: nil, storageURL: URL(fileURLWithPath: "/runtime"))
+        target.claudeNativeConfiguration = .resolve(providerHome: target.providerHome, environment: [
+            "HOME": "/native user", "CLAUDE_CONFIG_DIR": explicit ? "/native user/.claude" : "/another/installation"
+        ])
+        let prefix = explicit ? "CLAUDE_CONFIG_DIR='/native user/.claude'" : "/usr/bin/env -u CLAUDE_CONFIG_DIR"
+        #expect(ConversationRecoveryView.signInCommand(target)
+            == "\(prefix) HOME='/native user' '/bin/claude' auth login")
     }
 }

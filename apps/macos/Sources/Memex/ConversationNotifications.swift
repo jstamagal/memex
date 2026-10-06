@@ -57,6 +57,10 @@ final class ConversationNotifications: NSObject {
     }
     private(set) var error: String?
     private(set) var requestingPermission = false
+    @ObservationIgnored var openHostedConversation: ((String, String) -> Void)?
+    @ObservationIgnored var openHostSchedules: ((String) -> Void)?
+    @ObservationIgnored var isHostedConversationVisible: (String, String) -> Bool = { _, _ in false }
+    @ObservationIgnored var deliverSchedule: (@MainActor (HostScheduleNotificationEvent, ConversationNotificationPreferences) async throws -> Void)?
     @ObservationIgnored var openConversation: ((String) -> Void)?
     @ObservationIgnored var isConversationVisible: (String) -> Bool = { _ in false }
     @ObservationIgnored private let defaults: UserDefaults?
@@ -148,6 +152,32 @@ final class ConversationNotifications: NSObject {
         return event
     }
 
+    /// Schedule runs have their own durable receipt state. They never synthesize
+    /// conversation working/completed transitions to enter the notification path.
+    @discardableResult
+    func receiveScheduleRun(_ event: HostScheduleNotificationEvent) async -> Bool {
+        guard preferences.mode != .off,
+              event.isCompletion ? preferences.completion : preferences.input,
+              preferences.whileViewingConversation || event.conversationID.map({ !isHostedConversationVisible(event.hostID, $0) }) != false else { return false }
+        let settings = preferences
+        do {
+            if let deliverSchedule { try await deliverSchedule(event, settings) }
+            else if settings.mode.showsNotification {
+                guard Bundle.main.bundleIdentifier != nil else { throw CocoaError(.featureUnsupported) }
+                let content = UNMutableNotificationContent()
+                content.title = event.title
+                content.body = event.body
+                content.threadIdentifier = "schedule:" + event.hostID + ":" + event.runID
+                content.userInfo = ["hostID": event.hostID, "scheduleRunID": event.runID]
+                if let conversationID = event.conversationID { content.userInfo["hostConversationID"] = conversationID }
+                if settings.mode.playsSound { content.sound = .default }
+                try await UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            } else if settings.mode.playsSound { NSSound(named: "Glass")?.play() }
+            error = nil
+            return true
+        } catch { self.error = "Could not deliver a schedule notification: \(error.localizedDescription)"; return false }
+    }
+
     private func deliverSystem(_ event: ConversationNotificationEvent,
                                preferences: ConversationNotificationPreferences) async throws {
         if preferences.mode.showsNotification {
@@ -162,13 +192,22 @@ final class ConversationNotifications: NSObject {
             try await UNUserNotificationCenter.current().add(request)
         } else if preferences.mode.playsSound { NSSound(named: "Glass")?.play() }
     }
+
+    func openNotification(hostID: String?, hostConversationID: String?, conversationID: String?) {
+        if let hostID {
+            if let hostConversationID { openHostedConversation?(hostID, hostConversationID) }
+            else { openHostSchedules?(hostID) }
+        } else if let conversationID { openConversation?(conversationID) }
+    }
 }
 
 extension ConversationNotifications: UNUserNotificationCenterDelegate {
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                            didReceive response: UNNotificationResponse) async {
-        guard let id = response.notification.request.content.userInfo["conversationID"] as? String else { return }
-        await MainActor.run { self.openConversation?(id) }
+        let info = response.notification.request.content.userInfo
+        await openNotification(hostID: info["hostID"] as? String,
+            hostConversationID: info["hostConversationID"] as? String,
+            conversationID: info["conversationID"] as? String)
     }
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,

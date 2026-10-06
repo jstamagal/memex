@@ -5,6 +5,7 @@ struct ConversationQueueView: View {
     @Bindable var conversation: LiveConversation
     @State private var editing: ConversationQueuedPrompt?
     @State private var expanded = true
+    @State private var transferring: ConversationQueuedPrompt?
 
     var body: some View {
         Group {
@@ -30,8 +31,13 @@ struct ConversationQueueView: View {
                                 } else if !conversation.isWorking {
                                     Button("Send next") { Task { await conversation.promoteQueued(id: entry.id) } }
                                 }
+                                if conversation.canTransferQueuedPrompt {
+                                    Button("Move to side-chat draft…") { conversation.holdQueue(); transferring = entry }
+                                } else if conversation.isServerOwned || conversation.session.machineID != "local" {
+                                    Text("Side-chat transfer unavailable on this host")
+                                }
                                 Button("Remove queued message", role: .destructive) { conversation.cancelQueued(id: entry.id) }
-                            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+                            } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).fixedSize().disabled(conversation.transferringQueue)
                         }
                     }
                     if conversation.queueHeld {
@@ -51,6 +57,19 @@ struct ConversationQueueView: View {
             .font(.caption).padding(10)
             .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
           }
+        }
+        .sheet(item: $transferring) { entry in
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Move to side-chat draft").font(.title2)
+                Text("This message and its captured attachments will be saved in a separate chat for review. It will leave this queue only after the draft is saved.").font(.callout)
+                ScrollView { Text(entry.text).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
+                ForEach(entry.attachments) { Label($0.title, systemImage: "paperclip") }
+                HStack {
+                    Spacer()
+                    Button("Cancel") { transferring = nil }
+                    Button("Move draft") { transferring = nil; Task { await conversation.transferQueuedPrompt(id: entry.id) } }
+                }
+            }.padding(20).frame(width: 520, height: 340)
         }
         .sheet(item: $editing) { entry in
             ConversationQueueEditor(conversation: conversation, entry: entry)

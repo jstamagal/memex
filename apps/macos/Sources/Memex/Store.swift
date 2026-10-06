@@ -18,6 +18,8 @@ final class Store {
     let workspaceClient: ConversationWorkspaceClient
     @ObservationIgnored let workspaceBrowser = WorkspaceBrowserStore()
     @ObservationIgnored let workspaceBrowserExecution = WorkspaceBrowserExecutionBridge()
+    @ObservationIgnored let desktopAutomation = DesktopAutomationHost()
+    @ObservationIgnored let desktopControls: DesktopControlAuthority
     @ObservationIgnored let workspaceTerminals = WorkspaceTerminalStore()
     @ObservationIgnored let makeConversation: @Sendable (NewConversationRequest) async throws -> CreatedConversation
     var sessions: [Session] = []
@@ -43,6 +45,7 @@ final class Store {
     var findConversationRequest = 0
     var showingProjectSetup = false
     var showingExecutionHosts = false
+    var executionHostSelection: String?
     var executionHostError: String?
     var addingProject = false
     var sidebarMode: SidebarMode = .projects {
@@ -142,6 +145,7 @@ final class Store {
          executionHosts: ExecutionHostConnections = ExecutionHostConnections(),
          localProjects: LocalProjects = LocalProjects(), newConversationDraft: NewConversationDraft = NewConversationDraft(),
          workspaceClient: ConversationWorkspaceClient = ConversationWorkspaceClient(),
+         desktopControls: DesktopControlAuthority = DesktopControlAuthority(),
          makeConversation: @escaping @Sendable (NewConversationRequest) async throws -> CreatedConversation = { try await NewConversationRuntime.create($0) }) {
         self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore, executionHosts: executionHosts)
         self.executionHosts = executionHosts
@@ -152,6 +156,7 @@ final class Store {
         self.localProjects = localProjects
         self.newConversationDraft = newConversationDraft
         self.workspaceClient = workspaceClient
+        self.desktopControls = desktopControls
         self.makeConversation = makeConversation
         self.client = client
         self.projectCatalog = projectCatalog ?? ProjectCatalog(client: client)
@@ -171,6 +176,10 @@ final class Store {
         self.liveConversations.afterTurn = { [weak self] session, snapshot in
             guard let turnID = snapshot.records.last(where: { $0.record.sourceTurnID != nil })?.record.sourceTurnID else { return }
             await self?.captureTurnCheckpoint(session: session, turnID: turnID, moment: .afterTurn)
+        }
+        self.liveConversations.onTransferQueuedPrompt = { [weak self] source, entry in
+            guard let self else { throw ConversationRuntimeError(message: "The workspace closed before the draft could be saved.") }
+            try await self.transferQueuedPrompt(source: source, entry: entry)
         }
     }
 
@@ -219,15 +228,34 @@ final class Store {
         return URL(fileURLWithPath: cwd, isDirectory: true)
     }
 
+    var selectedRemoteWorkspace: (connection: ExecutionHostConnection, id: String)? {
+        guard let selected, let cwd = selected.cwd?.nilIfBlank,
+              let connection = executionHosts.connection(for: selected) else { return nil }
+        return (connection, cwd)
+    }
+    var hasSelectedWorkspace: Bool { selectedWorkspace != nil || selectedRemoteWorkspace != nil }
+
     func canAccessLocalFiles(for session: Session) -> Bool {
         session.machineID == "local" && liveConversations.sessions[session.id]?.isServerOwned != true
             && executionHosts.connection(for: session) == nil
     }
 
     func openHostedConversation(_ session: Session, connection: ExecutionHostConnection, conversationID: String) {
-        liveConversations.prepareHosted(session, connection: connection, conversationID: conversationID)
-        conversationLibrary.retain(session)
-        if !sessions.contains(where: { $0.id == session.id }) { sessions.insert(session, at: 0) }
+        Task {
+            do { try await adoptHostedConversation(session, connection: connection, conversationID: conversationID) }
+            catch is CancellationError { }
+            catch { executionHostError = error.localizedDescription; showingExecutionHosts = true }
+        }
+    }
+
+    func adoptHostedConversation(_ session: Session, connection: ExecutionHostConnection, conversationID: String) async throws {
+        try await liveConversations.refreshHosted(session, connection: connection, conversationID: conversationID)
+        guard conversationLibrary.retain(session) else {
+            throw ConversationRuntimeError(message: conversationLibrary.error ?? "The updated conversation location could not be saved.")
+        }
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) { sessions[index] = session }
+        else { sessions.insert(session, at: 0) }
+        if let index = catalog.firstIndex(where: { $0.id == session.id }) { catalog[index] = session }
         showingExecutionHosts = false
         openNotifiedConversation(session.id)
     }
@@ -235,8 +263,8 @@ final class Store {
         selectedWorkspace.flatMap { workspaceChangeSelections[$0.path] }
     }
     func reviewWorkspaceChange(_ path: String?) {
-        guard let directory = selectedWorkspace else { return }
-        if let path { workspaceChangeSelections[directory.path] = path }
+        guard hasSelectedWorkspace else { return }
+        if let directory = selectedWorkspace, let path { workspaceChangeSelections[directory.path] = path }
         workspaceChangeReviewRequest = UUID()
         workspacePanel = .changes
         showingWorkspaceChanges = true
@@ -264,7 +292,7 @@ final class Store {
     }
 
     func showWorkspaceTerminal() {
-        guard selectedWorkspace != nil else { return }
+        guard hasSelectedWorkspace else { return }
         selectWorkspacePanel(.terminal)
         showingWorkspaceChanges = true
     }
@@ -273,7 +301,11 @@ final class Store {
         if showingTerminalDrawer {
             showingTerminalDrawer = false
         } else {
-            guard selectedWorkspace != nil else { return }
+            guard hasSelectedWorkspace else { return }
+            if selectedRemoteWorkspace != nil {
+                showWorkspaceTerminal()
+                return
+            }
             // A terminal has one native surface. Move it out of the inspector
             // rather than hosting the same shell in two places at once.
             if workspacePanel == .terminal { showingWorkspaceChanges = false }
@@ -332,6 +364,7 @@ final class Store {
     var readerRequestID: String { readerPositionKey }
 
     func openConversation(_ session: Session) {
+        conversationLibrary.markRead([nativeLibrarySession(session)], read: true)
         if scope == .home { scope = homeProject.map(Scope.project) ?? .all }
         selectedID = session.id
     }

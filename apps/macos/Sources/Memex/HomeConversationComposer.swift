@@ -13,6 +13,7 @@ struct HomeConversationComposer: View {
     @State private var providerError: String?
     @State private var showingProviderSetup = false
     @State private var dropTargeted = false
+    @State private var showingDictation = false
 
     private var baseRefs: [String] {
         Array(Set((repository?.localBranches ?? []) + [repository?.defaultBaseRef, store.newConversationDraft.value.baseRef].compactMap { $0 })).sorted()
@@ -92,6 +93,11 @@ struct HomeConversationComposer: View {
         .frame(maxWidth: .infinity)
         .task(id: store.newConversationProject) { await inspectProject() }
         .task { reloadProviders() }
+        .sheet(isPresented: $showingDictation) {
+            ConversationDictationView { text in
+                draft.value.text = [draft.value.text, text].filter { !$0.isEmpty }.joined(separator: "\n\n")
+            }
+        }
         .sheet(isPresented: $showingProviderSetup, onDismiss: reloadProviders) { ConversationProviderSetupView() }
     }
 
@@ -122,7 +128,10 @@ struct HomeConversationComposer: View {
     private var controls: some View {
         @Bindable var draft = store.newConversationDraft
         return HStack(spacing: 12) {
-            Button { Task { await attachToNewDraft() } } label: {
+            Menu {
+                Button("Attach files…") { Task { await attachToNewDraft() } }
+                Button("Dictate a prompt…") { showingDictation = true }
+            } label: {
                 Image(systemName: "plus").font(.system(size: 14))
                     .frame(width: 28, height: 28).contentShape(Rectangle())
             }

@@ -1,5 +1,8 @@
 import Foundation
 import MemexExecutionHostCore
+#if canImport(SQACPHost)
+import SQACPHost
+#endif
 
 /// Detaching only cancels this viewer's subscription. The paired host owns the
 /// provider process and native receipts independently of the desktop lifecycle.
@@ -21,6 +24,9 @@ actor RemoteConversationRuntime: ConversationRuntime {
                  receive: @escaping @Sendable (Result<ConversationSnapshot, ConversationRuntimeError>) -> Void) async throws {
         poll?.cancel()
         self.receive = receive
+        if let ssh = connection.ssh {
+            _ = try await MainActor.run { try ExecutionHostSSHTunnels.shared.start(ssh) }
+        }
         guard target.session.machineID == connection.machineID else {
             throw ConversationRuntimeError(message: "This conversation belongs to a different paired machine.")
         }
@@ -115,6 +121,18 @@ actor RemoteConversationRuntime: ConversationRuntime {
         receive = nil
     }
 
+    func readChild(_ id: String) async throws -> ConversationChildHistory {
+        #if canImport(SQACPHost)
+        guard let conversationID else { throw ConversationRuntimeError(message: "The execution host is disconnected.") }
+        let value = try await client.call("conversation.child.read", params: ["conversationId": .string(conversationID), "childId": .string(id)])
+        let child = try JSONDecoder().decode(AgentChildConversation.self, from: JSONEncoder().encode(value))
+        guard child.id == id else { throw ConversationRuntimeError(message: "The host returned a different native child.") }
+        return ConversationChildHistory(child)
+        #else
+        throw ConversationRuntimeError(message: "Child history requires the agent runtime.")
+        #endif
+    }
+
     private func publish() async throws {
         guard let conversationID, let receive else { return }
         let response = try await client.call("conversation.read", params: ["conversationId": .string(conversationID)])
@@ -131,6 +149,12 @@ actor RemoteConversationRuntime: ConversationRuntime {
             ready: response["ready"].bool ?? false, canCancel: actions.contains("cancel"), sentPromptIDs: sentCommandIDs,
             ownedLiveUserTurns: owned)
         snapshot.canSteer = actions.contains("steer")
+        snapshot.hostConversationID = conversationID
+        #if canImport(SQACPHost)
+        snapshot.childHistories = try response["children"].array.map { value in
+            ConversationChildHistory(try JSONDecoder().decode(AgentChildConversation.self, from: JSONEncoder().encode(value)))
+        }
+        #endif
         snapshot.deliveries = deliveries
         snapshot.warning = snapshot.warning ?? response["warning"].string
         snapshot.controls = Self.controls(response["controls"])

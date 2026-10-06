@@ -13,8 +13,11 @@ public final class NativeExecutionProvider: ExecutionProvider {
     private let environment: [String: String]
     private let executables: [String: String]
     private let claudeHelper: String?
+    private let retirement: NativeConversationRetirement
+    private let importDirectory: URL
     private var connected: Set<String> = []
-    private var attachedSources: Set<String> = []
+    private var attachedSources: [String: String] = [:]
+    private var handoffFences: [String: NativeHandoffWriterFence] = [:]
     public var providers: [String] {
         ["codex", "claude"].filter { executables[$0] != nil && ($0 != "claude" || claudeHelper != nil) }
     }
@@ -22,6 +25,8 @@ public final class NativeExecutionProvider: ExecutionProvider {
     public init(directory: URL, hostID: String, environment: [String: String] = ProcessInfo.processInfo.environment) throws {
         self.hostID = hostID
         self.environment = environment
+        retirement = NativeConversationRetirement(directory: directory.appendingPathComponent("retired-native-history"))
+        importDirectory = directory.appendingPathComponent("handoff-imports")
         executables = Dictionary(uniqueKeysWithValues: ["codex", "claude"].compactMap { name in
             Self.executable(name, environment: environment).map { (name, $0) }
         })
@@ -51,6 +56,7 @@ public final class NativeExecutionProvider: ExecutionProvider {
     }
 
     public func resume(_ conversation: HostedConversation) throws {
+        guard handoffFences[conversation.id] == nil else { throw HostFailure("handoff_ownership", "This conversation is fenced for handoff; reconcile ownership before resuming") }
         // Retain the original namespace and path; a changed provider home must never
         // silently cause a remote/native session to be recreated under another account.
         guard conversation.providerInstanceID == conversation.provider + ":" + providerHome(conversation.provider).path else {
@@ -65,7 +71,8 @@ public final class NativeExecutionProvider: ExecutionProvider {
         }
         try attachSource(conversation)
         if conversation.provider == "codex" {
-            try service.connectCodex(binding(conversation), executablePath: executable, environment: environment)
+            try service.connectCodex(binding(conversation), executablePath: executable, environment: environment,
+                                     resumePath: conversation.handoffResume == true ? conversation.transcriptPath : nil)
         } else if conversation.provider == "claude", let claudeHelper {
             try service.connectClaude(binding(conversation), hostExecutablePath: claudeHelper, claudeExecutablePath: executable, environment: environment)
         } else { throw HostFailure("provider_unavailable", "Provider is not configured on this host") }
@@ -137,6 +144,7 @@ public final class NativeExecutionProvider: ExecutionProvider {
         }
         let operations = thread == .null ? HostValue.array([]) : (try request("provider_operation.list", ["threadId": .string(conversation.id), "includeTerminal": .bool(false)]))
         return .object(["thread": thread, "presentation": presentation, "deliveries": .array(statuses), "operations": operations,
+            "children": try .encoded(service.children(sessionID: conversation.id)),
             "ready": .bool(actions.contains(.prompt)), "connected": .bool(connected.contains(conversation.id)), "running": .bool(running),
             "actions": .array(actions.map { .string($0.rawValue) }), "controls": settings, "warning": warning])
     }
@@ -151,7 +159,145 @@ public final class NativeExecutionProvider: ExecutionProvider {
             promptContent: content))
     }
 
+    public func readChild(_ conversation: HostedConversation, childID: String) throws -> HostValue {
+        try service.readChild(sessionID: conversation.id, childID: childID)
+        guard let child = service.children(sessionID: conversation.id).first(where: { $0.id == childID }) else {
+            throw HostFailure("child_identity", "The provider did not identify this child under the selected native parent")
+        }
+        return try .encoded(child)
+    }
+
     public func isConnected(_ id: String) -> Bool { connected.contains(id) }
+
+    public func handoffUnavailableReason(_ conversation: HostedConversation) -> String? {
+        guard conversation.provider == "codex" else {
+            return "This provider has no verified portable native-history and exclusive writer-fence implementation. Claude history currently loads by its original project directory."
+        }
+        guard executables["codex"] != nil, UUID(uuidString: conversation.nativeSessionID) != nil,
+              conversation.transcriptPath != nil else { return "Codex handoff requires an installed provider and its exact persisted native rollout" }
+        return nil
+    }
+
+    public func detachForHandoff(_ conversation: HostedConversation) throws {
+        if let reason = handoffUnavailableReason(conversation) { throw HostFailure("handoff_unsupported", reason) }
+        guard conversation.providerInstanceID == "codex:" + providerHome("codex").path else {
+            throw HostFailure("provider_identity", "The source provider home no longer matches its original binding")
+        }
+        if handoffFences[conversation.id] != nil { return }
+        if connected.contains(conversation.id) {
+            let current = try read(conversation)
+            guard current["running"].bool == false, current["operations"].array.isEmpty,
+                  current["thread"]["pendingRequests"].array.isEmpty else {
+                throw HostFailure("handoff_busy", "Finish active work and pending requests before moving this conversation")
+            }
+            try service.disconnect(sessionID: conversation.id)
+            connected.remove(conversation.id)
+        }
+        handoffFences[conversation.id] = try NativeHandoffWriterFence(home: providerHome("codex"), nativeSessionID: conversation.nativeSessionID)
+    }
+
+    public func exportForHandoff(_ conversation: HostedConversation) throws -> NativeConversationTransfer {
+        guard handoffFences[conversation.id] != nil, let path = conversation.transcriptPath else {
+            throw HostFailure("handoff_ownership", "Detach and fence the source before exporting native history")
+        }
+        let source = URL(fileURLWithPath: path).standardizedFileURL
+        let root = providerHome("codex").appendingPathComponent("sessions").path + "/"
+        guard source.resolvingSymlinksInPath().path == source.path, source.path.hasPrefix(root) else {
+            throw HostFailure("source_denied", "Native history must remain under the source provider's canonical session home")
+        }
+        let transcript = try NativeConversationTransferValidation.read(source)
+        let transfer = NativeConversationTransfer(conversation: conversation, transcript: transcript,
+            transcriptSHA256: NativeConversationTransferValidation.digest(transcript))
+        try NativeConversationTransferValidation.validate(transfer)
+        return transfer
+    }
+
+    public func retireHandoff(_ transfer: NativeConversationTransfer, operationID: String) throws {
+        try detachForHandoff(transfer.conversation)
+        try retirement.retire(transfer, operationID: operationID, home: providerHome("codex"))
+    }
+
+    public func restoreRetiredHandoff(_ transfer: NativeConversationTransfer, operationID: String) throws {
+        try detachForHandoff(transfer.conversation)
+        try retirement.restore(transfer, operationID: operationID, home: providerHome("codex"))
+    }
+
+    public func adoptHandoff(_ transfer: NativeConversationTransfer, id: String, workspaceID: String, cwd: String) throws -> HostedConversation {
+        try NativeConversationTransferValidation.validate(transfer)
+        guard id == transfer.conversation.id, executables["codex"] != nil, !connected.contains(id) else {
+            throw HostFailure("handoff_identity", "Handoff must retain an idle native identity and requires Codex on the destination")
+        }
+        let home = providerHome("codex")
+        if handoffFences[id] == nil { handoffFences[id] = try NativeHandoffWriterFence(home: home, nativeSessionID: transfer.conversation.nativeSessionID) }
+        // Before source commitment this history must not be discoverable by a
+        // native client even if this host exits and releases its process lock.
+        let staged = importDirectory.appendingPathComponent(transfer.conversation.nativeSessionID + "-" + transfer.transcriptSHA256 + ".jsonl")
+        try persistNativeHistory(transfer.transcript, at: staged)
+        var result = transfer.conversation
+        result.providerInstanceID = "codex:" + home.path
+        result.workspaceID = workspaceID; result.cwd = cwd; result.transcriptPath = staged.path
+        result.handoffResume = true
+        return result
+    }
+
+    public func activateHandoff(_ transfer: NativeConversationTransfer, conversation: HostedConversation) throws -> HostedConversation {
+        try NativeConversationTransferValidation.validate(transfer)
+        try detachForHandoff(conversation)
+        let home = providerHome("codex")
+        let destination = home.appendingPathComponent("sessions/memex-handoffs")
+            .appendingPathComponent(transfer.conversation.nativeSessionID + "-" + transfer.transcriptSHA256 + ".jsonl")
+        // This is called only after verified source commitment is durable in
+        // the host catalog. Exact-byte retries recover a crash during publish.
+        try persistNativeHistory(transfer.transcript, at: destination)
+        var result = conversation; result.transcriptPath = destination.path
+        try attachSource(result)
+        do {
+            let snapshot = try request("thread.snapshot", ["threadId": .string(result.id)])
+            if let previousWorkspace = snapshot["workspaceId"].string, previousWorkspace != result.workspaceID {
+                try service.relocateWorkspace(sessionID: result.id, expectedWorkspaceID: previousWorkspace, workspaceID: result.workspaceID)
+            }
+        } catch let error as HostFailure where error.code == "thread_not_found" {}
+        return result
+    }
+
+    private func persistNativeHistory(_ bytes: Data, at destination: URL) throws {
+        let directory = destination.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        guard directory.resolvingSymlinksInPath().path == directory.path else { throw HostFailure("source_denied", "Native history directory contains a symbolic link") }
+        if FileManager.default.fileExists(atPath: destination.path) {
+            guard try NativeConversationTransferValidation.read(destination) == bytes else { throw HostFailure("handoff_identity", "A different native history already exists at the transfer destination") }
+        } else {
+            try bytes.write(to: destination, options: .withoutOverwriting)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        }
+        let file = try FileHandle(forWritingTo: destination); try file.synchronize(); try file.close()
+        try NativeConversationRetirement.synchronizeDirectory(directory)
+        try NativeConversationRetirement.synchronizeDirectory(directory.deletingLastPathComponent())
+        try NativeConversationRetirement.synchronizeDirectory(directory.deletingLastPathComponent().deletingLastPathComponent())
+    }
+
+    public func relocate(_ conversation: HostedConversation, workspaceID: String, cwd: String) throws -> HostedConversation {
+        try detachForHandoff(conversation)
+        // Imported history may not have a runtime thread yet; its first resume
+        // creates one at the destination. Existing projections use the idle CAS.
+        do {
+            let snapshot = try request("thread.snapshot", ["threadId": .string(conversation.id)])
+            if snapshot["workspaceId"].string != workspaceID {
+                try service.relocateWorkspace(sessionID: conversation.id, expectedWorkspaceID: conversation.workspaceID, workspaceID: workspaceID)
+            }
+        } catch let error as HostFailure where error.code == "thread_not_found" {}
+        var result = conversation
+        result.workspaceID = workspaceID; result.cwd = cwd
+        result.handoffResume = true
+        return result
+    }
+
+    public func releaseHandoffFence(_ conversation: HostedConversation) throws {
+        guard conversation.providerInstanceID == conversation.provider + ":" + providerHome(conversation.provider).path else {
+            throw HostFailure("provider_identity", "Cannot release another provider home's native writer fence")
+        }
+        handoffFences.removeValue(forKey: conversation.id)
+    }
 
     private func binding(_ c: HostedConversation) -> AgentConversationBinding {
         AgentConversationBinding(sessionID: c.id, sourceID: nil, nativeSessionID: c.nativeSessionID,
@@ -159,11 +305,11 @@ public final class NativeExecutionProvider: ExecutionProvider {
     }
     private func attachSource(_ c: HostedConversation) throws {
         guard let path = c.transcriptPath, FileManager.default.fileExists(atPath: path) else { return }
-        if attachedSources.contains(c.id) { _ = try service.refresh(sessionID: c.id) }
+        if attachedSources[c.id] == path { _ = try service.refresh(sessionID: c.id) }
         else {
             _ = try service.addSource(agent: c.provider, format: "jsonl", url: URL(fileURLWithPath: path),
                 nativeNamespace: c.providerInstanceID, nativeSessionID: c.nativeSessionID, sessionID: c.id)
-            attachedSources.insert(c.id)
+            attachedSources[c.id] = path
         }
     }
     private func request(_ method: String, _ params: [String: HostValue]) throws -> HostValue {

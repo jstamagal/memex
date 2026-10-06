@@ -384,4 +384,68 @@ private actor QueueRuntime: ConversationRuntime {
         #expect(await runtime.disconnectCount == disconnects)
         await live.disconnect()
     }
+    @Test func reviewedTransferPreservesBytesAndFailureLeavesOriginalQueued() async throws {
+        let runtime = QueueRuntime()
+        let store = ConversationDraftStore()
+        let live = conversation(runtime, drafts: store)
+        let attachment = ConversationAttachment(id: "exact-id", title: "capture", path: "/changed/source", content: Data([0, 1, 255]))
+        #expect(live.replaceDraft(text: "Review before sending", attachments: [attachment]))
+        await live.enqueueDraft()
+        let entry = try #require(live.queue.first)
+        live.onTransferQueuedPrompt = { _, captured in
+            #expect(captured == entry)
+            throw ConversationRuntimeError(message: "Draft storage unavailable")
+        }
+        await live.transferQueuedPrompt(id: entry.id)
+        #expect(live.queue == [entry])
+        #expect(live.queueHeld)
+        #expect(await runtime.commands.isEmpty)
+        var saved: ConversationQueuedPrompt?
+        live.onTransferQueuedPrompt = { _, captured in saved = captured }
+        await live.transferQueuedPrompt(id: entry.id)
+        #expect(saved?.attachments == [attachment])
+        #expect(live.queue.isEmpty)
+        #expect(store.drafts[session.id]?.queue.isEmpty == true)
+        #expect(await runtime.commands.isEmpty)
+    }
+
+    @Test func explicitRestartWaitsForConfirmedStopAndSendsOneNewTurn() async throws {
+        let runtime = QueueRuntime()
+        let live = conversation(runtime)
+        await live.connect()
+        await runtime.emit(.init(connected: true, ready: true, running: true, canCancel: true))
+        try await wait { live.canInterruptAndRestart }
+        live.draft = "New turn, not steering"
+        let restarting = Task { await live.interruptAndRestartDraft() }
+        try await wait { live.status == "Stopping…" }
+        #expect(await runtime.commands.map(\.action) == [.cancel])
+        #expect(live.draft == "New turn, not steering")
+        await runtime.emit(.init(connected: true, ready: true, canCancel: true))
+        await restarting.value
+        #expect(await runtime.commands.map(\.action) == [.cancel, .prompt])
+        #expect(live.queueHeld)
+        await live.disconnect()
+    }
+
+    @Test func restartTimeoutAndEditedDraftNeverSend() async throws {
+        for edit in [false, true] {
+            let runtime = QueueRuntime()
+            let live = conversation(runtime, timeout: .milliseconds(80))
+            await live.connect()
+            await runtime.emit(.init(connected: true, ready: true, running: true, canCancel: true))
+            try await wait { live.canInterruptAndRestart }
+            live.draft = "Original"
+            let restarting = Task { await live.interruptAndRestartDraft() }
+            try await wait { live.status == "Stopping…" }
+            if edit {
+                live.draft = "Changed during stop"
+                await runtime.emit(.init(connected: true, ready: true, canCancel: true))
+            }
+            await restarting.value
+            #expect(await runtime.commands.map(\.action) == [.cancel])
+            #expect(live.draft == (edit ? "Changed during stop" : "Original"))
+            await live.disconnect()
+        }
+    }
+
 }

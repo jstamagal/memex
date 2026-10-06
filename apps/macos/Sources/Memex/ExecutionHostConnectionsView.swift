@@ -4,6 +4,7 @@ import MemexExecutionHostCore
 @MainActor
 struct ExecutionHostConnectionsView: View {
     var onOpen: (Session, ExecutionHostConnection, String) -> Void
+    var initialHostID: String? = nil
     @State private var connections = ExecutionHostConnections.shared
     @State private var selected: ExecutionHostConnection?
     @State private var endpoint = "http://127.0.0.1:6363"
@@ -19,14 +20,8 @@ struct ExecutionHostConnectionsView: View {
     @State private var provider = "codex"
     @State private var title = ""
     @State private var schedules: [HostValue] = []
-    @State private var scheduleID = UUID().uuidString
-    @State private var scheduleConversation = ""
-    @State private var scheduleText = ""
-    @State private var interval = 3600
-    @State private var fixedLocalTime = false
-    @State private var scheduleTime = "09:00"
-    @State private var scheduleDays: Set<Int> = [1, 2, 3, 4, 5]
-    @State private var scheduleTimeZone = TimeZone.current.identifier
+    @State private var scheduleRuns: [HostValue] = []
+    @State private var capabilities: Set<String> = []
     @State private var worktrees: [HostValue] = []
     @State private var supportsWorktrees = false
     @State private var repository = ""
@@ -76,7 +71,10 @@ struct ExecutionHostConnectionsView: View {
                         }
                     }.disabled(busy || token.isEmpty)
                 }
+                ExecutionHostSSHOnboardingView { host in run { try await load(host) } }
                 if let selected {
+                    RemoteWorkspaceHandoffView(connection: selected, conversations: conversations,
+                        workspaces: workspaces, onOpen: onOpen)
                     Section("Conversations on \(selected.name)") {
                         ForEach(conversations, id: \.identity) { conversation in
                             HStack {
@@ -111,68 +109,25 @@ struct ExecutionHostConnectionsView: View {
                         }.disabled(busy || workspace.isEmpty || !providers.contains(provider))
                     }
                     if supportsWorktrees { worktreeSection(selected) }
-                    Section("Schedules") {
-                        Text("Schedules run through this host's durable queue. Stopped or recovered queues stay held until explicitly resumed.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        ForEach(schedules, id: \.identity) { schedule in
-                            VStack(alignment: .leading) {
-                                Text(schedule["prompt"].string ?? "Scheduled prompt").lineLimit(2)
-                                Text("\(scheduleDescription(schedule)) · \(schedule["paused"].bool == true ? "Paused" : "Active")")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                HStack {
-                                    Button("Edit") {
-                                        scheduleID = schedule["id"].string ?? UUID().uuidString
-                                        scheduleConversation = schedule["conversationID"].string ?? ""
-                                        scheduleText = schedule["prompt"].string ?? ""
-                                        interval = Int(schedule["intervalSeconds"].number ?? 3600)
-                                        fixedLocalTime = schedule["wallClock"] != .null
-                                        if fixedLocalTime {
-                                            scheduleTime = schedule["wallClock"]["localTime"].string ?? "09:00"
-                                            scheduleDays = Set(schedule["wallClock"]["weekdays"].array.compactMap { $0.number.map(Int.init) })
-                                            scheduleTimeZone = schedule["wallClock"]["timeZone"].string ?? TimeZone.current.identifier
-                                        }
-                                    }
-                                    Button(schedule["paused"].bool == true ? "Resume" : "Pause") {
-                                        scheduleAction("pause", schedule, ["paused": .bool(schedule["paused"].bool != true)])
-                                    }
-                                    Button("Run now") { scheduleAction("run", schedule) }
-                                    Button("Delete", role: .destructive) { scheduleAction("delete", schedule) }
-                                }.buttonStyle(.borderless)
-                            }
-                        }
-                        Picker("Conversation", selection: $scheduleConversation) {
-                            Text("Choose a conversation").tag("")
-                            ForEach(conversations, id: \.identity) { Text($0["title"].string ?? "Conversation").tag($0["id"].string ?? "") }
-                        }
-                        TextField("Prompt", text: $scheduleText, axis: .vertical).lineLimit(3...6)
-                        Toggle("Fixed local time and weekdays", isOn: $fixedLocalTime)
-                        if fixedLocalTime {
-                            TextField("Local time (HH:mm)", text: $scheduleTime)
-                            TextField("Time zone", text: $scheduleTimeZone)
-                            HStack {
-                                ForEach(Array(Self.weekdays.enumerated()), id: \.offset) { index, day in
-                                    Toggle(day, isOn: Binding(get: { scheduleDays.contains(index + 1) }, set: { selected in
-                                        if selected { scheduleDays.insert(index + 1) } else { scheduleDays.remove(index + 1) }
-                                    }))
-                                }
-                            }
-                            Text("Daylight saving gaps and occurrences missed by more than a minute are skipped. Repeated local times run once.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        } else { TextField("Interval in seconds", value: $interval, format: .number) }
-                        Button("Save schedule") {
-                            run {
-                                var parameters: [String: HostValue] = ["scheduleId": .string(scheduleID),
-                                    "conversationId": .string(scheduleConversation), "text": .string(scheduleText)]
-                                if fixedLocalTime {
-                                    parameters["wallClock"] = .object(["localTime": .string(scheduleTime),
-                                        "weekdays": .array(scheduleDays.sorted().map { .number(Double($0)) }), "timeZone": .string(scheduleTimeZone)])
-                                } else { parameters["intervalSeconds"] = .number(Double(interval)) }
-                                _ = try await connections.client(selected).call("schedule.upsert", params: parameters, mutation: true)
-                                scheduleID = UUID().uuidString; scheduleText = ""
+                    ExecutionSchedulesView(schedules: schedules, runs: scheduleRuns, conversations: conversations,
+                        workspaces: workspaces, providers: providers, capabilities: capabilities, busy: busy,
+                        perform: { method, parameters in
+                            guard !busy else { return false }
+                            busy = true; error = nil
+                            defer { busy = false }
+                            do {
+                                _ = try await connections.client(selected).call(method, params: parameters, mutation: true)
                                 try await load(selected)
+                                return true
+                            } catch { self.error = error.localizedDescription; return false }
+                        }, openConversation: { id in
+                            guard let conversation = conversations.first(where: { $0["id"].string == id }) else {
+                                error = "This run’s exact conversation is unavailable. Refresh the host to retry."; return
                             }
-                        }.disabled(busy || scheduleConversation.isEmpty || scheduleText.isEmpty || (fixedLocalTime ? scheduleDays.isEmpty || scheduleTime.isEmpty || scheduleTimeZone.isEmpty : interval < 60))
-                    }
+                            do { onOpen(try RemoteConversationRuntime.session(conversation, connection: selected), selected, id) }
+                            catch { self.error = error.localizedDescription }
+                        })
+                        .id(selected.id)
                     if !pending.isEmpty {
                         Section("Outgoing commands awaiting a receipt") {
                             Text("Keep the original command identity when checking or retrying. An uncertain host receipt requires inspecting the native conversation.")
@@ -207,6 +162,17 @@ struct ExecutionHostConnectionsView: View {
                 if busy { ProgressView() }
             }.formStyle(.grouped)
         }.frame(minWidth: 560, idealWidth: 680, minHeight: 560)
+        .task(id: initialHostID) {
+            guard let initialHostID, selected?.id != initialHostID else { return }
+            guard let host = connections.hosts.first(where: { $0.id == initialHostID }) else {
+                error = "Pair this schedule's execution host again to inspect its runs."
+                return
+            }
+            busy = true
+            defer { busy = false }
+            do { try await load(host) }
+            catch { self.error = error.localizedDescription }
+        }
         .confirmationDialog("Mark this outgoing command reconciled?", isPresented: Binding(
             get: { reconciling != nil }, set: { if !$0 { reconciling = nil } }
         )) {
@@ -239,10 +205,12 @@ struct ExecutionHostConnectionsView: View {
         let nextConversations = try await client.call("conversation.list").array
         let nextWorkspaces = try await client.call("workspace.list").array
         let nextSchedules = try await client.call("schedule.list").array
+        let nextCapabilities = Set(info["capabilities"].array.compactMap(\.string))
+        let nextRuns = nextCapabilities.contains("schedules.runs") ? try await client.call("schedule.runs").array : []
         let nextPending = try await client.pending()
         let nextWorktrees = info["capabilities"].array.contains(.string("worktree.lifecycle")) ? try await client.call("worktree.list").array : []
         selected = host; conversations = nextConversations; workspaces = nextWorkspaces; schedules = nextSchedules; pending = nextPending
-        worktrees = nextWorktrees
+        worktrees = nextWorktrees; capabilities = nextCapabilities; scheduleRuns = nextRuns
         supportsWorktrees = info["capabilities"].array.contains(.string("worktree.lifecycle"))
         providers = info["providers"].array.compactMap(\.string)
         if !providers.contains(provider) { provider = providers.first ?? "" }
@@ -251,18 +219,6 @@ struct ExecutionHostConnectionsView: View {
             repository = workspaces.first(where: { $0["worktreeID"] == .null })?["id"].string ?? ""
         }
     }
-    private static let weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    private func scheduleDescription(_ schedule: HostValue) -> String {
-        let clock = schedule["wallClock"]
-        guard clock != .null else { return "Every \(Int(schedule["intervalSeconds"].number ?? 0)) seconds" }
-        let days = clock["weekdays"].array.compactMap { value -> String? in
-            guard let value = value.number, (1...7).contains(value) else { return nil }
-            return Self.weekdays[Int(value) - 1]
-        }.joined(separator: ", ")
-        return "\(days) at \(clock["localTime"].string ?? "") · \(clock["timeZone"].string ?? "")"
-    }
-
     @ViewBuilder private func worktreeSection(_ host: ExecutionHostConnection) -> some View {
         Section("Managed worktrees") {
             Text("Create from an explicitly registered repository root. Archive keeps every file. Cleanup refuses dirty or ignored files and retained chat references.")
@@ -311,14 +267,6 @@ struct ExecutionHostConnectionsView: View {
         run {
             var parameters = fields; parameters["worktreeId"] = tree["id"]
             _ = try await connections.client(selected).call("worktree." + action, params: parameters, mutation: true)
-            try await load(selected)
-        }
-    }
-    private func scheduleAction(_ action: String, _ schedule: HostValue, _ fields: [String: HostValue] = [:]) {
-        guard let selected else { return }
-        run {
-            var params = fields; params["scheduleId"] = schedule["id"]
-            _ = try await connections.client(selected).call("schedule." + action, params: params, mutation: true)
             try await load(selected)
         }
     }

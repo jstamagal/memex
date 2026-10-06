@@ -132,6 +132,12 @@ struct ProjectSetupView: View {
             WorkspaceLifecycleView(client: store.workspaceClient, referencedDirectories: {
                 store.createdConversations.contexts.values.map { $0.workspace.workingDirectory }
                     + store.sessions.filter { $0.machineID == "local" }.compactMap { $0.cwd.map { URL(fileURLWithPath: $0) } }
+            }, isWorkspaceBusy: { workspace in
+                let path = workspace.workingDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+                return store.workspaceTerminals.needsCloseConfirmation || store.liveConversations.sessions.values.contains { live in
+                    guard store.canAccessLocalFiles(for: live.session), let cwd = live.session.cwd else { return false }
+                    return live.isWorking && URL(fileURLWithPath: cwd).standardizedFileURL.resolvingSymlinksInPath().path == path
+                }
             }) { workspace in
                 selectedID = nil
                 directory = workspace.workingDirectory

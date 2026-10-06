@@ -100,6 +100,14 @@ extension ManagedWorkspaceStore {
         guard current == branch else { throw WorkspaceGitError(message: "The checkout changed branches. Keep it or reattach it explicitly before cleanup.") }
         let status = try WorkspaceGitCommand.text(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"], command: command)
         guard status.isEmpty else { throw WorkspaceGitError(message: "This checkout contains staged, unstaged, untracked or ignored files. Cleanup was refused; archive it to retain those files.") }
+        _ = try captureSnapshot(workspace, isBusy: isBusy, command: command)
+        // Snapshot creation can take time. Recheck eligibility before the
+        // non-forced Git removal; preserve the snapshot if cleanup is refused.
+        let finalStatus = try WorkspaceGitCommand.text(checkout, ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored"], command: command)
+        guard finalStatus.isEmpty,
+              try WorkspaceGitCommand.text(checkout, ["branch", "--show-current"], command: command) == branch else {
+            throw WorkspaceGitError(message: "The checkout changed while capturing its snapshot. Snapshot saved; cleanup was refused.")
+        }
         _ = try WorkspaceGitCommand.text(repository, ["worktree", "remove", "--", checkout.path], command: command, timeout: 120)
         var lifecycle = try Self.readLifecycle(workspace)
         lifecycle.removed = true

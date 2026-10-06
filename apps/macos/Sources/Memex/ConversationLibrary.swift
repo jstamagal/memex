@@ -26,14 +26,24 @@ final class ConversationLibrary {
         var archived = false
         var removed = false
         var order: Int?
+        var sectionID: String?
+        var unread: Bool?
+    }
+
+    struct CustomSection: Codable, Equatable, Identifiable {
+        var id: String
+        var name: String
     }
 
     private struct Saved: Codable {
-        var version = 1
+        var version = 2
         var entries: [String: Entry] = [:]
+        // Optional on disk so version 1 organization files migrate without loss.
+        var sections: [CustomSection]?
     }
 
     private(set) var entries: [String: Entry] = [:]
+    private(set) var sections: [CustomSection] = []
     private(set) var error: String?
     @ObservationIgnored private let directory: URL?
 
@@ -50,7 +60,9 @@ final class ConversationLibrary {
     func reload() {
         guard let directory else { return }
         do {
-            entries = try read(directory).entries
+            let saved = try read(directory)
+            entries = saved.entries
+            sections = saved.sections ?? []
             error = nil
         } catch {
             self.error = "Conversation organization could not be read. Saved metadata has been preserved. \(error.localizedDescription)"
@@ -59,6 +71,66 @@ final class ConversationLibrary {
 
     func title(for session: Session) -> String { entries[session.id]?.title ?? session.title }
     func isPinned(_ session: Session) -> Bool { entries[session.id]?.pinned == true }
+    func isUnread(_ session: Session) -> Bool { entries[session.id]?.unread == true }
+    func sectionID(for session: Session) -> String? { entries[session.id]?.sectionID }
+
+    @discardableResult
+    func markRead(_ sessions: [Session], read: Bool) -> Bool {
+        update(sessions) { $0.unread = !read }
+    }
+
+    @discardableResult
+    func createSection(named name: String) -> Bool {
+        guard let name = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else { return false }
+        return mutate { saved in
+            var sections = saved.sections ?? []
+            sections.append(CustomSection(id: UUID().uuidString, name: name))
+            saved.sections = sections
+        }
+    }
+
+    @discardableResult
+    func renameSection(_ id: String, to name: String) -> Bool {
+        guard let name = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank else { return false }
+        return mutate { saved in
+            guard let index = saved.sections?.firstIndex(where: { $0.id == id }) else { return }
+            saved.sections?[index].name = name
+        }
+    }
+
+    /// Deleting a section returns its chats to the ordinary list; their other metadata survives.
+    @discardableResult
+    func deleteSection(_ id: String) -> Bool {
+        mutate { saved in
+            saved.sections?.removeAll { $0.id == id }
+            for key in Array(saved.entries.keys) where saved.entries[key]?.sectionID == id {
+                saved.entries[key]?.sectionID = nil
+            }
+        }
+    }
+
+    @discardableResult
+    func move(_ sessions: [Session], toSection id: String?) -> Bool {
+        mutate { saved in
+            // Validate against the locked, freshly loaded metadata, not a stale window snapshot.
+            guard id == nil || saved.sections?.contains(where: { $0.id == id }) == true else { return }
+            for session in sessions {
+                Self.capture(session, in: &saved)
+                saved.entries[session.id]?.sectionID = id
+            }
+        }
+    }
+
+    @discardableResult
+    func moveSection(_ id: String, by offset: Int) -> Bool {
+        mutate { saved in
+            guard var sections = saved.sections, let index = sections.firstIndex(where: { $0.id == id }),
+                  sections.indices.contains(index + offset) else { return }
+            sections.swapAt(index, index + offset)
+            saved.sections = sections
+        }
+    }
+
     func savedSession(id: String) -> Session? { entries[id]?.session }
 
     @discardableResult
@@ -168,7 +240,7 @@ final class ConversationLibrary {
         let file = directory.appendingPathComponent("organization.json")
         do {
             let saved = try JSONDecoder().decode(Saved.self, from: Data(contentsOf: file))
-            guard saved.version == 1 else { throw CocoaError(.fileReadCorruptFile) }
+            guard (1...2).contains(saved.version) else { throw CocoaError(.fileReadCorruptFile) }
             return saved
         } catch let failure as CocoaError where failure.code == .fileReadNoSuchFile {
             return Saved()
@@ -190,14 +262,17 @@ final class ConversationLibrary {
                 defer { _ = flock(descriptor, LOCK_UN) }
                 var saved = try read(directory)
                 body(&saved)
+                saved.version = 2
                 let file = directory.appendingPathComponent("organization.json")
                 try JSONEncoder().encode(saved).write(to: file, options: [.atomic])
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
                 entries = saved.entries
+                sections = saved.sections ?? []
             } else {
-                var saved = Saved(entries: entries)
+                var saved = Saved(entries: entries, sections: sections)
                 body(&saved)
                 entries = saved.entries
+                sections = saved.sections ?? []
             }
             error = nil
             return true

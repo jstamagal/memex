@@ -3,7 +3,7 @@ import Foundation
 import WebKit
 
 enum WorkspaceBrowserCapability: String, Codable, CaseIterable, Hashable, Sendable {
-    case snapshot, click, type, scroll, evaluate
+    case snapshot, click, type, scroll, evaluate, navigate, back, forward, reload, wait, key, selectTab, record, stopRecording
 }
 
 struct WorkspaceBrowserAutomationGrant: Codable, Equatable, Sendable {
@@ -19,6 +19,11 @@ struct WorkspaceBrowserAutomationRequest: Codable, Sendable {
     let conversationID: String
     let tabID: UUID
     let action: WorkspaceBrowserCapability
+    var durationSeconds: Int? = nil
+    var framesPerSecond: Int? = nil
+    var url: String? = nil
+    var key: String? = nil
+    var timeoutMilliseconds: Int? = nil
     var selector: String? = nil
     var text: String? = nil
     var x: Double? = nil
@@ -33,6 +38,7 @@ struct WorkspaceBrowserCapture: Codable, Sendable {
     let title: String
     let text: String
     var pngData: Data? = nil
+    var recording: WorkspaceBrowserRecordingArtifact? = nil
 }
 
 struct WorkspaceBrowserHostDescriptor: Codable, Sendable {
@@ -58,21 +64,27 @@ struct WorkspaceBrowserAutomationError: LocalizedError {
 /// Grants are explicit UI decisions, scoped to a chat, and never persisted.
 @MainActor final class WorkspaceBrowserAutomationHost {
     let id = UUID()
+    private var recordings: [String: [UUID: WorkspaceBrowserRecording]] = [:]
     private var groups: [String: WorkspaceBrowserTabs] = [:]
 
     func register(_ group: WorkspaceBrowserTabs) { groups[group.conversationID] = group }
     func unregister(conversationID: String) {
-        groups.removeValue(forKey: conversationID)?.automationGrant = nil
+        revoke(conversationID: conversationID)
+        groups.removeValue(forKey: conversationID)
     }
 
     @discardableResult func allow(conversationID: String, capabilities: Set<WorkspaceBrowserCapability>) throws -> WorkspaceBrowserAutomationGrant {
         guard let group = groups[conversationID] else { throw failure("This conversation has no registered browser host.") }
+        revoke(conversationID: conversationID)
         let grant = WorkspaceBrowserAutomationGrant(id: UUID(), hostID: id, conversationID: conversationID, capabilities: capabilities)
         group.automationGrant = grant
         return grant
     }
 
-    func revoke(conversationID: String) { groups[conversationID]?.automationGrant = nil }
+    func revoke(conversationID: String) {
+        groups[conversationID]?.automationGrant = nil
+        recordings.removeValue(forKey: conversationID)?.values.forEach { $0.cancel() }
+    }
 
     /// Call after the transport authenticates and authorizes the requesting
     /// conversation. Ungranted conversations disclose no tab metadata.
@@ -91,11 +103,70 @@ struct WorkspaceBrowserAutomationError: LocalizedError {
         guard let session = group.sessions.first(where: { $0.id == request.tabID }) else {
             throw failure("The requested app-owned tab is no longer registered.")
         }
-        guard let url = session.currentURL, WorkspaceBrowserAddress.allowsNavigation(to: url) else {
+        guard request.action == .navigate || request.action == .selectTab || request.action == .stopRecording || (session.currentURL.map(WorkspaceBrowserAddress.allowsNavigation(to:)) ?? false) else {
             throw failure("Open an HTTP or HTTPS page in the app browser first.")
         }
         var result: String
+        var recordingArtifact: WorkspaceBrowserRecordingArtifact?
+        var delivered = false
+        defer {
+            if !delivered, let recordingArtifact { try? FileManager.default.removeItem(atPath: recordingArtifact.path) }
+        }
         switch request.action {
+        case .record:
+            guard recordings[request.conversationID]?[session.id] == nil else { throw failure("This tab already has a recording in progress.") }
+            let recording = WorkspaceBrowserRecording()
+            recordings[request.conversationID, default: [:]][session.id] = recording
+            defer { recordings[request.conversationID]?[session.id] = nil }
+            recordingArtifact = try await recording.record(session: session, duration: request.durationSeconds ?? 3,
+                fps: request.framesPerSecond ?? 3) {
+                    group.automationGrant?.id == request.grantID && group.sessions.contains(where: { $0 === session })
+                }
+            result = "Recorded this app-owned viewport to a temporary MP4 on the desktop host."
+        case .stopRecording:
+            recordings[request.conversationID]?[session.id]?.cancel()
+            result = "Recording cancelled; partial artifact removed."
+        case .navigate:
+            guard let address = request.url, let url = WorkspaceBrowserAddress.url(from: address), session.navigate(to: url) else {
+                throw failure("Provide an HTTP or HTTPS destination without credentials.")
+            }
+            result = "Navigation requested; use wait before reading the destination."
+        case .back:
+            guard session.canGoBack else { throw failure("No previous page.") }
+            session.goBack(); result = "Back navigation requested."
+        case .forward:
+            guard session.canGoForward else { throw failure("No next page.") }
+            session.goForward(); result = "Forward navigation requested."
+        case .reload:
+            session.reload(); result = "Reload requested."
+        case .selectTab:
+            group.selectedID = session.id; result = "Selected tab."
+        case .wait:
+            let milliseconds = request.timeoutMilliseconds ?? 5000
+            guard (1...10000).contains(milliseconds) else { throw failure("Wait timeout must be between 1 and 10000 milliseconds.") }
+            let deadline = Date().addingTimeInterval(Double(milliseconds) / 1000)
+            while true {
+                try Task.checkCancellation()
+                guard group.automationGrant?.id == request.grantID, group.sessions.contains(where: { $0 === session }) else {
+                    throw failure("Browser access was revoked.")
+                }
+                let ready = try await session.runBrowserScript("return document.readyState === 'complete' && (!selector || !!document.querySelector(selector)) ? 'ready' : 'waiting';", arguments: ["selector": request.selector ?? ""])
+                if !session.isLoading && ready == "ready" { break }
+                guard Date() < deadline else { throw failure("Timed out waiting for the page or selector.") }
+                try await Task.sleep(for: .milliseconds(50))
+            }
+            result = "Page and requested selector are ready."
+        case .key:
+            guard let key = request.key, ["Enter", "Escape", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Backspace", "Delete", "Home", "End"].contains(key) else {
+                throw failure("Unsupported DOM key. Supported: Enter, Escape, Tab, arrows, Backspace, Delete, Home, End.")
+            }
+            result = try await session.runBrowserScript("""
+                const e = selector ? document.querySelector(selector) : document.activeElement;
+                if (!e) throw new Error('Element not found'); e.focus();
+                e.dispatchEvent(new KeyboardEvent('keydown', {key,bubbles:true,cancelable:true}));
+                e.dispatchEvent(new KeyboardEvent('keyup', {key,bubbles:true,cancelable:true}));
+                return 'Dispatched DOM key events; untrusted events do not invoke native browser shortcuts or default editing.';
+                """, arguments: ["selector": request.selector ?? "", "key": key])
         case .snapshot:
             result = try await session.pageContext(selector: request.selector)
         case .click:
@@ -128,9 +199,10 @@ struct WorkspaceBrowserAutomationError: LocalizedError {
               group.sessions.contains(where: { $0 === session }) else { throw failure("Browser access was revoked.") }
         result = String(result.prefix(131_072))
         let png = request.includeScreenshot == true ? try await session.screenshot() : nil
-        guard group.automationGrant?.id == request.grantID else { throw failure("Browser access was revoked.") }
+        guard group.automationGrant?.id == request.grantID, group.sessions.contains(where: { $0 === session }) else { throw failure("Browser access was revoked.") }
+        delivered = true
         return WorkspaceBrowserCapture(tabID: session.id, url: session.currentURL?.absoluteString ?? "",
-                                       title: session.title, text: result, pngData: png)
+                                       title: session.title, text: result, pngData: png, recording: recordingArtifact)
     }
 
     private func selector(_ request: WorkspaceBrowserAutomationRequest) throws -> String {

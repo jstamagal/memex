@@ -20,9 +20,10 @@ struct WorkspaceReviewContext: Sendable, Equatable {
     let scope: String
     let patch: String
     let comment: String
+    var sourceURL: URL? = nil
 
     var promptText: String {
-        "Review \(directory.appendingPathComponent(path).path) (\(scope))\n\(comment)\n\n```diff\n\(patch)\n```"
+        "Review \(sourceURL?.absoluteString ?? directory.appendingPathComponent(path).path) (\(scope))\n\(comment)\n\n```diff\n\(patch)\n```"
     }
 }
 

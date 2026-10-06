@@ -51,4 +51,26 @@ import Testing
         #expect(store.drafts["session"]?.text == "new draft")
         #expect(try Data(contentsOf: file) == original)
     }
+
+    @Test func openingAViewerPersistsCompleteRecoveredIntentWithoutAnotherEdit() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ConversationDraftStore(directory: directory)
+        let session = Session(source: "codex", sessionID: "saved-intent", sourcePath: "/saved/native.jsonl", project: "saved")
+        let attachment = ConversationAttachment(id: "captured", title: "Evidence", path: "/gone/file", content: Data([0, 1, 255]))
+        var pending = ConversationPendingPrompt(.init(.prompt, text: "Unconfirmed", attachments: [attachment], id: "pending"))
+        pending.phase = .awaitingConfirmation
+        let queued = ConversationQueuedPrompt(.init(.prompt, text: "Later", attachments: [attachment], id: "queued"))
+        store.set(.init(text: "Unsent", deliveryUncertain: true, attachments: [attachment],
+                        pendingPrompt: pending, queue: [queued]), for: session.id)
+        await store.flush()
+
+        let live = LiveConversation(session: session, checkOwnership: { _ in false }, drafts: store)
+        #expect(!live.snapshot.connected)
+        await store.flush()
+        pending.phase = .uncertain
+        let recovered = try #require(ConversationDraftStore(directory: directory).drafts[session.id])
+        #expect(recovered == .init(text: "Unsent", deliveryUncertain: true, attachments: [attachment],
+                                  pendingPrompt: pending, queue: [queued], queueHeld: true))
+    }
 }

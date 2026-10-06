@@ -26,3 +26,17 @@ extension ConversationWorkspaceClient {
         try await WorkspaceGitCommand.run { try store.reattach(workspace, command: $0) }
     }
 }
+
+
+extension ConversationWorkspaceClient {
+    func snapshots(_ workspace: ConversationWorkspace) async throws -> [MemexExecutionHostCore.ManagedWorkspaceSnapshot] {
+        try await WorkspaceGitCommand.run { try store.snapshots(workspace, command: $0) }
+    }
+    func captureSnapshot(_ workspace: ConversationWorkspace, isBusy: Bool) async throws {
+        _ = try await WorkspaceGitCommand.run { try store.captureSnapshot(workspace, isBusy: isBusy, command: $0) }
+    }
+    func recoverSnapshot(_ snapshot: MemexExecutionHostCore.ManagedWorkspaceSnapshot,
+                         workspace: ConversationWorkspace) async throws -> ConversationWorkspace {
+        try await WorkspaceGitCommand.run { try store.recoverSnapshot(snapshot, workspace: workspace, command: $0) }
+    }
+}

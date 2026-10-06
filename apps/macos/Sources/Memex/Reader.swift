@@ -114,7 +114,8 @@ struct ReaderView: View {
                                  onLoadEarlier: { live.loadEarlierRecords() },
                                  findQuery: find?.isOpen == true ? find?.query ?? "" : "",
                                  findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
-                                 rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session), sourcePath: session.sourcePath,
+                                 rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session),
+                                 mcpAppTransport: live.snapshot.connected ? live.snapshot.mcpAppConnection?.transport : nil, sourcePath: session.sourcePath,
                                  requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
                                  followLatest: true, bottomInset: footerHeight)
             } else {

@@ -81,6 +81,47 @@ actor WorkspaceFilesClient {
 
     func fileURL(root: URL, path: String) throws -> URL { try resolve(root: root, path: path) }
 
+    /// Publish a fully written initial document without replacing an existing
+    /// file. The hard link is atomic and exclusive across actors and processes;
+    /// readers never observe a placeholder or partially written document.
+    func openOrCreate(root: URL, name: String, contents: String) throws -> WorkspaceFileRevision {
+        guard !name.isEmpty, name != ".", name != "..", name != ".git", !name.contains("/"), !name.contains("\0") else {
+            throw WorkspaceFileError.outsideWorkspace
+        }
+        let parent = try resolve(root: root, path: "", allowDirectory: true)
+        do { return try read(root: parent, path: name) }
+        catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {}
+        let bytes = Data(contents.utf8)
+        guard bytes.count <= Self.maximumBytes else { throw WorkspaceFileError.tooLarge }
+        guard !bytes.contains(0) else { throw WorkspaceFileError.unsupported }
+        let directory = Darwin.open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
+        guard directory >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { Darwin.close(directory) }
+        let temporary = ".plan-initial-" + UUID().uuidString
+        let descriptor = openat(directory, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        guard descriptor >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer {
+            Darwin.close(descriptor)
+            _ = unlinkat(directory, temporary, 0)
+        }
+        try bytes.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let count = Darwin.write(descriptor, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if count < 0 && errno == EINTR { continue }
+                guard count > 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+                offset += count
+            }
+        }
+        guard fsync(descriptor) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        if linkat(directory, temporary, directory, name, 0) != 0 {
+            // Only a competing successful initialization or an existing user
+            // file may win. Disk/permission failures must not become success.
+            guard errno == EEXIST else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        }
+        return try read(root: parent, path: name)
+    }
+
     func create(root: URL, folder: String, name: String, isDirectory: Bool) throws -> String {
         guard !name.isEmpty, name != ".", name != "..", name != ".git", !name.contains("/"), !name.contains("\0") else {
             throw WorkspaceFileError.outsideWorkspace
