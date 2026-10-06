@@ -72,7 +72,7 @@ extension Store {
             guard let raw = payload["panel"]?.string, let panel = WorkspacePanel(rawValue: raw) else {
                 throw HostFailure("invalid_params", "Use a panel ID returned by describe")
             }
-            guard panel == .browser || hasSelectedWorkspace else {
+            guard panel == .tools || panel == .browser || hasSelectedWorkspace else {
                 throw HostFailure("capability_unavailable", "This conversation has no accessible workspace")
             }
             selectWorkspacePanel(panel)

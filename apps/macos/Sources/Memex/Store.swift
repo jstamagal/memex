@@ -54,7 +54,20 @@ final class Store {
     var startingConversation = false
     var newConversationError: String?
     var showingWorkspaceChanges = false
-    var workspacePanel = WorkspacePanel.changes
+    private var workspacePanelNavigation: [String: WorkspacePanelNavigation] = [:]
+    var workspacePanel: WorkspacePanel {
+        get { selectedID.flatMap { workspacePanelNavigation[$0]?.selection } ?? .tools }
+        set {
+            guard let selectedID else { return }
+            var navigation = workspacePanelNavigation[selectedID] ?? WorkspacePanelNavigation()
+            navigation.selection = newValue
+            if newValue != .tools, !navigation.panels.contains(newValue) { navigation.panels.append(newValue) }
+            workspacePanelNavigation[selectedID] = navigation
+        }
+    }
+    var openWorkspacePanels: [WorkspacePanel] {
+        selectedID.flatMap { workspacePanelNavigation[$0]?.panels } ?? []
+    }
     var showingTerminalDrawer = false
     private(set) var terminalFocusRequest = 0
     private(set) var workspaceChangeReviewRequest = UUID()
@@ -207,11 +220,31 @@ final class Store {
     }
 
     enum WorkspacePanel: String, CaseIterable, Identifiable {
-        case changes, files, browser, terminal
+        case tools, changes, files, browser, terminal
         var id: String { rawValue }
         var title: String {
-            switch self { case .changes: "Changes"; case .files: "Files"; case .browser: "Browser"; case .terminal: "Terminal" }
+            switch self {
+            case .tools: "Tools"
+            case .changes: "Changes"
+            case .files: "Files"
+            case .browser: "Browser"
+            case .terminal: "Terminal"
+            }
         }
+        var symbol: String {
+            switch self {
+            case .tools: "square.grid.2x2"
+            case .changes: "doc.text.magnifyingglass"
+            case .files: "folder"
+            case .browser: "globe"
+            case .terminal: "terminal"
+            }
+        }
+    }
+
+    private struct WorkspacePanelNavigation {
+        var selection = WorkspacePanel.tools
+        var panels: [WorkspacePanel] = []
     }
 
     var selected: Session? {
@@ -281,6 +314,16 @@ final class Store {
             showingTerminalDrawer = false
             terminalFocusRequest += 1
         }
+    }
+
+    func closeWorkspacePanel(_ panel: WorkspacePanel) {
+        guard let selectedID, var navigation = workspacePanelNavigation[selectedID],
+              let index = navigation.panels.firstIndex(of: panel) else { return }
+        navigation.panels.remove(at: index)
+        let wasSelected = navigation.selection == panel
+        if wasSelected { navigation.selection = navigation.panels.last ?? .tools }
+        workspacePanelNavigation[selectedID] = navigation
+        if wasSelected { selectWorkspacePanel(navigation.selection) }
     }
 
     func toggleWorkspacePanel() {

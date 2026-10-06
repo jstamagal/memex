@@ -129,6 +129,12 @@ running execution-host sessions are detached from the viewer.
 
 ## Projects, files, and changes
 
+Each conversation's right pane starts with a **Tools** grid for Terminal, Files,
+Browser, and Changes. Opening a tool adds its tab; **+** returns to the grid.
+Open tools and the selected tab are retained separately for each conversation
+while the app is open. Closing the last tab returns to the grid. Returning to the
+grid keeps file drafts, browser tabs, and workspace shells intact.
+
 **Add New Project** supports an existing folder, named new repository, or clone.
 Project controls can reuse a checkout and explicitly run its setup script. Failed
 setup/clone state retains its files for inspection and retry. Managed worktree

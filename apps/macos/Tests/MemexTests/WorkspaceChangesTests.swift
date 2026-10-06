@@ -62,7 +62,7 @@ private struct WorkspaceFixture {
     #expect(origin.y > 0)
     let browser = store.workspaceBrowser.session(for: session.id)
     browser.addressText = "localhost:4000/unfinished"
-    for panel in [Store.WorkspacePanel.browser, .changes, .browser, .changes] {
+    for panel in [Store.WorkspacePanel.tools, .browser, .tools, .changes, .browser, .changes] {
         store.workspacePanel = panel
         try await Task.sleep(for: .milliseconds(30))
         host.layoutSubtreeIfNeeded()
