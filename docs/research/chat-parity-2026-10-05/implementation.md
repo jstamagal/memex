@@ -61,8 +61,21 @@ the final immutable package and installed-app checks are recorded below.
   disposable Codex probe verified that retired history cannot be resumed by its
   original UUID or path after restart.
 - Focused web schedule tests, web typecheck/production build, Rust formatting and
-  Clippy passed. Final immutable dependency locks, packaged app verification and
-  installed-app acceptance remain pending.
+  Clippy passed. CI found streaming selection loss. Font descriptor comparison
+  now prevents equivalent system fonts from triggering a full reload, while real
+  font-size changes still invalidate layout. Both streaming cases, including a
+  recreated font, and the font-size regression passed locally.
+- The final runtime lock is `1671045ec81e37a133b4e829e3d04fdf572cf11a`.
+  Locked preparation, native packaging, strict code-signature verification and a
+  packaged execution-host/control-MCP round trip passed. The installed
+  `/Applications/Memex.app` executable matches the packaged executable and
+  launched successfully; Home and the inline attachment/dictation menu were
+  inspected. Appearance and keyboard settings were also inspected during this
+  delivery. Providers & Tools live inspection was limited by a native UI-tool
+  pipe failure; the app remained alive, and its component tests passed.
+- Private runtime CI at the locked revision is blocked before execution by the
+  GitHub account billing/spending limit. This is separate from the passing local
+  runtime validation above.
 
 Prior baseline UI or embedding-test failures are not attributed to these changes
 without reproduction. Source-based boundaries and fixture tests are not claims
