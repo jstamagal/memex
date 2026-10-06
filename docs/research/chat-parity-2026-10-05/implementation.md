@@ -39,8 +39,9 @@ the final immutable package and installed-app checks are recorded below.
 
 ## Acceptance status
 
-- Runtime agent-runtime checks and SQACP tests passed before final source formatting;
-  the latter included 377 tests (two existing gated skips) and five real WebKit tests.
+- Runtime agent-runtime checks passed. Final merged SQACP checks passed 383 tests
+  (two existing gated skips) and five real WebKit tests. Deterministic closed-input
+  regressions cover the repaired native provider SIGPIPE crash on both transports.
 - The first native history-only pass verified provider tools/configuration,
   schedules, library metadata, desktop grants, appearance, snapshots and PR context.
 - Final runtime-enabled native validation passed in complementary runs: 481

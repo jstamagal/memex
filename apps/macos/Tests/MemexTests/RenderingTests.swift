@@ -5,7 +5,8 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct RenderingTests {
-    @Test func streamingRetainsExistingCellsAndSelectionWhileUpdatingContentAndHeight() throws {
+    @Test(arguments: [false, true])
+    func streamingRetainsExistingCellsAndSelectionWhileUpdatingContentAndHeight(recreateFonts: Bool) throws {
         let controller = TranscriptController()
         let window = readerWindow(controller)
         defer { window.close() }
@@ -29,7 +30,11 @@ struct RenderingTests {
         records[1] = TranscriptRecord(recordID: "stream-1", record: Message(role: "assistant",
             text: "Streaming a longer answer.\n\nSecond paragraph.\n\nThird paragraph.",
             toolName: nil, toolInput: nil, toolOutput: nil))
-        controller.update(sessionID: "stream", records: records, provider: "codex", followLatest: true)
+        let bodyFont = NSFont.systemFont(ofSize: 14)
+        let codeFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        controller.update(sessionID: "stream", records: records, provider: "codex", followLatest: true,
+            bodyFont: recreateFonts ? try #require(NSFont(descriptor: bodyFont.fontDescriptor, size: 14)) : bodyFont,
+            codeFont: recreateFonts ? try #require(NSFont(descriptor: codeFont.fontDescriptor, size: 12)) : codeFont)
         pump(window)
         #expect(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true) === firstCell)
         #expect(firstText.selectedRange() == selected)
@@ -45,6 +50,21 @@ struct RenderingTests {
         #expect(controller.table.numberOfRows == 3)
         #expect(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true) === firstCell)
         #expect(firstText.selectedRange() == selected)
+    }
+
+    @Test func fontPreferenceChangesRemeasureExistingText() {
+        let controller = TranscriptController()
+        controller.view.frame = NSRect(x: 0, y: 0, width: 700, height: 600)
+        let records = [TranscriptRecord(recordID: "font", record: Message(role: "assistant",
+            text: "The same answer at a larger reading size.", toolName: nil, toolInput: nil, toolOutput: nil))]
+        controller.update(sessionID: "font", records: records, provider: "codex", followLatest: true)
+        let original = controller.measurement(at: 0)
+        controller.update(sessionID: "font", records: records, provider: "codex", followLatest: true,
+            bodyFont: .systemFont(ofSize: 24))
+        let enlarged = controller.measurement(at: 0)
+        #expect(enlarged.font.pointSize == 24)
+        #expect(enlarged.height > original.height)
+        #expect(enlarged.body == original.body)
     }
 
     @Test func messagesUseUnlabelledContentSizedBubblesAndKeepAccessibleSpeakers() throws {

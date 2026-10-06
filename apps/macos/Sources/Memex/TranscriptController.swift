@@ -211,7 +211,11 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
             scrollView.contentInsets.bottom = self.bottomInset
             scrollView.scrollerInsets.bottom = self.bottomInset
         }
-        let changedFonts = self.bodyFont != bodyFont || self.codeFont != codeFont
+        // Compare typography, not resolved NSFont instances: AppKit can recreate
+        // system fonts between updates without changing the requested descriptor.
+        // A spurious change here reloads every row and drops text selections.
+        let changedFonts = self.bodyFont.fontDescriptor != bodyFont.fontDescriptor
+            || self.codeFont.fontDescriptor != codeFont.fontDescriptor
         self.bodyFont = bodyFont
         self.codeFont = codeFont
         let changedTransport = self.mcpAppTransport != mcpAppTransport
