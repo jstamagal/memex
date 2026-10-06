@@ -8,9 +8,7 @@ final class WorkspaceBrowserExecutionBridge {
     private var server: HostSocketServer?
     private var task: Task<Void, Never>?
 
-    func start(root: URL, automation: WorkspaceBrowserAutomationHost,
-               desktopAutomation: DesktopAutomationHost? = nil,
-               desktopHandler: (@MainActor @Sendable (HostRequest) async throws -> HostValue)? = nil) throws {
+    func start(root: URL, automation: WorkspaceBrowserAutomationHost) throws {
         guard server == nil else { return }
         let server = try HostSocketServer(directory: root.appendingPathComponent("state/execution"), endpointName: "desktop")
         self.server = server
@@ -26,17 +24,6 @@ final class WorkspaceBrowserExecutionBridge {
                             }
                             let result: HostValue
                             switch request.method {
-                            case "desktop.describe":
-                                guard let desktopAutomation else { throw HostFailure("desktop_unavailable", "Desktop app control is unavailable") }
-                                result = try .encoded(desktopAutomation.descriptor(conversationID: conversationID))
-                            case "desktop.dispatch":
-                                guard let desktopAutomation, let value = request.params["request"] else { throw HostFailure("invalid_params", "Desktop request payload is required") }
-                                let action = try JSONDecoder().decode(DesktopAutomationRequest.self, from: JSONEncoder().encode(value))
-                                guard action.conversationID == conversationID else { throw HostFailure("desktop_scope", "App grant does not belong to the requested conversation") }
-                                result = try .encoded(desktopAutomation.dispatch(action))
-                            case "desktop.panel", "desktop.preferences", "desktop.organization":
-                                guard let desktopHandler else { throw HostFailure("desktop_unavailable", "Desktop shell adapter is unavailable") }
-                                result = try await desktopHandler(request)
                             case "browser.describe":
                                 guard let descriptor = automation.descriptor(conversationID: conversationID) else {
                                     throw HostFailure("browser_denied", "Open this conversation's browser and explicitly grant agent access before using its desktop bridge")
@@ -47,7 +34,7 @@ final class WorkspaceBrowserExecutionBridge {
                                 let action = try JSONDecoder().decode(WorkspaceBrowserAutomationRequest.self, from: JSONEncoder().encode(value))
                                 guard action.conversationID == conversationID else { throw HostFailure("browser_scope", "Browser grant does not belong to the requested conversation") }
                                 result = try .encoded(await automation.dispatch(action))
-                            default: throw HostFailure("method_not_found", "The desktop bridge only exposes scoped browser, app, and shell operations")
+                            default: throw HostFailure("method_not_found", "The desktop bridge only exposes scoped browser operations")
                             }
                             reply.complete(HostResponse(id: request.id, result: result))
                         } catch let error as HostFailure { reply.complete(HostResponse(id: request.id, error: error)) }

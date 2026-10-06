@@ -189,12 +189,10 @@ Memex desktop; it is not uploaded or copied to an execution host. Revocation,
 tab closure, cancellation, and capture/encoding failure remove partial output.
 `stopRecording` cancels an in-progress capture and discards it.
 
-`desktop.describe` and `desktop.dispatch` expose only an exact running application
-chosen in the native grant UI, using macOS Accessibility permission and ephemeral
-element handles. `desktop.panel`, `desktop.preferences`, and `desktop.organization`
-have separate native grants and advertise their operation schemas. These grants
-cannot be issued by the control API. Workspace terminals use the authenticated
-host-owned workspace boundary described above.
+The desktop bridge controls only Memex-owned browser tabs. It does not expose
+other macOS apps, Memex preferences, sidebar organization, or workspace panel
+presentation. Workspace terminals use the authenticated host-owned workspace
+boundary described above.
 
 ## Verification
 

@@ -82,6 +82,21 @@ final class ExecutionHostTests: XCTestCase {
         XCTAssertTrue(provider.created.isEmpty)
     }
 
+    func testDesktopControlOperationsAreUnavailable() throws {
+        let (directory, workspace) = try fixture()
+        let provider = Provider()
+        let host = try ExecutionHost(directory: directory, workspaceRoots: [workspace]) { _ in provider }
+        let id = try create(host, workspace)
+        let methods = ["desktop.describe", "desktop.dispatch", "desktop.panel", "desktop.preferences", "desktop.organization"]
+        for method in methods {
+            let response = call(host, method, ["conversationId": .string(id)])
+            XCTAssertEqual(response.error?.code, "method_not_found", method)
+        }
+        let capabilities = try XCTUnwrap(call(host, "host.info").result?["capabilities"].array)
+        XCTAssertFalse(capabilities.contains(.string("desktop.controls")))
+        XCTAssertTrue(provider.commands.isEmpty)
+    }
+
     func testRestartHoldsQueueAndNeverReplaysUncertainDelivery() throws {
         let (directory, workspace) = try fixture()
         let provider = Provider()

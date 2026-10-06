@@ -2,29 +2,13 @@ import SwiftUI
 
 struct WorkspacePanelView: View {
     @Bindable var store: Store
-    @State private var showingAgentAccess = false
 
     var body: some View {
         VStack(spacing: 0) {
             if store.selectedID != nil {
-                HStack(spacing: 0) {
-                    WorkspacePanelTabs(panels: store.openWorkspacePanels, selection: store.workspacePanel,
-                                       select: store.selectWorkspacePanel, closeTab: store.closeWorkspacePanel,
-                                       close: { store.showingWorkspaceChanges = false })
-                    if let session = store.selected, session.machineID == "local" {
-                        Button { showingAgentAccess = true } label: { Image(systemName: "lock.shield") }
-                            .buttonStyle(.plain).padding(.trailing, 8)
-                            .help("Agent access to apps and Memex controls")
-                            .accessibilityLabel("Agent access")
-                            .popover(isPresented: $showingAgentAccess) {
-                                ScrollView {
-                                    DesktopControlPermissionView(conversationID: session.id, sessionID: session.id, authority: store.desktopControls)
-                                    Divider()
-                                    DesktopAutomationPermissionView(conversationID: session.id, host: store.desktopAutomation)
-                                }.frame(maxHeight: 650)
-                            }
-                    }
-                }
+                WorkspacePanelTabs(panels: store.openWorkspacePanels, selection: store.workspacePanel,
+                                   select: store.selectWorkspacePanel, closeTab: store.closeWorkspacePanel,
+                                   close: { store.showingWorkspaceChanges = false })
             }
             Divider()
             // Keep opened panes mounted so the launcher and tab switches retain selections and edits.

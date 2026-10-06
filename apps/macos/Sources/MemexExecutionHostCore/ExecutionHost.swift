@@ -131,7 +131,7 @@ public final class ExecutionHost: @unchecked Sendable {
             "hostId": .string(catalog.hostID), "schemaVersion": .number(1),
             "handoffPublicKey": .string(handoffSigner.publicKey),
             "providers": .array(provider.providers.map(HostValue.string)),
-            "capabilities": .array((["conversation", "queue", "schedules", "schedules.wall_clock", "schedules.runs", "schedules.new_conversation", "schedules.events", "workspace.read", "worktree.lifecycle", "context_fork", "desktop.controls", "conversation.handoff"] + RemoteWorkspaceAccess.capabilities).map(HostValue.string)),
+            "capabilities": .array((["conversation", "queue", "schedules", "schedules.wall_clock", "schedules.runs", "schedules.new_conversation", "schedules.events", "workspace.read", "worktree.lifecycle", "context_fork", "conversation.handoff"] + RemoteWorkspaceAccess.capabilities).map(HostValue.string)),
             "browserAvailable": .bool(FileManager.default.fileExists(atPath: directory.appendingPathComponent("desktop.sock").path)),
             "executionPersistsWithoutClients": .bool(true)
         ])
@@ -167,7 +167,7 @@ public final class ExecutionHost: @unchecked Sendable {
             let id = try required(p, "conversationId")
             _ = try conversation(id)
             return try .encoded(catalog.queue.filter { $0.command.conversationID == id })
-        case "browser.describe", "desktop.describe": return try browser(request)
+        case "browser.describe": return try browser(request)
         default: return try mutate(request)
         }
     }
@@ -179,8 +179,7 @@ public final class ExecutionHost: @unchecked Sendable {
             "conversation.interrupt", "conversation.approval", "conversation.userInput", "conversation.model", "conversation.configuration",
             "conversation.queue.add", "conversation.queue.edit", "conversation.queue.cancel", "conversation.queue.reorder", "conversation.queue.resume",
             "conversation.queue.promote", "conversation.fork", "conversation.delegate", "schedule.upsert", "schedule.pause", "schedule.delete", "schedule.run", "browser.dispatch",
-            "worktree.create", "worktree.archive", "worktree.reattach", "worktree.cleanup", "schedule.event", "schedule.run.read",
-            "desktop.dispatch", "desktop.panel", "desktop.preferences", "desktop.organization"]
+            "worktree.create", "worktree.archive", "worktree.reattach", "worktree.cleanup", "schedule.event", "schedule.run.read"]
         guard allowed.contains(request.method) || RemoteWorkspaceAccess.mutationMethods.contains(request.method) || Self.handoffMutationMethods.contains(request.method) else { throw HostFailure("method_not_found", "Unknown execution operation: \(request.method)") }
         let id = try required(request.params, "commandId")
         let identity: HostValue = .object(["method": .string(request.method), "params": .object(request.params)])
@@ -244,7 +243,7 @@ public final class ExecutionHost: @unchecked Sendable {
             }
             guard let updated = try managedEntries().first(where: { $0.id == id }) else { throw HostFailure("not_found", "Worktree recovery record is unavailable") }
             return try worktreeValue(updated)
-        case "browser.dispatch", "desktop.dispatch", "desktop.panel", "desktop.preferences", "desktop.organization": return try browser(request)
+        case "browser.dispatch": return try browser(request)
         case "conversation.import":
             let workspace = try required(p, "workspaceId")
             let cwd = try authorizedWorkspace(workspace)
@@ -561,19 +560,11 @@ public final class ExecutionHost: @unchecked Sendable {
         guard let source = c.transcriptPath else { throw HostFailure("capability_unavailable", "The provider has not established a native transcript identity for desktop attachment") }
         let desktopID = ["local", c.provider, c.nativeSessionID, source].joined(separator: "\u{1f}")
         var params: [String: HostValue] = ["conversationId": .string(desktopID)]
-        if request.method == "browser.dispatch" || request.method == "desktop.dispatch" {
+        if request.method == "browser.dispatch" {
             guard let payload = request.params["request"], payload["conversationID"].string == desktopID else {
                 throw HostFailure("browser_scope", "Browser request does not match this hosted conversation's exact native identity")
             }
             params["request"] = payload
-        } else if request.method.hasPrefix("desktop."), request.method != "desktop.describe" {
-            // Shell controls use the same exact owning native identity. Their
-            // separate native grant is checked again by the desktop adapter.
-            var payload = request.params["request"]?.object ?? request.params
-            payload.removeValue(forKey: "hostId")
-            payload.removeValue(forKey: "commandId")
-            payload.removeValue(forKey: "conversationId")
-            params["request"] = .object(payload)
         }
         let response = try HostSocketClient.request(HostRequest(id: request.id, method: request.method, params: params), directory: directory)
         if let error = response.error { throw error }

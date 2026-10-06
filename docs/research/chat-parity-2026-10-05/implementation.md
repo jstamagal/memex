@@ -18,15 +18,15 @@ the final immutable package and installed-app checks are recorded below.
 | `cx-p01` | Per-installation Codex/Claude MCP and plugin inventory, configuration, authentication, installation/removal; native provider contracts and scopes retained. ACP configuration remains provider-owned. | `ProviderToolsAdministrationTests`, `ClaudeNativeConfigurationTests`, native CLI contract inspection. |
 | `codex-conversation-03` | Native on-device dictation with retained audio, retry and recovery, inserted into the draft without sending. Microphone/speech permissions remain explicit. | `ConversationMediaTests`; packaged permission descriptions and entitlements. |
 | `codex-workspace-11` | Same-chat workspace relocation and explicit host handoff preserve native identity, Git/index/working files, captured state, and exclusive ownership. Interrupted transfers require state inspection/recovery. | `HostHandoffTests`, `NativeConversationRetirementTests`, runtime workspace relocation tests; native transfer stages history outside provider lookup and rebinds the exact original path on return. |
-| `app-control` | Existing opt-in control MCP now describes browser/desktop schemas and exposes separately granted native panel, preferences, and organization actions. It cannot grant itself authority. | `DesktopControlTests`, existing socket bridge and host API tests. |
+| `app-control` | Existing opt-in execution and browser control MCP retained. Custom native panel, preferences, and organization controls and their permission UI were removed at the user's request on October 6. | `ExecutionHostTests.testDesktopControlOperationsAreUnavailable`; existing browser and host API tests. |
 | `codex-conversation-02` | Captured attachment annotations retain comment identity, source/location and bytes. Editing an annotation updates local draft context. | `ConversationMediaTests`, attachment/composer regressions. |
 | `browser` | Granted navigation/history/reload/wait/DOM keys/tab selection plus separately granted, bounded WebKit viewport recording to real MP4. Recording stays on the desktop host. | `WorkspaceBrowserTests`, `WorkspaceBrowserRecordingTests` with real WebKit and video decoding. |
 | `codex-workspace-02` | Explicit recoverable raw-file/index/HEAD snapshots; recovery creates a separate owned checkout. Clean pruning snapshots first and still refuses dirty/ignored/referenced checkouts. No automatic destructive retention policy. | `WorkspaceSnapshotAndPRTests`, existing Git lifecycle tests. |
 | `codex-conversation-07` | Full plan markdown/identity, editable local plan document, conflict-checked save and captured saved-version provenance for implementation drafts. | `ConversationPlanTests`, metadata projection tests, concurrent/failing initial publication tests. |
 | `t3-i02` | Bounded image normalization supports common native image inputs while retaining exact supported small-image bytes and captured attachment identity. | `ConversationMediaTests`, existing attachment limit tests. |
 | `pr-review` | Native PR details, diff, reviews and inline-thread reading with actual GitHub links and captured review context. Large/paginated responses disclose limits. No external review posting. | `WorkspaceSnapshotAndPRTests`; read-only GitHub command validation. |
-| `codex-workspace-08` | Explicit exact-running-app Accessibility grants and bounded snapshot/press/setValue operations. Grants are ephemeral; secure values are omitted. No arbitrary scripting or self-grant. | `DesktopAutomationTests`; positive OS interaction requires an actual user-approved target and OS permission. |
-| `cx-p03` | Custom sections and read/unread state extend existing library metadata, sidebar menus, and bulk actions. Removing a section preserves its conversations. | `ConversationLibraryTests`, `DesktopControlTests`. |
+| `codex-workspace-08` | Custom external-app Accessibility automation and its permission UI were removed at the user's request on October 6. No native desktop-app control integration is provided. | `ExecutionHostTests.testDesktopControlOperationsAreUnavailable`. |
+| `cx-p03` | Custom sections and read/unread state extend existing library metadata, sidebar menus, and bulk actions. Removing a section preserves its conversations. | `ConversationLibraryTests`. |
 | `codex-conversation-12` | Supported policy amendment decisions retain their exact native payload; approval-review lifecycle and rationale remain visible with raw evidence. Provider-resolved requests invalidate stale replies. | `AgentElicitationTests`, Codex review and resolved-question transport tests. |
 | `t3-i12` | Provider setup shows exact configured installations, availability and negotiated capabilities. Native Codex/Claude and explicit ACP integrations remain distinct. Dedicated additional drivers require demonstrated demand, as the recommendation specifies; history support does not claim execution support. | Provider catalog/configuration tests; native installation contract inspection. |
 | `t3-i05` | Explicitly labeled Stop and restart fallback waits for acknowledged stop/terminal state, preserves draft attachments, and never pretends to be native steering. | `ConversationQueueTests`. |
@@ -39,11 +39,15 @@ the final immutable package and installed-app checks are recorded below.
 
 ## Acceptance status
 
+- October 6 desktop-control removal passed 15 execution-host tests and 10 browser
+  and session-tool navigation tests. All five removed desktop-control methods
+  return `method_not_found`; the host no longer advertises desktop controls.
+  Formatting and Clippy also passed. Earlier acceptance results follow.
 - Runtime agent-runtime checks passed. Final merged SQACP checks passed 383 tests
   (two existing gated skips) and five real WebKit tests. Deterministic closed-input
   regressions cover the repaired native provider SIGPIPE crash on both transports.
 - The first native history-only pass verified provider tools/configuration,
-  schedules, library metadata, desktop grants, appearance, snapshots and PR context.
+  schedules, library metadata, appearance, snapshots and PR context.
 - Final runtime-enabled native validation passed in complementary runs: 481
   Swift Testing cases plus 14 focused sidebar/organization cases, and 56 XCTest
   cases covering host/SSH behavior. Existing live-gated cases stayed skipped.

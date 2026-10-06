@@ -18,8 +18,6 @@ final class Store {
     let workspaceClient: ConversationWorkspaceClient
     @ObservationIgnored let workspaceBrowser = WorkspaceBrowserStore()
     @ObservationIgnored let workspaceBrowserExecution = WorkspaceBrowserExecutionBridge()
-    @ObservationIgnored let desktopAutomation = DesktopAutomationHost()
-    @ObservationIgnored let desktopControls: DesktopControlAuthority
     @ObservationIgnored let workspaceTerminals = WorkspaceTerminalStore()
     @ObservationIgnored let makeConversation: @Sendable (NewConversationRequest) async throws -> CreatedConversation
     var sessions: [Session] = []
@@ -158,7 +156,6 @@ final class Store {
          executionHosts: ExecutionHostConnections = ExecutionHostConnections(),
          localProjects: LocalProjects = LocalProjects(), newConversationDraft: NewConversationDraft = NewConversationDraft(),
          workspaceClient: ConversationWorkspaceClient = ConversationWorkspaceClient(),
-         desktopControls: DesktopControlAuthority = DesktopControlAuthority(),
          makeConversation: @escaping @Sendable (NewConversationRequest) async throws -> CreatedConversation = { try await NewConversationRuntime.create($0) }) {
         self.liveConversations = liveConversations ?? LiveConversations(drafts: draftStore, executionHosts: executionHosts)
         self.executionHosts = executionHosts
@@ -169,7 +166,6 @@ final class Store {
         self.localProjects = localProjects
         self.newConversationDraft = newConversationDraft
         self.workspaceClient = workspaceClient
-        self.desktopControls = desktopControls
         self.makeConversation = makeConversation
         self.client = client
         self.projectCatalog = projectCatalog ?? ProjectCatalog(client: client)

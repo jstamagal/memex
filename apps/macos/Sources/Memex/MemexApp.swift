@@ -82,11 +82,7 @@ struct MemexApp: App {
         let root = store.client.root.map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".memex")
         do {
-            try store.workspaceBrowserExecution.start(root: root, automation: store.workspaceBrowser.automation,
-                desktopAutomation: store.desktopAutomation, desktopHandler: { [weak store] request in
-                    guard let store else { throw HostFailure("desktop_unavailable", "The app window is unavailable") }
-                    return try await store.handleDesktopControl(request)
-                })
+            try store.workspaceBrowserExecution.start(root: root, automation: store.workspaceBrowser.automation)
         }
         catch { store.executionHostError = "Browser control is unavailable: \(error.localizedDescription)" }
         store.conversationNotifications.activate()
