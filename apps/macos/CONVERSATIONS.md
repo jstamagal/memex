@@ -34,7 +34,10 @@ ambiguous, Memex reports that instead of selecting unrelated text.
 Conversations open in another app must be closed there before context can be
 added here; attachment errors explain the actual failure.
 
-The input menu also offers on-device dictation, with a retained recording and
+The composer’s **+** opens a searchable context picker for files, conversations,
+and available commands and skills. **Prompt actions** at the bottom groups
+stash/history, annotations, and active-turn controls. It also offers on-device
+dictation, with a retained recording and
 retry/export controls if transcription fails. Review the transcript before
 inserting it; insertion never sends. Dictation requires microphone and speech
 permission and an available on-device recognizer. HEIC, TIFF and oversized still

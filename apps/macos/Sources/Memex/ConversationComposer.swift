@@ -15,6 +15,8 @@ struct ConversationComposer: View {
     @State private var contextError: String?
     @State private var loadingContext = false
     @State private var dropTargeted = false
+    @State private var showingContext = false
+    @State private var contextQuery = ""
     @State private var showingSettings = false
     @State private var showingDictation = false
     @State private var annotating: ConversationAttachment?
@@ -110,6 +112,7 @@ struct ConversationComposer: View {
         .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
         .frame(maxWidth: .infinity)
         .task(id: "\(conversation.session.id):\(conversation.isServerOwned)") { await loadCatalog() }
+        .onChange(of: conversation.session.id) { _, _ in showingContext = false; contextQuery = "" }
         .sheet(isPresented: $showingDictation) {
             ConversationDictationView { text in conversation.draft = joined(conversation.draft, text); conversation.focus() }
         }
@@ -138,13 +141,6 @@ struct ConversationComposer: View {
                 .help("Close this conversation in the other Codex app or CLI to continue here.")
         } else {
             HStack(spacing: 2) {
-                Button { Task { await chooseFiles() } } label: {
-                    Image(systemName: "plus").font(.system(size: 14))
-                        .frame(width: 28, height: 28).contentShape(Rectangle())
-                }
-                .buttonStyle(.plain).help("Attach files").accessibilityLabel("Attach files")
-                .disabled(conversation.loadingAttachments || loadingContext || conversation.connecting)
-
                 inputMenu
 
                 if let settings = conversation.snapshot.controls {
@@ -192,8 +188,108 @@ struct ConversationComposer: View {
     }
 
     private var inputMenu: some View {
-        Menu {
-            Button("Dictate a prompt…") { showingDictation = true }
+        Button {
+            contextQuery = ""
+            showingContext.toggle()
+        } label: {
+            Image(systemName: "plus").font(.system(size: 14))
+                .frame(width: 28, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Add files and more").accessibilityLabel("Add files and more")
+        .popover(isPresented: $showingContext, arrowEdge: .top) { contextPicker }
+        .disabled(conversation.isOpenElsewhere)
+    }
+
+    private var contextPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Search files, conversations, and skills", text: $contextQuery)
+                .textFieldStyle(.roundedBorder)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if contextQuery.isEmpty {
+                        contextAction("Attach files…", icon: "paperclip") { Task { await chooseFiles() } }
+                            .disabled(conversation.loadingAttachments || loadingContext || conversation.connecting)
+                        Divider()
+                    }
+                    if !contextChats.isEmpty {
+                        Text("Conversations").font(.caption).foregroundStyle(.secondary)
+                        ForEach(contextChats) { session in
+                            contextAction(session.title, icon: "bubble.left.and.bubble.right") {
+                                selectMention(.init(id: "chat:" + session.id, title: session.title))
+                            }
+                        }
+                    }
+                    let files = catalog.matchingFiles(contextQuery)
+                    if !files.isEmpty {
+                        Text("Files").font(.caption).foregroundStyle(.secondary)
+                        ForEach(files.prefix(8)) { file in
+                            contextAction(file.relativePath, icon: "doc") {
+                                selectMention(.init(id: "file:" + file.id, title: file.relativePath))
+                            }
+                        }
+                    }
+                    let commands = (conversation.snapshot.controls?.slashCommands ?? []).filter {
+                        contextQuery.isEmpty || $0.name.localizedCaseInsensitiveContains(contextQuery)
+                            || $0.description.localizedCaseInsensitiveContains(contextQuery)
+                    }
+                    let prompts = catalog.matchingPrompts(contextQuery)
+                    if !commands.isEmpty || !prompts.isEmpty {
+                        Text("Commands and skills").font(.caption).foregroundStyle(.secondary)
+                        ForEach(commands.prefix(8)) { command in
+                            contextAction("/" + command.name, icon: "terminal", detail: command.description) {
+                                conversation.draft = "/\(command.name) " + conversation.draft
+                                conversation.focus()
+                            }
+                        }
+                        ForEach(prompts) { prompt in
+                            contextAction(prompt.name, icon: prompt.kind == .skill ? "sparkles" : "terminal", detail: prompt.description) {
+                                Task { await capturePrompt(prompt) }
+                            }
+                        }
+                    }
+                    if !contextQuery.isEmpty && contextChats.isEmpty && files.isEmpty && commands.isEmpty && prompts.isEmpty {
+                        Text("No matching context").foregroundStyle(.secondary).padding(.vertical, 8)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .disabled(loadingContext)
+            }
+            .frame(maxHeight: 320)
+            Divider()
+            promptActionsMenu
+        }
+        .padding(12).frame(width: 360)
+    }
+
+    private var contextChats: [Session] {
+        Array(contextSessions.reduce(into: [String: Session]()) { $0[$1.id] = $1 }.values
+            .filter { $0.id != conversation.session.id && (contextQuery.isEmpty
+                || $0.title.localizedCaseInsensitiveContains(contextQuery) || $0.sessionID.hasPrefix(contextQuery)) }
+            .sorted { ($0.lastAt ?? "") > ($1.lastAt ?? "") }.prefix(5))
+    }
+
+    private func contextAction(_ title: String, icon: String, detail: String? = nil,
+                               action: @escaping () -> Void) -> some View {
+        Button {
+            showingContext = false
+            action()
+        } label: {
+            Label {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title).lineLimit(1)
+                    if let detail { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                }
+            } icon: { Image(systemName: icon).frame(width: 18) }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var promptActionsMenu: some View {
+        Menu("Prompt actions") {
+            Button("Dictate a prompt…") { showingContext = false; showingDictation = true }
             Divider()
             if conversation.isWorking {
                 Picker("While working", selection: $followUpBehavior) {
@@ -215,7 +311,7 @@ struct ConversationComposer: View {
             if !conversation.attachments.isEmpty {
                 Menu("Annotate captured context") {
                     ForEach(conversation.attachments) { item in
-                        Button(item.title) { annotating = item }
+                        Button(item.title) { showingContext = false; annotating = item }
                     }
                 }
                 Divider()
@@ -242,19 +338,9 @@ struct ConversationComposer: View {
                 }
             }.disabled(promptHistory.isEmpty)
             Divider()
-            Button("Insert file or conversation mention") {
-                conversation.draft = joined(conversation.draft, "@", separator: " ")
-                conversation.focus()
-            }
-            Button("Commands and skills") {
-                conversation.draft = "/ " + conversation.draft
-                conversation.focus()
-            }
             Button("Reload commands and file list") { Task { await loadCatalog() } }
-        } label: { Image(systemName: "text.badge.plus").frame(width: 28, height: 28) }
+        }
         .menuStyle(.borderlessButton).fixedSize()
-        .help("Prompt history, stash, mentions and commands")
-        .disabled(conversation.isOpenElsewhere)
     }
 
     private var promptHistory: [String] {
