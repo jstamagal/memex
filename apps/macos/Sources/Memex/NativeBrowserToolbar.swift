@@ -64,6 +64,7 @@ import SwiftUI
     private var actionItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var searchItem: NSSearchToolbarItem?
     private var utilityMenu: NSMenu?
+    private var sidebarObservation: NSKeyValueObservation?
     private(set) var filterPopover: NSPopover?
 
     static let sidebarBoundary = NSToolbarItem.Identifier("MemexSidebarBoundary")
@@ -85,7 +86,19 @@ import SwiftUI
         toolbar.displayMode = .iconOnly
         toolbar.allowsUserCustomization = false
         toolbar.autosavesConfiguration = false
+        if let sidebar = (splitView.delegate as? NSSplitViewController)?.splitViewItems.first {
+            sidebarObservation = sidebar.observe(\.isCollapsed) { [weak self] _, _ in
+                DispatchQueue.main.async { self?.update() }
+            }
+        }
         observeStore()
+    }
+
+    private var sidebarVisible: Bool {
+        if let sidebar = (splitView.delegate as? NSSplitViewController)?.splitViewItems.first {
+            return !sidebar.isCollapsed
+        }
+        return splitView.arrangedSubviews.first.map { !splitView.isSubviewCollapsed($0) } ?? false
     }
 
     private func observeStore() {
@@ -112,8 +125,9 @@ import SwiftUI
         if store.scope == .home {
             return [.toggleSidebar, Self.sidebarBoundary, Self.newConversation, .flexibleSpace]
         }
-        return [.toggleSidebar, .flexibleSpace, Self.filters,
-         Self.sidebarBoundary, Self.title, Self.newConversation, Self.refresh, Self.find,
+        let sidebarItems: [NSToolbarItem.Identifier] = sidebarVisible
+            ? [.toggleSidebar, .flexibleSpace, Self.filters] : [.toggleSidebar]
+        return sidebarItems + [Self.sidebarBoundary, Self.title, Self.newConversation, Self.refresh, Self.find,
          .flexibleSpace, Self.search, Self.resume, Self.more, Self.workspaceChanges]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -231,7 +245,8 @@ import SwiftUI
             popover.performClose(nil)
             return
         }
-        guard let item = actionItems[Self.filters], splitView.window != nil else { return }
+        guard sidebarVisible, store.scope != .home,
+              let item = actionItems[Self.filters], splitView.window != nil else { return }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self

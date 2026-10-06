@@ -243,7 +243,7 @@ struct RichContentDocument {
     override func layout() { super.layout(); height(for: bounds.width) }
 
     static func textView(container: NSTextContainer? = nil) -> NSTextView {
-        let view = container.map { NSTextView(frame: .zero, textContainer: $0) } ?? NSTextView()
+        let view = container.map { TranscriptSelectionTextView(frame: .zero, textContainer: $0) } ?? TranscriptSelectionTextView()
         view.isEditable = false
         view.isSelectable = true
         view.drawsBackground = false

@@ -27,6 +27,7 @@ struct NativeTranscript: NSViewControllerRepresentable {
     var requestGeneration = 0
     var followLatest = false
     var bottomInset: CGFloat = 0
+    var onAddSelection: ((TranscriptSelection) -> String?)?
 
     func makeNSViewController(context: Context) -> TranscriptController { TranscriptController() }
     func updateNSViewController(_ controller: TranscriptController, context: Context) {
@@ -39,6 +40,7 @@ struct NativeTranscript: NSViewControllerRepresentable {
                           requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
                           followLatest: followLatest, bottomInset: bottomInset, mcpAppTransport: mcpAppTransport,
                           bodyFont: AppPreferences.shared.bodyNSFont, codeFont: AppPreferences.shared.codeNSFont)
+        controller.onAddSelection = onAddSelection
     }
 }
 
@@ -68,6 +70,10 @@ struct NativeTranscript: NSViewControllerRepresentable {
 final class TranscriptController: NSViewController, NSTableViewDataSource, NSTableViewDelegate {
     let table = TranscriptTableView()
     let scrollView = TranscriptScrollView()
+    let selectionActions = TranscriptSelectionActions()
+    var onAddSelection: ((TranscriptSelection) -> String?)? {
+        didSet { if onAddSelection == nil { selectionActions.dismiss() } }
+    }
     private(set) var rows: [Row] = []
     private var sessionID = ""
     private var records: [TranscriptRecord] = []
@@ -229,6 +235,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         self.sourcePath = sourcePath
         let changedQuery = self.findQuery != findQuery
         let changedFind = self.findQuery != findQuery || self.findHit != findHit || self.findGeneration != findGeneration
+        if changedSession || changedMode || changedFind || changedFonts { selectionActions.dismiss() }
         if changedFind {
             let affected = Set([self.findHit?.recordID, findHit?.recordID].compactMap { $0 })
             for row in rows where row.records.contains(where: { affected.contains($0.id) }) {
@@ -590,6 +597,7 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     @objc private func scrolled(_ notification: Notification) {
         refreshVisibleActions()
         if !updatingRows {
+            selectionActions.dismiss()
             if table.minimumDocumentHeight > scrollView.contentView.bounds.maxY {
                 table.minimumDocumentHeight = scrollView.contentView.bounds.maxY
                 let contentHeight = rows.isEmpty ? 0 : table.rect(ofRow: rows.count - 1).maxY
@@ -662,6 +670,26 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         cell.configure(measurement(at: row), toggle: { [weak self] in self?.toggle(id) },
                        toggleRaw: { [weak self] in self?.toggleRaw(id) },
                        toggleFull: { [weak self] in self?.toggleFullBody(id) })
+        cell.onDismissSelection = { [weak self] in self?.selectionActions.dismiss() }
+        cell.onSelection = { [weak self, weak cell] textView in
+            guard let self, let cell, self.onAddSelection != nil,
+                  let row = self.rows.first(where: { $0.id == id }) else { return }
+            let sessionID = self.sessionID
+            let records = row.records
+            self.selectionActions.show(in: textView, sourceIDs: records.map(\.sourceID), isCurrent: { [weak self, weak cell] in
+                guard let self, let cell else { return false }
+                return self.sessionID == sessionID && cell.isDescendant(of: self.table)
+                    && self.rows.contains { $0.id == id && $0.records == records }
+            }, add: { [weak self] selection in
+                guard let add = self?.onAddSelection else { return "This conversation no longer accepts context." }
+                return add(selection)
+            })
+        }
+    }
+
+    override func viewWillDisappear() {
+        super.viewWillDisappear()
+        selectionActions.dismiss()
     }
 
     func measurement(at index: Int) -> Measurement {
@@ -831,10 +859,10 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
 }
 
 @MainActor
-private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
+private final class TranscriptCell: NSTableCellView, NSTextViewDelegate, TranscriptSelectionTarget {
     private let disclosure = TranscriptDisclosureButton()
     private let rawDisclosure = NSButton()
-    private let message = NSTextView()
+    private let message = TranscriptSelectionTextView()
     private let bubble = NSView()
     private let activityIcon = NSImageView()
     private let detailPanel = NSView()
@@ -848,6 +876,8 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
     private var onToggleRaw: (() -> Void)?
     private var onToggleFull: (() -> Void)?
     private var displayedText: NSAttributedString?
+    var onSelection: ((NSTextView) -> Void)?
+    var onDismissSelection: (() -> Void)?
     override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
@@ -911,6 +941,9 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate {
         addSubview(showAll)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func dismissSelectionActions() { onDismissSelection?() }
+    func showSelectionActions(in textView: NSTextView) { onSelection?(textView) }
 
     func configure(_ value: TranscriptController.Measurement, toggle: @escaping () -> Void, toggleRaw: @escaping () -> Void,
                    toggleFull: @escaping () -> Void) {

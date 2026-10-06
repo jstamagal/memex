@@ -23,6 +23,12 @@ prompt stashes. Terminal output, file contents, diff review, and browser context
 can also be added from their workspace panes. Captured context is saved as bytes,
 so a later change to the original file does not change a queued prompt.
 
+Select text in the transcript to open **Add to chat** beside the selection.
+It adds exactly the highlighted text and its source to the existing draft without
+sending. This also works in code blocks. Find highlights do not open the popover.
+Conversations open in another app must be closed there before context can be
+added here; attachment errors explain the actual failure.
+
 The input menu also offers on-device dictation, with a retained recording and
 retry/export controls if transcription fails. Review the transcript before
 inserting it; insertion never sends. Dictation requires microphone and speech
@@ -178,10 +184,7 @@ selection. A separate viewport-recording grant permits short, silent H.264 MP4
 clips: 1–5 seconds at 1–5 frames per second, at most 8 MiB. Clips capture only the
 app-owned WebKit viewport and remain temporary files on the desktop host. Revoking
 access or closing the tab cancels capture and removes partial output. DOM keys do
-not claim native keyboard-shortcut behavior. Separate
-desktop grants can authorize a specific running application's Accessibility tree
-and supported actions, or bounded Memex panel/preferences/organization controls.
-They require native user grants and cannot grant themselves authority.
+not claim native keyboard-shortcut behavior.
 
 Each canonical local workspace has a terminal group. Add independent shells,
 switch or split them, move the same group between drawer and side pane, and save

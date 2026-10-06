@@ -169,16 +169,6 @@ import Testing
         #expect(value.attributedBody.string == source.rawTranscriptBody)
     }
 
-    @Test func promptOutlineOmitsInjectedContextAndRetainsSourceOffsets() {
-        let records = [record("context", "user", "<environment_context>\nprivate setup\n</environment_context>"),
-                       record("a", "user", "<recommended_plugins>\ncatalog\n</recommended_plugins>\nFix the reader"),
-                       record("b", "assistant", "Working"), record("c", "user", "Then test it")]
-        let entries = ConversationOutline.entries(records, offset: 20)
-        #expect(entries.map(\.id) == ["a", "c"])
-        #expect(entries.map(\.offset) == [21, 23])
-        #expect(entries.first?.preview == "Fix the reader")
-    }
-
     @Test func sourceOnlyMarkdownMatchIsSelectedPrecisely() throws {
         let records = [record("link", "assistant", "See [the result](https://example.com/hidden-target).")]
         let reader = controller(records)

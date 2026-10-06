@@ -39,6 +39,13 @@ the final immutable package and installed-app checks are recorded below.
 
 ## Acceptance status
 
+- October 6 transcript correction removes the outline and viewport quote button.
+  Selecting transcript text now offers Add to chat for the exact highlighted text,
+  including code; it preserves the draft and reports the actual attachment error.
+  Seven selection tests (eight cases), 15 reader tests, and seven toolbar tests
+  passed. Filters hide with the sidebar and restore without clearing their state.
+  The signed installed app was checked with an actual text double-click, ownership
+  error display, and sidebar close/reopen; the outline and header quote are absent.
 - October 6 desktop-control removal passed 15 execution-host tests and 10 browser
   and session-tool navigation tests. All five removed desktop-control methods
   return `method_not_found`; the host no longer advertises desktop controls.

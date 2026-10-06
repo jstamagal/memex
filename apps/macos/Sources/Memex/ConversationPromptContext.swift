@@ -50,6 +50,14 @@ extension ConversationAttachment {
 }
 
 @MainActor extension LiveConversation {
+    func appendTranscriptSelection(_ selection: TranscriptSelection) -> String? {
+        let source = selection.sourceIDs.map { "\(session.id)#\($0)" }.joined(separator: ", ")
+        guard appendContext(title: "Selected text", text: selection.text, source: source) else {
+            return attachmentError
+        }
+        return nil
+    }
+
     @discardableResult
     func appendContext(title: String, text: String, source: String) -> Bool {
         do { return appendCapturedContext([try .text(title: title, text: text, source: source)]) }
@@ -66,6 +74,10 @@ extension ConversationAttachment {
     func appendCapturedContext(_ items: [ConversationAttachment]) -> Bool {
         let combined = attachments + items
         do {
+            if isOpenElsewhere {
+                throw ConversationRuntimeError(message: "This conversation is open in another app. Close it there before adding context here.")
+            }
+            if let ownershipError { throw ConversationRuntimeError(message: ownershipError) }
             try ConversationAttachment.validate(combined, controls: snapshot.controls ?? ConversationControls())
             guard replaceDraft(text: draft, attachments: combined) else {
                 throw ConversationRuntimeError(message: "The draft is busy. Add this context after the current operation finishes.")

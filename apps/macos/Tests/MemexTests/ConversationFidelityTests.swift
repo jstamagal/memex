@@ -77,18 +77,6 @@ import Testing
     #expect(ConversationWork.project([spawn, child, wait, done]).agents.first?.status == "completed")
 }
 
-@Test @MainActor func outlineLiveRefreshPreservesSelectionAndOriginalOffsets() {
-    let records = ["One", "Two"].enumerated().map { index, text in
-        TranscriptRecord(recordID: "prompt-\(index)", record: Message(role: "user", text: text, toolName: nil, toolInput: nil, toolOutput: nil))
-    }
-    let outline = ConversationOutline()
-    outline.load(records: records)
-    outline.selectedID = "prompt-1"
-    outline.load(records: records)
-    #expect(outline.selectedID == "prompt-1")
-    #expect(outline.prompts.map(\.offset) == [0, 1])
-}
-
 @Test @MainActor func rawOnlyEvidenceCanBeFoundAndRevealedExactly() throws {
     let record = TranscriptRecord(recordID: "metadata", record: Message(role: "system", text: "", toolName: nil, toolInput: nil, toolOutput: nil),
                                   rawJSON: #"{"provider_detail":"needle"}"#, isRawOnly: true)

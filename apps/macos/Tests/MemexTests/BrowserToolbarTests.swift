@@ -5,6 +5,40 @@ import Testing
 
 @Suite(.serialized) @MainActor
 struct BrowserToolbarTests {
+    @Test func closingSidebarHidesFilterAndReopeningPreservesFilters() async throws {
+        let store = Store()
+        store.scope = .all
+        store.filters.timeframe = .day
+        let columns = BrowserColumnsController(store: store, sidebar: Text("Sidebar"), reader: Text("Reader"))
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 700),
+                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.contentViewController = columns
+        window.setContentSize(NSSize(width: 1200, height: 700))
+        columns.splitView.autosaveName = nil
+        defer { window.close() }
+        window.orderBack(nil)
+        await pumpNative(window)
+        let toolbar = try #require(columns.browserToolbar)
+        let sidebar = try #require(columns.splitViewItems.first)
+        sidebar.isCollapsed = false
+        await pumpNative(window)
+        #expect(toolbar.toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.filters })
+        sidebar.isCollapsed = true
+        await pumpNative(window)
+        #expect(!toolbar.toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.filters })
+        toolbar.toggleFilters()
+        #expect(toolbar.filterPopover == nil)
+        #expect(store.filters.timeframe == .day)
+        sidebar.isCollapsed = false
+        await pumpNative(window)
+        #expect(toolbar.toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.filters })
+        #expect(store.filters.timeframe == .day)
+        store.scope = .home
+        await pumpNative(window)
+        #expect(!toolbar.toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.filters })
+    }
+
     @Test func newAndWorkspaceActionsUseCurrentLocalSelection() throws {
         let (window, _, controller) = fixture()
         defer { window.close() }
