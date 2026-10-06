@@ -28,6 +28,8 @@ struct NativeTranscript: NSViewControllerRepresentable {
     var followLatest = false
     var bottomInset: CGFloat = 0
     var onAddSelection: ((TranscriptSelection) -> String?)?
+    var selectionReveal: TranscriptSelectionReveal?
+    var onSelectionRevealResult: ((UUID, String?) -> Void)?
 
     func makeNSViewController(context: Context) -> TranscriptController { TranscriptController() }
     func updateNSViewController(_ controller: TranscriptController, context: Context) {
@@ -41,6 +43,11 @@ struct NativeTranscript: NSViewControllerRepresentable {
                           followLatest: followLatest, bottomInset: bottomInset, mcpAppTransport: mcpAppTransport,
                           bodyFont: AppPreferences.shared.bodyNSFont, codeFont: AppPreferences.shared.codeNSFont)
         controller.onAddSelection = onAddSelection
+        if let selectionReveal {
+            controller.revealSelection(selectionReveal) { error in
+                Task { @MainActor in onSelectionRevealResult?(selectionReveal.id, error) }
+            }
+        }
     }
 }
 
@@ -89,6 +96,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     private var codeFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
     private var sourcePath = ""
     private var appliedRequestGeneration = -1
+    private var appliedSelectionRevealID: UUID?
+    private weak var revealedSelectionView: NSTextView?
     private var measurements: [String: Measurement] = [:]
     private var measuredWidth: CGFloat = 0
     private var notifiedWidth: CGFloat = 0
@@ -292,6 +301,8 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
         self.records = records
         self.provider = provider
         if changedSession {
+            appliedSelectionRevealID = nil
+            revealedSelectionView = nil
             table.minimumDocumentHeight = 0
             needsInitialPosition = true
             rawTools = self.navigation.positions[sessionID]?.rawRows ?? []
@@ -370,6 +381,58 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
     }
 
     private func recordID(at row: Int) -> String { rows[row].records[0].id }
+
+    func revealSelection(_ request: TranscriptSelectionReveal, completion: (String?) -> Void) {
+        guard request.transcriptKey == sessionID, appliedSelectionRevealID != request.id, !isLoading else { return }
+        appliedSelectionRevealID = request.id
+        selectionActions.dismiss()
+        revealedSelectionView?.setSelectedRange(NSRange(location: 0, length: 0))
+        revealedSelectionView = nil
+        let sourceIDs = Set(request.selection.sourceIDs)
+        let matchesSource: (TranscriptRecord) -> Bool = { sourceIDs.contains($0.sourceID) }
+        for item in TranscriptItem.group(records) where item.records.contains(where: matchesSource) {
+            if item.isActivity || item.isInstructions { expanded.insert("group:\(item.id)") }
+            for activity in item.activities where activity.records.contains(where: matchesSource) {
+                expanded.insert("activity:\(activity.id)")
+            }
+            for record in item.records where matchesSource(record) { expanded.insert("message:\(record.id)") }
+        }
+        // A selected passage may live inside a previously collapsed tool result.
+        rebuildRows()
+        let candidates = rows.indices.filter { index in
+            if case .group = rows[index] { return false }
+            return rows[index].records.contains(where: matchesSource)
+        }
+        var matches: [(NSTextView, NSRange)] = []
+        for index in candidates {
+            let id = rows[index].id
+            if fullBodies.insert(id).inserted {
+                measurements.removeValue(forKey: id)
+                table.noteHeightOfRows(withIndexesChanged: IndexSet(integer: index))
+            }
+            guard let cell = table.view(atColumn: 0, row: index, makeIfNecessary: true) as? TranscriptCell else { continue }
+            configure(cell, row: index)
+            cell.layoutSubtreeIfNeeded()
+            matches += request.selection.matches(in: cell.selectionTextViews)
+        }
+        guard matches.count == 1, let (text, range) = matches.first else {
+            completion("The saved passage cannot be located uniquely in this transcript. Its captured text is still attached.")
+            return
+        }
+        needsInitialPosition = false
+        text.setSelectedRange(range)
+        text.window?.makeFirstResponder(text)
+        if let manager = text.layoutManager, let container = text.textContainer {
+            manager.ensureLayout(for: container)
+            let glyphs = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            let rect = manager.boundingRect(forGlyphRange: glyphs, in: container)
+                .offsetBy(dx: text.textContainerOrigin.x, dy: text.textContainerOrigin.y)
+            text.scrollToVisible(rect.insetBy(dx: 0, dy: -30))
+        }
+        revealedSelectionView = text
+        savePosition()
+        completion(nil)
+    }
 
     private func rowIndex(for recordID: String) -> Int? {
         // Prefer an expanded logical operation over its outer summary.
@@ -676,7 +739,11 @@ final class TranscriptController: NSViewController, NSTableViewDataSource, NSTab
                   let row = self.rows.first(where: { $0.id == id }) else { return }
             let sessionID = self.sessionID
             let records = row.records
-            self.selectionActions.show(in: textView, sourceIDs: records.map(\.sourceID), isCurrent: { [weak self, weak cell] in
+            let views = cell.selectionTextViews
+            let location = views.firstIndex(where: { $0 === textView }).map {
+                TranscriptSelection.Location(viewIndex: $0, range: textView.selectedRange(), renderedRowDigest: TranscriptSelection.digest(views))
+            }
+            self.selectionActions.show(in: textView, sourceIDs: records.map(\.sourceID), location: location, isCurrent: { [weak self, weak cell] in
                 guard let self, let cell else { return false }
                 return self.sessionID == sessionID && cell.isDescendant(of: self.table)
                     && self.rows.contains { $0.id == id && $0.records == records }
@@ -946,6 +1013,15 @@ private final class TranscriptCell: NSTableCellView, NSTextViewDelegate, Transcr
 
     func dismissSelectionActions() { onDismissSelection?() }
     func showSelectionActions(in textView: NSTextView) { onSelection?(textView) }
+
+    var selectionTextViews: [NSTextView] {
+        func collect(_ view: NSView) -> [NSTextView] {
+            guard !view.isHidden else { return [] }
+            if let text = view as? TranscriptSelectionTextView { return [text] }
+            return view.subviews.flatMap(collect)
+        }
+        return subviews.flatMap(collect)
+    }
 
     func configure(_ value: TranscriptController.Measurement, toggle: @escaping () -> Void, toggleRaw: @escaping () -> Void,
                    toggleFull: @escaping () -> Void) {

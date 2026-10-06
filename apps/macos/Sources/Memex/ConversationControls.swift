@@ -47,6 +47,7 @@ struct ConversationAttachment: Identifiable, Codable, Equatable, Sendable {
     let path: String
     let content: Data
     var annotation: ConversationAnnotation? = nil
+    var transcriptSelection: TranscriptSelection? = nil
 }
 
 struct ConversationDelivery: Equatable, Sendable {

@@ -8,6 +8,8 @@ struct ReaderView: View {
     @State private var rawTranscript = false
     @State private var footerHeight: CGFloat = 0
     @State private var planBranch: PlanBranch?
+    @State private var selectionReveal: TranscriptSelectionReveal?
+    @State private var selectionLoadID = UUID()
     @FocusState private var findFocused: Bool
 
     var body: some View {
@@ -50,6 +52,10 @@ struct ReaderView: View {
         }
         .onChange(of: store.selected, initial: true) { _, session in
             if let session { store.liveConversations.prepare(session) }
+        }
+        .onChange(of: store.selected?.id) { _, _ in
+            selectionLoadID = UUID()
+            selectionReveal = nil
         }
         .task(id: store.selectedLiveConversation?.session.id) {
             guard let live = store.selectedLiveConversation else { return }
@@ -96,7 +102,8 @@ struct ReaderView: View {
                                  rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session),
                                  mcpAppTransport: live.snapshot.connected ? live.snapshot.mcpAppConnection?.transport : nil, sourcePath: session.sourcePath,
                                  followLatest: true, bottomInset: footerHeight,
-                                 onAddSelection: selectionHandler(for: session))
+                                 onAddSelection: selectionHandler(for: session),
+                                 selectionReveal: selectionReveal, onSelectionRevealResult: selectionRevealResult)
             } else {
                 NativeTranscript(sessionID: store.readerPositionKey,
                                  records: store.loadedReaderKey == store.readerPositionKey ? store.records : [],
@@ -110,7 +117,8 @@ struct ReaderView: View {
                                  findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
                                  rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session),
                                  sourcePath: session.sourcePath, bottomInset: footerHeight,
-                                 onAddSelection: selectionHandler(for: session))
+                                 onAddSelection: selectionHandler(for: session),
+                                 selectionReveal: selectionReveal, onSelectionRevealResult: selectionRevealResult)
                 if let error = store.readerError {
                     ErrorBanner(message: error) {
                         Task { await store.retryRecords() }
@@ -134,7 +142,7 @@ struct ReaderView: View {
             }
             if let live = store.selectedLiveConversation {
                 ConversationPendingView(conversation: live)
-                ConversationComposer(conversation: live, contextSessions: contextSessions)
+                ConversationComposer(conversation: live, contextSessions: contextSessions, onRevealSelection: revealSelection)
             } else if !InAppResumeTarget.isArchived(session) {
                 Label(InAppResumeTarget.unavailableReason(for: session)
                       ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
@@ -170,6 +178,29 @@ struct ReaderView: View {
             }
             return live.appendTranscriptSelection(selection)
         }
+    }
+
+    private func revealSelection(_ selection: TranscriptSelection) {
+        guard let session = store.selected, selection.sessionID == session.id,
+              let recordID = selection.sourceIDs.last else { return }
+        let loadID = UUID()
+        selectionLoadID = loadID
+        Task { @MainActor in
+            guard selectionLoadID == loadID, store.selected?.id == session.id else { return }
+            if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot {
+                let id = live.snapshot.records.first(where: { $0.sourceID == recordID })?.id ?? recordID
+                live.revealRecord(id)
+            } else {
+                await store.revealRecord(recordID)
+            }
+            guard selectionLoadID == loadID, store.selected?.id == session.id else { return }
+            selectionReveal = TranscriptSelectionReveal(selection: selection, transcriptKey: store.readerTranscriptKey)
+        }
+    }
+
+    private func selectionRevealResult(_ id: UUID, _ error: String?) {
+        guard selectionReveal?.id == id, selectionReveal?.selection.sessionID == store.selected?.id else { return }
+        store.selectedLiveConversation?.reportAttachmentError(error)
     }
 
     private func findBar(_ state: ConversationFindState) -> some View {

@@ -26,6 +26,11 @@ so a later change to the original file does not change a queued prompt.
 Select text in the transcript to open **Add to chat** above the selection.
 It adds exactly the highlighted text and its source to the existing draft without
 sending. This also works in code blocks. Find highlights do not open the popover.
+Click a **Selected text** attachment to scroll to and highlight its captured
+passage in the transcript. Its × button removes only that attachment. New captures
+retain their exact rendered location across relaunch; older captures use an exact
+text match within their source message. If the original passage is missing or
+ambiguous, Memex reports that instead of selecting unrelated text.
 Conversations open in another app must be closed there before context can be
 added here; attachment errors explain the actual failure.
 

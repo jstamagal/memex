@@ -10,6 +10,7 @@ import SQACP
 struct ConversationComposer: View {
     @Bindable var conversation: LiveConversation
     var contextSessions: [Session] = []
+    var onRevealSelection: ((TranscriptSelection) -> Void)? = nil
     @State private var catalog = ConversationComposerCatalog()
     @State private var contextError: String?
     @State private var loadingContext = false
@@ -76,9 +77,15 @@ struct ConversationComposer: View {
                 onSubmitUserInput: { _, _ in },
                 onCancelUserInput: { _ in },
                 contextItems: conversation.attachments.map {
-                    .init(id: $0.id, title: $0.title, subtitle: $0.path, kind: "attachment", systemImageName: "doc")
+                    .init(id: $0.id, title: $0.title, subtitle: $0.path, kind: "attachment", systemImageName: "doc",
+                          isSelectable: onRevealSelection != nil && $0.selectedTranscriptText(in: conversation.session.id) != nil)
                 },
                 onRemoveContextItem: { conversation.removeAttachment($0) },
+                onSelectContextItem: { id in
+                    guard let attachment = conversation.attachments.first(where: { $0.id == id }),
+                          let selection = attachment.selectedTranscriptText(in: conversation.session.id) else { return }
+                    onRevealSelection?(selection)
+                },
                 composerFont: .system(size: 14),
                 mentionConfiguration: .init(suggestions: mentionSuggestions, onSelect: selectMention),
                 onSubmit: submit,
@@ -532,6 +539,7 @@ struct ConversationComposer: View {
 struct ConversationComposer: View {
     let conversation: LiveConversation
     var contextSessions: [Session] = []
+    var onRevealSelection: ((TranscriptSelection) -> Void)? = nil
     var body: some View { EmptyView() }
 }
 #endif

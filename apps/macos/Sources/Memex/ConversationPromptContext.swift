@@ -8,6 +8,26 @@ import SQACPHost
 #endif
 
 extension ConversationAttachment {
+    func selectedTranscriptText(in sessionID: String) -> TranscriptSelection? {
+        if let selection = transcriptSelection {
+            return selection.sessionID == sessionID ? selection : nil
+        }
+        // Previously saved chips retain the exact source and captured text in
+        // their provider block. Recover those bytes without rereading any file.
+        #if canImport(SQACPHost)
+        let prefix = "\(sessionID)#"
+        guard title == "Selected text", path.hasPrefix(prefix),
+              case .text(let block) = try? promptContent() else { return nil }
+        let header = "Attached context: \(title)\nSource: \(path)\n\n"
+        guard block.text.hasPrefix(header) else { return nil }
+        let sourceIDs = String(path.dropFirst(prefix.count)).components(separatedBy: ", \(prefix)")
+        guard sourceIDs.allSatisfy({ !$0.isEmpty }) else { return nil }
+        return TranscriptSelection(text: String(block.text.dropFirst(header.count)), sourceIDs: sourceIDs, sessionID: sessionID)
+        #else
+        return nil
+        #endif
+    }
+
     /// Immutable context is sent as a real text block, not a filesystem reference
     /// that could change between composition and provider delivery.
     static func text(title: String, text: String, source: String) throws -> Self {
@@ -52,10 +72,17 @@ extension ConversationAttachment {
 @MainActor extension LiveConversation {
     func appendTranscriptSelection(_ selection: TranscriptSelection) -> String? {
         let source = selection.sourceIDs.map { "\(session.id)#\($0)" }.joined(separator: ", ")
-        guard appendContext(title: "Selected text", text: selection.text, source: source) else {
+        do {
+            var attachment = try ConversationAttachment.text(title: "Selected text", text: selection.text, source: source)
+            var captured = selection
+            captured.sessionID = session.id
+            attachment.transcriptSelection = captured
+            guard appendCapturedContext([attachment]) else { return attachmentError }
+            return nil
+        } catch {
+            reportAttachmentError(error.localizedDescription)
             return attachmentError
         }
-        return nil
     }
 
     @discardableResult

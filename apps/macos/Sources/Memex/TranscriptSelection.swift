@@ -1,8 +1,63 @@
 import AppKit
+import CryptoKit
 
-struct TranscriptSelection: Equatable {
+struct TranscriptSelection: Codable, Equatable, Sendable {
     let text: String
     let sourceIDs: [String]
+    var sessionID: String? = nil
+    var location: Location? = nil
+
+    struct Location: Codable, Equatable, Sendable {
+        let viewIndex: Int
+        let range: NSRange
+        let renderedRowDigest: String
+    }
+
+    @MainActor static func digest(_ views: [NSTextView]) -> String {
+        var hash = SHA256()
+        for view in views {
+            let bytes = Data(view.string.utf8)
+            hash.update(data: Data("\(bytes.count):".utf8))
+            hash.update(data: bytes)
+        }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Only use an offset against the identical rendered row. Older captures or
+    /// changed messages must have one exact match, never an arbitrary first hit.
+    @MainActor func matches(in views: [NSTextView]) -> [(NSTextView, NSRange)] {
+        if let location, views.indices.contains(location.viewIndex),
+           Self.digest(views) == location.renderedRowDigest {
+            let view = views[location.viewIndex]
+            let body = view.string as NSString
+            let range = location.range
+            if range.location >= 0, range.length > 0, range.location <= body.length,
+               range.length <= body.length - range.location, body.substring(with: range) == text {
+                return [(view, range)]
+            }
+        }
+        guard !text.isEmpty else { return [] }
+        var matches: [(NSTextView, NSRange)] = []
+        for view in views {
+            let body = view.string as NSString
+            var start = 0
+            while start < body.length {
+                let range = body.range(of: text, options: .literal,
+                                       range: NSRange(location: start, length: body.length - start))
+                guard range.location != NSNotFound else { break }
+                matches.append((view, range))
+                if matches.count > 1 { return matches }
+                start = range.location + 1
+            }
+        }
+        return matches
+    }
+}
+
+struct TranscriptSelectionReveal: Equatable {
+    let id = UUID()
+    let selection: TranscriptSelection
+    let transcriptKey: String
 }
 
 @MainActor protocol TranscriptSelectionTarget: AnyObject {
@@ -53,7 +108,7 @@ struct TranscriptSelection: Equatable {
         return selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : selected
     }
 
-    func show(in textView: NSTextView, sourceIDs: [String],
+    func show(in textView: NSTextView, sourceIDs: [String], location: TranscriptSelection.Location? = nil,
               isCurrent: @escaping () -> Bool, add: @escaping (TranscriptSelection) -> String?) {
         dismiss()
         guard let selected = Self.selectedText(in: textView), let anchorView = textView.window?.contentView,
@@ -65,7 +120,7 @@ struct TranscriptSelection: Equatable {
             .offsetBy(dx: textView.textContainerOrigin.x, dy: textView.textContainerOrigin.y)
             .intersection(textView.visibleRect)
         guard !selectionRect.isEmpty else { return }
-        let selection = TranscriptSelection(text: selected, sourceIDs: sourceIDs)
+        let selection = TranscriptSelection(text: selected, sourceIDs: sourceIDs, location: location)
         addSelection = { [weak textView] in
             guard let textView, textView.window != nil, isCurrent(),
                   textView.selectedRange() == range, Self.selectedText(in: textView) == selected else {

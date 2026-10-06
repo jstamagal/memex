@@ -9,7 +9,8 @@ import Testing
     }
 
     private func textViews(in view: NSView) -> [NSTextView] {
-        (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
+        guard !view.isHidden else { return [] }
+        return (view as? NSTextView).map { [$0] } ?? view.subviews.flatMap { textViews(in: $0) }
     }
 
     private func window(_ controller: TranscriptController) -> NSWindow {
@@ -59,7 +60,15 @@ import Testing
         #expect(text is TranscriptSelectionTextView)
         try expectActionsAboveSelection(controller.selectionActions, text: text)
         try addButton(controller.selectionActions).performClick(nil)
-        #expect(received == TranscriptSelection(text: expected, sourceIDs: [source.sourceID]))
+        #expect(received?.text == expected)
+        #expect(received?.sourceIDs == [source.sourceID])
+        #expect(received?.location?.range == text.selectedRange())
+        #expect(controller.selectionActions.popover == nil)
+        let selection = try #require(received)
+        text.setSelectedRange(NSRange(location: 0, length: 0))
+        controller.revealSelection(.init(selection: selection, transcriptKey: "one")) { #expect($0 == nil) }
+        let revealedCell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        #expect(textViews(in: revealedCell).contains { TranscriptSelectionActions.selectedText(in: $0) == expected })
         #expect(controller.selectionActions.popover == nil)
     }
 
@@ -163,6 +172,102 @@ import Testing
         #expect(error?.stringValue == "The selection changed. Select the text again.")
     }
 
+    @Test(arguments: [false, true])
+    func persistedSelectionRevealsExactRepeatedOccurrence(_ code: Bool) throws {
+        let phrase = "selected café 👋"
+        let source = code
+            ? "```text\n\(phrase)\n```\n\nBetween\n\n```text\n\(phrase)\n```"
+            : "\(phrase) then \(phrase)"
+        let controller = TranscriptController()
+        let window = window(controller)
+        defer { controller.selectionActions.dismiss(); window.close() }
+        controller.update(sessionID: "capture", records: [record(source)], provider: "codex")
+        let cell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        cell.layoutSubtreeIfNeeded()
+        let candidates = textViews(in: cell).filter { $0.string.contains(phrase) }
+        let text = try #require(candidates.last)
+        let range = (text.string as NSString).range(of: phrase, options: .backwards)
+        text.setSelectedRange(range)
+        var captured: TranscriptSelection?
+        controller.onAddSelection = { captured = $0; return nil }
+        try showActions(in: text)
+        try addButton(controller.selectionActions).performClick(nil)
+        let saved = try JSONEncoder().encode(try #require(captured))
+        let restored = try JSONDecoder().decode(TranscriptSelection.self, from: saved)
+        // Recreate the rendered row, as happens after navigation or relaunch.
+        controller.update(sessionID: "reopened", records: [record(source)], provider: "codex")
+        controller.revealSelection(.init(selection: restored, transcriptKey: "reopened")) { #expect($0 == nil) }
+        let reopened = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        let views = textViews(in: reopened).filter { $0.string.contains(phrase) }
+        #expect(views.last?.selectedRange() == range)
+        #expect(views.dropLast().allSatisfy { $0.selectedRange().length == 0 })
+        #expect(controller.selectionActions.popover == nil)
+    }
+
+    @Test func revealScrollsToSourceAndRepeatedClicksWorkWithoutChangingFind() throws {
+        let controller = TranscriptController()
+        let window = window(controller)
+        defer { window.close() }
+        let records = (0..<50).map { index in
+            TranscriptRecord(recordID: "row-\(index)", record: Message(role: "assistant",
+                text: "Repeated selected passage in message \(index)", toolName: nil, toolInput: nil, toolOutput: nil))
+        }
+        let findHit = try #require(ConversationMatcher.matches(records, query: "message 1").first)
+        controller.update(sessionID: "scroll", records: records, provider: "codex",
+                          findQuery: "message 1", findHit: findHit, findGeneration: 1, bottomInset: 120)
+        let selection = TranscriptSelection(text: "selected passage", sourceIDs: [records[40].sourceID])
+        for _ in 0..<2 {
+            controller.scrollView.contentView.scroll(to: .zero)
+            controller.revealSelection(.init(selection: selection, transcriptKey: "scroll")) { #expect($0 == nil) }
+            let cell = try #require(controller.table.view(atColumn: 0, row: 40, makeIfNecessary: true))
+            let text = try #require(textViews(in: cell).first)
+            #expect(TranscriptSelectionActions.selectedText(in: text) == "selected passage")
+            #expect(window.firstResponder === text)
+            #expect(controller.scrollView.contentView.bounds.minY > 0)
+            #expect(text.convert(text.bounds, to: controller.table).maxY <= controller.scrollView.contentView.bounds.maxY - 120)
+            #expect(controller.selectedFindRange != nil)
+        }
+        let next = TranscriptSelection(text: "message 45", sourceIDs: [records[45].sourceID])
+        controller.revealSelection(.init(selection: next, transcriptKey: "scroll")) { #expect($0 == nil) }
+        let oldCell = try #require(controller.table.view(atColumn: 0, row: 40, makeIfNecessary: true))
+        #expect(textViews(in: oldCell).allSatisfy { $0.selectedRange().length == 0 })
+    }
+
+    @Test func missingAmbiguousAndOtherSessionSelectionsNeverChooseAnUnrelatedPassage() throws {
+        let controller = TranscriptController()
+        let window = window(controller)
+        defer { window.close() }
+        controller.update(sessionID: "current", records: [record("same same")], provider: "codex")
+        for selection in [TranscriptSelection(text: "same", sourceIDs: ["missing"]),
+                          TranscriptSelection(text: "same", sourceIDs: ["selected-record"]),
+                          TranscriptSelection(text: "changed text", sourceIDs: ["selected-record"])] {
+            var failure: String?
+            controller.revealSelection(.init(selection: selection, transcriptKey: "current")) { failure = $0 }
+            #expect(failure != nil)
+            let cell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+            #expect(textViews(in: cell).allSatisfy { $0.selectedRange().length == 0 })
+        }
+        controller.revealSelection(.init(selection: .init(text: "same same", sourceIDs: ["selected-record"]),
+                                         transcriptKey: "previous")) { _ in Issue.record("Stale session request was applied") }
+        let cell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        #expect(textViews(in: cell).allSatisfy { $0.selectedRange().length == 0 })
+    }
+
+    @Test func revealOpensCollapsedToolSourceWithoutOpeningSelectionActions() throws {
+        let controller = TranscriptController()
+        let window = window(controller)
+        defer { window.close() }
+        let source = TranscriptRecord(recordID: "tool", record: Message(role: "tool_use", text: "",
+            toolName: "exec_command", toolInput: #"{"cmd":"echo selected-tool-passage"}"#, toolOutput: nil))
+        controller.update(sessionID: "tool", records: [source], provider: "codex")
+        #expect(!controller.measurement(at: 0).hasBody)
+        controller.revealSelection(.init(selection: .init(text: "selected-tool-passage", sourceIDs: [source.sourceID]),
+                                         transcriptKey: "tool")) { #expect($0 == nil) }
+        let cell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
+        #expect(textViews(in: cell).contains { TranscriptSelectionActions.selectedText(in: $0) == "selected-tool-passage" })
+        #expect(controller.selectionActions.popover == nil)
+    }
+
     #if canImport(SQACPHost)
     @Test func addToChatPreservesDraftAndAttachmentsWithoutSending() throws {
         let session = Session(source: "codex", sessionID: "selection", sourcePath: "/tmp/selection.jsonl",
@@ -175,10 +280,29 @@ import Testing
         #expect(live.draft == "Existing unsent question")
         #expect(live.attachments.first == first)
         let captured = try #require(live.attachments.last)
+        let restored = try JSONDecoder().decode(ConversationAttachment.self, from: JSONEncoder().encode(captured))
+        #expect(restored.selectedTranscriptText(in: session.id)?.text == "  exact café 👋\n")
+        #expect(restored.selectedTranscriptText(in: "another chat") == nil)
         let content = try #require(JSONSerialization.jsonObject(with: captured.content) as? [String: Any])
         #expect(content["text"] as? String == "Attached context: Selected text\nSource: \(session.id)#record-42\n\n  exact café 👋\n")
         #expect(!live.connectionAttempted)
         #expect(live.pendingPrompt == nil)
+    }
+
+    @Test func legacySelectedTextChipsRecoverCapturedBytesAndSource() throws {
+        let sessionID = "local\u{1f}codex\u{1f}session\u{1f}/tmp/source, with-comma.jsonl"
+        let source = "\(sessionID)#record-1, \(sessionID)#record-2"
+        let text = "  café 👋\n**literal captured text**\n"
+        let original = try ConversationAttachment.text(title: "Selected text", text: text, source: source)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any])
+        json.removeValue(forKey: "transcriptSelection")
+        let restored = try JSONDecoder().decode(ConversationAttachment.self, from: JSONSerialization.data(withJSONObject: json))
+        let selection = try #require(restored.selectedTranscriptText(in: sessionID))
+        #expect(selection.text == text)
+        #expect(selection.sourceIDs == ["record-1", "record-2"])
+        #expect(selection.location == nil)
+        #expect(restored.content == original.content)
+        #expect(restored.selectedTranscriptText(in: "another session") == nil)
     }
 
     @Test func unavailableConversationReportsOwnershipAndPreservesDraft() {
