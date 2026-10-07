@@ -89,8 +89,7 @@ struct HomeConversationComposer: View {
                     .font(.caption)
             }
         }
-        .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: store.newConversationProject) { await inspectProject() }
         .task { reloadProviders() }
         .sheet(isPresented: $showingDictation) {

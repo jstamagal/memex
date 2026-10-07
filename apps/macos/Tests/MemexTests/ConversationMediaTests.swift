@@ -5,11 +5,13 @@ import Testing
 
 @Suite(.serialized) @MainActor struct ConversationMediaTests {
     private func bitmap() throws -> NSBitmapImageRep {
-        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 16, pixelsHigh: 16,
-            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
-            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0))
-        for x in 0..<16 { for y in 0..<16 { bitmap.setColor(.red, atX: x, y: y) } }
-        return bitmap
+        let colorSpace = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(data: nil, width: 16, height: 16,
+            bitsPerComponent: 8, bytesPerRow: 64, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: 16, height: 16))
+        return NSBitmapImageRep(cgImage: try #require(context.makeImage()))
     }
 
     @Test func smallSupportedImagesRetainExactBytesAndTiffIsNormalized() throws {
@@ -23,6 +25,9 @@ import Testing
         let decoded = try #require(NSBitmapImageRep(data: normalized.data))
         #expect(decoded.pixelsWide == 16)
         #expect(decoded.pixelsHigh == 16)
+        var pixel = [UInt](repeating: 0, count: decoded.samplesPerPixel)
+        decoded.getPixel(&pixel, atX: 0, y: 0)
+        #expect(Array(pixel.prefix(3)) == [255, 0, 0])
     }
 
     @Test func invalidImageFailsInsteadOfBecomingAnOpaqueAttachment() {
