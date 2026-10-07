@@ -51,9 +51,9 @@ struct ConversationStateLabel: View {
 
     var body: some View {
         if let activity = state.activity {
-            Label(activity.label, systemImage: activity.symbol)
+            Image(systemName: activity.symbol)
                 .font(.caption).foregroundStyle(activity.color)
-                .lineLimit(1)
+                .help(activity.label).accessibilityLabel(activity.label)
         }
     }
 }

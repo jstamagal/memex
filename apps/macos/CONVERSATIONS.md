@@ -16,6 +16,14 @@ conversation and inspect its actual settings. The **+** button attaches files;
 the chooser and file/image paste or drop also open an unsent draft. The normal Home
 send applies saved provider-specific choices before sending; an unconfirmed setting retains the
 draft for inspection. Settings are only exposed when the provider supplies them.
+Model and permission controls remain available during active turns and approval
+requests. Claude inherits its native permission configuration unless you explicitly
+choose a mode. The provider determines when a change takes effect; rejected changes
+leave the conversation connected and display the reason beside the composer.
+
+The conversation header is a single title row. Its adjacent **…** menu contains
+branch, fork, rewind, and parent/child navigation actions. An empty new conversation
+does not warn merely because its provider has not written a transcript yet.
 
 Inside a conversation, the composer supports captured file and image attachments,
 file/chat context, provider commands, skills and plugins, prompt recall, and saved
@@ -69,11 +77,14 @@ draft on failure, and leaves queued work held. A local queued prompt can move to
 a reviewed side-chat draft; the source entry is removed only after that draft is
 durably saved. Remote queue transfer is not advertised.
 
-Outgoing intent is persisted before dispatch. A crash or missing acknowledgement
-does not silently turn an uncertain command into a new send. Inspect native
-history and the retained request before explicitly resolving uncertainty. Reconnect
-does not automatically replay it. Queued but undispatched work stays held after
-recovery until explicitly resumed.
+Outgoing intent is persisted before dispatch. The provider's acknowledgement of
+that exact command confirms delivery even when its transcript omits the echoed
+message identity. Reopening checks saved acknowledgements without starting a
+provider. A crash or missing acknowledgement does not silently turn an uncertain
+command into a new send; inspect native history and the retained request before
+explicitly resolving uncertainty. Queued but undispatched work stays held after
+recovery until explicitly resumed. Conversation rows keep activity indicators
+inline instead of adding a separate status line.
 
 Approvals retain native decision IDs and details. Structured questions preserve
 their explanatory choices and support single choice, multiple selection, and

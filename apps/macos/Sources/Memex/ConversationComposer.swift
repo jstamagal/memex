@@ -37,11 +37,11 @@ struct ConversationComposer: View {
                     canRespond: conversation.snapshot.connected && !conversation.submitting,
                     onRespond: { response in Task { await conversation.respondToElicitation(approval, response: response) } })
             }
-            if let error = contextError ?? library.error {
+            if let error = contextError ?? conversation.settingsError ?? library.error {
                 HStack(alignment: .top) {
                     Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
                     Spacer()
-                    Button { contextError = nil } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
+                    Button { contextError = nil; conversation.clearSettingsError() } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
                 }
             }
             if loadingContext { ProgressView("Capturing context…").controlSize(.small) }

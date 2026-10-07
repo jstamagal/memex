@@ -21,6 +21,44 @@ enum InAppAgentRuntime {
         UnavailableConversationRuntime()
         #endif
     }
+
+    static func confirmedDelivery(_ session: Session, commandID: String) async throws -> Bool {
+        #if canImport(SQACPHost)
+        guard session.machineID == "local", ["claude", "codex"].contains(session.source) else { return false }
+        return try await Task.detached {
+            let target = try InAppResumeTarget.resolve(session)
+            return try confirmedDelivery(databaseURL: target.storageURL.appendingPathComponent("runtime.sqlite"),
+                sessionID: "memex-" + InAppResumeTarget.digest(session.id), commandID: commandID)
+        }.value
+        #else
+        return false
+        #endif
+    }
+
+    #if canImport(SQACPHost)
+    static func confirmedDelivery(databaseURL: URL, sessionID: String, commandID: String) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: databaseURL.path) else { return false }
+        let runtime = try AgentRuntimeClient(databaseURL: databaseURL)
+        func read(_ method: String, _ params: [String: RawTranscriptJSON]) throws -> RawTranscriptJSON {
+            let request = RawTranscriptJSON.object(["id": .string(UUID().uuidString),
+                "method": .string(method), "params": .object(params)])
+            let response = try runtime.requestJSON(request.prettyPrinted())
+            let value = try JSONDecoder().decode(RawTranscriptJSON.self, from: Data(response.utf8))
+            if let error = value["error"]["message"].string { throw ConversationRuntimeError(message: error) }
+            return value["result"]
+        }
+        let operations = try read("provider_operation.list", ["threadId": .string(sessionID), "includeTerminal": .bool(true)])
+        guard let operation = operations.array.first(where: {
+            $0["command"]["commandId"].string == commandID && $0["command"]["threadId"].string == sessionID
+                && ["thread.turn.start", "thread.turn.steer"].contains($0["command"]["type"].string ?? "")
+        }), operation["status"].string == "completed",
+              let turnID = operation["command"]["turnId"].string else { return false }
+        let thread = try read("thread.snapshot", ["threadId": .string(sessionID)])
+        return thread["turns"].array.contains {
+            $0["turnId"].string == turnID && $0["nativeTurnId"].string?.isEmpty == false
+        }
+    }
+    #endif
 }
 
 private actor UnavailableConversationRuntime: ConversationRuntime {
@@ -36,6 +74,9 @@ private actor UnavailableConversationRuntime: ConversationRuntime {
 
 #if canImport(SQACPHost)
 func conversationProviderError(_ error: Error) -> ConversationRuntimeError {
+    if case AgentConversationServiceError.settingsRejected(let detail) = error {
+        return ConversationRuntimeError(message: detail, kind: .settingsRejected)
+    }
     let message: String
     if case AgentConversationServiceError.runtime(let detail) = error { message = detail }
     else { message = error.localizedDescription }
@@ -107,9 +148,6 @@ actor NativeConversationRuntime: ConversationRuntime {
             source = sourceID
         } else {
             source = nil
-            if target.configuredProvider == nil {
-                warning = "The provider has not saved its transcript yet. Send a message before closing to make this conversation resumable."
-            }
         }
         sessionID = id
         let binding = AgentConversationBinding(sessionID: id, sourceID: source,
@@ -148,7 +186,10 @@ actor NativeConversationRuntime: ConversationRuntime {
     }
 
     private func changed(error: ConversationRuntimeError?) {
-        if let error { fail(error); return }
+        if let error {
+            if error.kind == .settingsRejected { receive?(.failure(error)) }
+            else { fail(error); return }
+        }
         guard drain == nil, service != nil else { return }
         drain = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(80)) } catch { return }

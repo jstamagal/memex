@@ -17,21 +17,20 @@ struct ConversationHistoryActions: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                if let link = store.conversationRelationships.parent(of: session.id) {
-                    Button { store.openRelatedConversation(link.parent) } label: {
-                        Label(link.parent.title, systemImage: "arrow.turn.up.left")
-                    }.lineLimit(1).help("Open parent conversation")
-                }
-                let children = store.conversationRelationships.children(of: session.id)
-                if !children.isEmpty {
-                    Menu("Branches (\(children.count))") {
-                        ForEach(children) { link in
-                            Button(link.child.title) { store.openRelatedConversation(link.child) }
+                Text(session.title).font(.headline).lineLimit(1).truncationMode(.tail)
+                    .help(session.title)
+                Menu {
+                    if let link = store.conversationRelationships.parent(of: session.id) {
+                        Button("Open parent: \(link.parent.title)") { store.openRelatedConversation(link.parent) }
+                    }
+                    let children = store.conversationRelationships.children(of: session.id)
+                    if !children.isEmpty {
+                        Menu("Branches (\(children.count))") {
+                            ForEach(children) { link in
+                                Button(link.child.title) { store.openRelatedConversation(link.child) }
+                            }
                         }
                     }
-                }
-                Spacer()
-                Menu {
                     Button("Branch with context…") { showingBranch = true }
                     Button("Fork native history…") { beginMutation(.fork) }
                         .disabled(store.selectedLiveConversation?.canMutateHistory != true || boundaries.isEmpty)
@@ -40,9 +39,13 @@ struct ConversationHistoryActions: View {
                     if store.conversationRelationships.parent(of: session.id) != nil {
                         Button("Add context to parent draft") { perform { try await store.mergeContextToParent(from: session) } }
                     }
-                } label: { Label("Conversation", systemImage: "arrow.triangle.branch") }
+                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
+                .menuIndicator(.hidden)
+                .accessibilityLabel("Conversation actions")
+                .help("Conversation actions")
                 .disabled(store.historyActionInProgress || !pending.isEmpty)
                 if store.historyActionInProgress { ProgressView().controlSize(.small) }
+                Spacer(minLength: 0)
             }.font(.caption).buttonStyle(.borderless)
             ForEach(pending) { request in
                 HStack(alignment: .top) {

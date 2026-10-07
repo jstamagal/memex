@@ -3,7 +3,7 @@ import Foundation
 import Observation
 
 struct ConversationRuntimeError: LocalizedError, Sendable {
-    enum Kind: Sendable { case other, openElsewhere }
+    enum Kind: Sendable { case other, openElsewhere, settingsRejected }
     let message: String
     var kind: Kind = .other
     var errorDescription: String? { message }
@@ -121,6 +121,7 @@ final class LiveConversation {
     private var preparingPrompt = false
     private var applyingSettings = false
     private(set) var error: String?
+    private(set) var settingsError: String?
     private(set) var ownership: Ownership = .available
     private(set) var revision = 0
     private(set) var focusRequest = 0
@@ -242,7 +243,11 @@ final class LiveConversation {
     var canTransferQueuedPrompt: Bool {
         onTransferQueuedPrompt != nil && !transferringQueue && !isServerOwned && session.machineID == "local"
     }
-    var canChangeSettings: Bool { canSend && !preparingPrompt && pendingPrompt == nil }
+    var canChangeSettings: Bool {
+        ownership == .available && snapshot.connected && snapshot.ready && !connecting && !submitting
+            && !preparingPrompt && pendingPrompt == nil && error == nil && !applyingSettings
+            && snapshot.controls?.pendingChanges != true && !changingHistory && !capturingCheckpoint
+    }
     var isWorking: Bool { connecting || preparingPrompt || submitting || snapshot.running || snapshot.pendingPrompt || changingHistory || capturingCheckpoint }
     var canMutateHistory: Bool { canSend && !preparingPrompt && snapshot.canMutateHistory && pendingPrompt == nil && queue.isEmpty }
     var canStop: Bool {
@@ -387,15 +392,14 @@ final class LiveConversation {
                         self.observedProviderWork = !providerIsIdle
                             && (wasWorking || snapshot.running || snapshot.pendingPrompt)
                         // A local pending flag is not native work. A fast turn may
-                        // finish between publications, but only its exact accepted
-                        // command and native user echo establish that it ran.
+                        // finish between publications. Its exact native command
+                        // acknowledgement establishes that it reached the provider.
                         let pending = self.pendingPrompt
                         let acceptedLocalPrompt = pending.map { prompt in
                             prompt.phase == .awaitingConfirmation && prompt.isSteer != true
                                 && !self.checkpointedPromptIDs.contains(prompt.commandID)
                                 && snapshot.deliveries.contains {
-                                    $0.commandID == prompt.commandID && $0.status == "completed"
-                                        && $0.hasNativeEcho(in: snapshot.records)
+                                    $0.commandID == prompt.commandID && $0.isAccepted
                                 }
                         } ?? false
                         let finishedTurn = (wasWorking || acceptedLocalPrompt) && providerIsIdle
@@ -433,7 +437,12 @@ final class LiveConversation {
                         self.notifyState()
                         self.scheduleQueueDrain()
                     case .failure(let failure):
-                        await self.connectionFailed(failure)
+                        if failure.kind == .settingsRejected {
+                            self.settingsError = failure.message
+                            self.finishSettings(false)
+                        } else {
+                            await self.connectionFailed(failure)
+                        }
                     }
                 }
             }
@@ -545,7 +554,8 @@ final class LiveConversation {
     private func reconcilePendingPrompt() {
         guard let pending = pendingPrompt,
               let delivery = snapshot.deliveries.first(where: { $0.commandID == pending.commandID }) else { return }
-        if (pending.isSteer == true && delivery.status == "completed") || delivery.hasNativeEcho(in: snapshot.records) && pending.isSteer != true {
+        if delivery.isAccepted || (pending.isSteer == true && delivery.status == "completed")
+            || delivery.hasNativeEcho(in: snapshot.records) && pending.isSteer != true {
             pendingPrompt = nil
             deliveryUncertain = false
             if pending.phase == .uncertain { error = nil }
@@ -556,6 +566,24 @@ final class LiveConversation {
             error = delivery.error ?? "The send could not be confirmed. Review the native conversation before retrying."
             persistDraft()
         }
+    }
+
+    /// Recover only an exact, durable provider acknowledgement. Reading a saved
+    /// receipt neither starts a provider nor authorizes replaying held work.
+    func reconcileSavedDelivery(
+        read: @Sendable (Session, String) async throws -> Bool = InAppAgentRuntime.confirmedDelivery
+    ) async {
+        guard let pending = pendingPrompt, deliveryUncertain, runtime == nil, !isWorking else { return }
+        let token = generation
+        guard (try? await read(session, pending.commandID)) == true,
+              generation == token, pendingPrompt?.commandID == pending.commandID,
+              runtime == nil, !isWorking else { return }
+        pendingPrompt = nil
+        deliveryUncertain = false
+        error = nil
+        connectionAttempted = false
+        persistDraft()
+        notifyState()
     }
 
     func setModel(_ id: String) async {
@@ -581,6 +609,7 @@ final class LiveConversation {
     /// for native acknowledgement before the first prompt can use those choices.
     func applySettings(modelID: String?, configurationValues: [String: String]) async -> Bool {
         guard canChangeSettings else { return false }
+        settingsError = nil
         applyingSettings = true
         defer { applyingSettings = false; scheduleQueueDrain() }
         if let modelID, snapshot.controls?.models.contains(where: { $0.id == modelID }) == true,
@@ -598,6 +627,7 @@ final class LiveConversation {
     }
 
     private func waitForSettings(_ predicate: @escaping (ConversationControls) -> Bool) async -> Bool {
+        if settingsError != nil { return false }
         if let controls = snapshot.controls, !controls.pendingChanges, predicate(controls) { return true }
         return await withCheckedContinuation { continuation in
             finishSettings(false)
@@ -625,6 +655,8 @@ final class LiveConversation {
         settingsWaiter = nil
         waiter?.continuation.resume(returning: success)
     }
+
+    func clearSettingsError() { settingsError = nil }
 
     /// Explicit fallback: stop first, then submit this retained draft only after
     /// the provider reports idle. A failure, timeout, reconnect or edit cancels it.
@@ -892,6 +924,10 @@ final class LiveConversation {
             return generation == token
         } catch {
             guard generation == token else { return false }
+            if (error as? ConversationRuntimeError)?.kind == .settingsRejected {
+                settingsError = error.localizedDescription
+                return false
+            }
             self.error = error.localizedDescription
             if command.action == .prompt || command.action == .steer {
                 deliveryUncertain = true
@@ -994,6 +1030,7 @@ final class LiveConversations {
         conversation.beforePrompt = beforePrompt
         conversation.afterTurn = afterTurn
         sessions[session.id] = conversation
+        Task { await conversation.reconcileSavedDelivery() }
     }
 
     func prepareHosted(_ session: Session, connection: ExecutionHostConnection, conversationID: String? = nil) {

@@ -57,6 +57,13 @@ struct ConversationDelivery: Equatable, Sendable {
     let nativeTurnID: String?
     let nativeMessageID: String?
 
+    /// `completed` is the provider-operation acknowledgement, not the local
+    /// enqueue receipt. Its exact native identity is independent of how a
+    /// transcript importer represents (or omits) the echoed user message.
+    var isAccepted: Bool {
+        status == "completed" && (nativeTurnID?.isEmpty == false || nativeMessageID?.isEmpty == false)
+    }
+
     func hasNativeEcho(in records: [TranscriptRecord]) -> Bool {
         records.contains {
             $0.record.role == "user" && (

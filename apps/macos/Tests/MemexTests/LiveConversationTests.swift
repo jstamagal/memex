@@ -62,6 +62,9 @@ private actor RecordingConversationRuntime: ConversationRuntime {
     func rejectOwnership() {
         receive?(.failure(ConversationRuntimeError(message: "Open elsewhere", kind: .openElsewhere)))
     }
+    func rejectSettings() {
+        receive?(.failure(ConversationRuntimeError(message: "Setting unavailable during this turn", kind: .settingsRejected)))
+    }
 }
 
 @MainActor private func waitFor(_ predicate: () -> Bool) async throws {
@@ -183,7 +186,7 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         await conversation.disconnect()
     }
 
-    @Test func pendingPromptRequiresExactNativeIdentityEvenForRepeatedText() async throws {
+    @Test func pendingPromptRequiresItsOwnNativeAcknowledgementEvenForRepeatedText() async throws {
         let driver = RecordingConversationRuntime()
         let conversation = LiveConversation(session: liveSession(), makeRuntime: { driver }, resolveTarget: fakeTarget)
         conversation.draft = "Same message"
@@ -194,7 +197,7 @@ private actor RecordingConversationRuntime: ConversationRuntime {
             role: "user", text: "Same message", toolName: nil, toolInput: nil, toolOutput: nil,
             eventID: "other-user", sourceTurnID: "other-turn"))
         await driver.emit(ConversationSnapshot(records: [unrelated], connected: true, ready: true,
-            deliveries: [.init(commandID: command.id, status: "completed", error: nil,
+            deliveries: [.init(commandID: "older-command", status: "completed", error: nil,
                                nativeTurnID: "current-turn", nativeMessageID: "current-user")]))
         try await waitFor { conversation.snapshot.records.count == 1 }
         #expect(conversation.pendingPrompt?.commandID == command.id)
@@ -205,6 +208,67 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         #expect(conversation.canSubmit)
         #expect(await driver.commands.count == 1)
         await conversation.disconnect()
+    }
+
+    @Test func nativeAcknowledgementClearsPendingWithoutTranscriptEchoAndKeepsSettingsAvailable() async throws {
+        let drafts = ConversationDraftStore()
+        let driver = RecordingConversationRuntime()
+        let session = liveSession(source: "claude")
+        let conversation = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: drafts)
+        conversation.draft = "First prompt"
+        await conversation.send()
+        let command = try #require(await driver.commands.first)
+        conversation.draft = "Next draft"
+        for status in ["queued", "dispatching"] {
+            await driver.emit(ConversationSnapshot(connected: true, ready: true, running: true,
+                deliveries: [.init(commandID: command.id, status: status, error: nil,
+                    nativeTurnID: "turn", nativeMessageID: "user")]))
+            try await waitFor { conversation.snapshot.deliveries.first?.status == status }
+            #expect(conversation.pendingPrompt != nil)
+        }
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, running: true,
+            deliveries: [.init(commandID: command.id, status: "completed", error: nil,
+                nativeTurnID: "turn", nativeMessageID: "user")]))
+        try await waitFor { conversation.pendingPrompt == nil }
+        #expect(conversation.snapshot.records.isEmpty)
+        #expect(conversation.canChangeSettings)
+        #expect(conversation.draft == "Next draft")
+        #expect(drafts.drafts[session.id]?.deliveryUncertain == false)
+        #expect(await driver.commands.count == 1)
+        await conversation.disconnect()
+    }
+
+    @Test func savedNativeAcknowledgementRecoversWithoutConnectingOrSendingHeldWork() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let drafts = ConversationDraftStore(directory: directory)
+        let session = liveSession(source: "claude")
+        let command = ConversationCommand(.prompt, text: "Already sent")
+        var pending = ConversationPendingPrompt(command)
+        pending.phase = .uncertain
+        let queued = ConversationQueuedPrompt(ConversationCommand(.prompt, text: "Held queue"))
+        drafts.set(.init(text: "Next draft", deliveryUncertain: true, pendingPrompt: pending,
+            queue: [queued], queueHeld: true), for: session.id)
+        await drafts.flush()
+        let restored = ConversationDraftStore(directory: directory)
+        let driver = RecordingConversationRuntime()
+        let conversation = LiveConversation(session: session, makeRuntime: { driver }, resolveTarget: fakeTarget, drafts: restored)
+        await conversation.reconcileSavedDelivery { _, _ in false }
+        #expect(conversation.pendingPrompt != nil)
+        await conversation.reconcileSavedDelivery { suppliedSession, id in
+            suppliedSession.id == session.id && id == command.id
+        }
+        #expect(conversation.pendingPrompt == nil)
+        #expect(conversation.error == nil)
+        #expect(conversation.canSubmit)
+        #expect(conversation.draft == "Next draft")
+        #expect(conversation.queue == [queued] && conversation.queueHeld)
+        #expect(await driver.connections == 0)
+        #expect(await driver.commands.isEmpty)
+        await restored.flush()
+        let final = ConversationDraftStore(directory: directory).drafts[session.id]
+        #expect(final?.deliveryUncertain == false && final?.pendingPrompt == nil)
+        #expect(final?.text == "Next draft" && final?.queue == [queued])
     }
 
     @Test func pendingConfigurationBlocksSendWithoutChangingTheDraft() async throws {
@@ -233,6 +297,60 @@ private actor RecordingConversationRuntime: ConversationRuntime {
         try await waitFor { conversation.canSubmit }
         await conversation.send()
         #expect(await driver.commands.map(\.action) == [.model, .prompt])
+        await conversation.disconnect()
+    }
+
+    @Test func settingsRemainAvailableDuringWorkAndApprovalWithoutSendingOrStopping() async throws {
+        let driver = RecordingConversationRuntime()
+        let conversation = LiveConversation(session: liveSession(source: "claude"), makeRuntime: { driver }, resolveTarget: fakeTarget)
+        await conversation.connect()
+        let permission = ConversationControls.Configuration(id: "permission_mode", title: "Permissions", category: "mode",
+            selectedID: "default", choices: [.init(id: "default", title: "Default"), .init(id: "auto", title: "Auto")])
+        var controls = ConversationControls(models: [.init(id: "provider-model", title: "Provider model")], configurations: [permission])
+        let approval = ConversationApproval(id: "tool", title: "Bash", detail: nil, options: [])
+        var snapshot = ConversationSnapshot(connected: true, ready: true, running: true, approvals: [approval], controls: controls)
+        await driver.emit(snapshot)
+        try await waitFor { conversation.snapshot.running }
+        conversation.draft = "Keep this draft"
+        #expect(!conversation.canSend)
+        #expect(conversation.canChangeSettings)
+        let selectingModel = Task { await conversation.setModel("provider-model") }
+        while await driver.commands.isEmpty { await Task.yield() }
+        controls.selectedModelID = "provider-model"
+        snapshot.controls = controls
+        await driver.emit(snapshot)
+        await selectingModel.value
+        let selectingPermission = Task { await conversation.configure(permission, value: "auto") }
+        while await driver.commands.count < 2 { await Task.yield() }
+        controls.configurations[0] = .init(id: permission.id, title: permission.title,
+            category: permission.category, selectedID: "auto", choices: permission.choices)
+        snapshot.controls = controls
+        await driver.emit(snapshot)
+        await selectingPermission.value
+        #expect(await driver.commands.map(\.action) == [.model, .configuration])
+        #expect(conversation.snapshot.approvals == [approval])
+        #expect(conversation.snapshot.running)
+        #expect(conversation.draft == "Keep this draft")
+        #expect(conversation.canChangeSettings)
+        await conversation.disconnect()
+    }
+
+    @Test func rejectedSettingsKeepTheRunningConversationConnected() async throws {
+        let driver = RecordingConversationRuntime()
+        let conversation = LiveConversation(session: liveSession(source: "claude"), makeRuntime: { driver }, resolveTarget: fakeTarget)
+        await conversation.connect()
+        await driver.emit(ConversationSnapshot(connected: true, ready: true, running: true,
+            controls: ConversationControls(models: [.init(id: "provider-model", title: "Provider model")])))
+        try await waitFor { conversation.snapshot.running }
+        let selecting = Task { await conversation.setModel("provider-model") }
+        while await driver.commands.isEmpty { await Task.yield() }
+        await driver.rejectSettings()
+        await selecting.value
+        #expect(conversation.settingsError == "Setting unavailable during this turn")
+        #expect(conversation.error == nil)
+        #expect(conversation.snapshot.connected && conversation.snapshot.ready && conversation.snapshot.running)
+        #expect(conversation.canChangeSettings)
+        #expect(await driver.stopped == false)
         await conversation.disconnect()
     }
 

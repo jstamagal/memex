@@ -230,33 +230,13 @@ struct ReaderView: View {
     }
 
     private func header(_ session: Session) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ConversationHistoryActions(store: store, session: session)
-            HStack(alignment: .top) {
-                Text(session.title).font(.title2.weight(.semibold)).lineLimit(2)
-                Spacer()
-            }.buttonStyle(.borderless)
-            HStack(spacing: 8) {
-                Text(session.source)
-                Text("·")
-                Text(store.projectName(for: session))
-                if let workspace = store.createdConversations.contexts[session.id]?.workspace,
-                   let branch = workspace.branch {
-                    Text("·")
-                    Label(branch, systemImage: "arrow.triangle.branch")
-                        .truncationMode(.middle).help(workspace.workingDirectory.path)
-                }
-                if session.machineID != "local" {
-                    Text("·")
-                    Label(session.machineID, systemImage: "desktopcomputer")
-                }
-                Spacer()
-                if let date = session.date { Text(date, format: .dateTime.month().day().hour().minute()) }
-            }
-            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }
-        .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
-        .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 12)
-        .frame(maxWidth: .infinity)
+        ConversationHistoryActions(store: store, session: session)
+            .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
+            .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .help([session.source, store.projectName(for: session),
+                   session.machineID == "local" ? nil : session.machineID,
+                   store.createdConversations.contexts[session.id]?.workspace.branch]
+                .compactMap { $0 }.joined(separator: " · "))
     }
 }

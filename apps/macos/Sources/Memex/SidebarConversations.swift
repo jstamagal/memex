@@ -370,6 +370,8 @@ struct BrowserSidebar: View {
                 Text(session.title)
                     .font(.system(size: 13, weight: store.conversationLibrary.isUnread(session) ? .semibold : .regular))
                     .lineLimit(2)
+                ConversationStateLabel(state: .init(activity: state.activity == .openElsewhere ? nil : state.activity,
+                                                   hasDraft: state.hasDraft))
             }
             HStack(spacing: 4) {
                 if store.conversationLibrary.isPinned(session) { Image(systemName: "pin.fill").accessibilityLabel("Pinned") }
@@ -386,8 +388,6 @@ struct BrowserSidebar: View {
                     Text(date, format: .dateTime.month(.abbreviated).day()).fixedSize()
                 }
             }.font(.caption).foregroundStyle(.secondary)
-            ConversationStateLabel(state: .init(activity: state.activity == .openElsewhere ? nil : state.activity,
-                                               hasDraft: state.hasDraft))
         }
         .padding(.vertical, 3)
         .tag(Selection.conversation(session.id))

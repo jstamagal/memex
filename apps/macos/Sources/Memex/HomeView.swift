@@ -65,6 +65,7 @@ struct HomeView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack(alignment: .firstTextBaseline) {
                                         Text(session.title).font(.headline).lineLimit(1)
+                                        ConversationStateLabel(state: store.liveConversations.listState(for: session))
                                         Spacer()
                                         if let date = session.date {
                                             TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -85,7 +86,6 @@ struct HomeView: View {
                                         Text(ConversationExcerpt.text(snippet, query: store.query))
                                             .font(.callout).foregroundStyle(.secondary).lineLimit(2).help(snippet)
                                     }
-                                    ConversationStateLabel(state: store.liveConversations.listState(for: session))
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.vertical, 8)
