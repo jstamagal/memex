@@ -35,21 +35,25 @@ struct HomeView: View {
                     HStack {
                         Text(store.query.isEmpty ? "Recent conversations" : "Matching conversations").font(.title2.weight(.semibold))
                         Spacer()
-                        if InAppAgentRuntime.isAvailable {
-                            Button { store.beginNewConversation() } label: {
-                                Label("New conversation", systemImage: "square.and.pencil")
-                            }
-                        }
                         Button { showingFilters.toggle() } label: {
                             Image(systemName: "line.3.horizontal.decrease")
                                 .frame(width: 20, height: 20)
                         }
-                        .modifier(HomeFilterButtonStyle())
+                        .modifier(HomeActionButtonStyle())
                         .foregroundStyle(filtersHighlighted ? Color.accentColor : Color.primary)
                         .accessibilityLabel("Filter conversations")
                         .help("Filter conversations")
                         .popover(isPresented: $showingFilters, arrowEdge: .bottom) {
                             ConversationFilterControls(store: store, includesProject: true) { showingFilters = false }
+                        }
+                        if InAppAgentRuntime.isAvailable {
+                            Button { store.beginNewConversation() } label: {
+                                Image(systemName: "plus")
+                                    .frame(width: 20, height: 20)
+                            }
+                            .modifier(HomeActionButtonStyle())
+                            .accessibilityLabel("New conversation")
+                            .help("New conversation")
                         }
                     }
                     if let error = store.listError {
@@ -188,7 +192,7 @@ func homeRelativeTimestamp(_ date: Date, now: Date) -> String {
     }
 }
 
-private struct HomeFilterButtonStyle: ViewModifier {
+private struct HomeActionButtonStyle: ViewModifier {
     @State private var hovering = false
 
     func body(content: Content) -> some View {
