@@ -357,6 +357,7 @@ private struct DiscoveryRPCError: LocalizedError {
 /// total deadline and cancellation. Close always kills and reaps before removing its private files.
 private final class DiscoveryProcess {
   private let process = Process()
+  private let exited = DispatchSemaphore(value: 0)
   private let input = Pipe()
   private let directory: URL
   private let outputURL: URL
@@ -398,6 +399,7 @@ private final class DiscoveryProcess {
       process.standardInput = input
       process.standardOutput = output
       process.standardError = FileHandle.nullDevice
+      process.terminationHandler = { [exited] _ in exited.signal() }
       // A provider can close stdin while still running. Keep that a write error,
       // rather than allowing SIGPIPE to terminate the entire native app.
       guard fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
@@ -413,7 +415,10 @@ private final class DiscoveryProcess {
   func close() {
     try? input.fileHandleForWriting.close()
     if process.isRunning { kill(process.processIdentifier, SIGKILL) }
-    process.waitUntilExit()
+    // Discovery can resume on a different cooperative thread after an await.
+    // waitUntilExit spins a thread-local run loop and can miss termination there.
+    // The handler is installed before launch and signals after Foundation reaps.
+    exited.wait()
     try? reader.close()
     try? output.close()
     try? FileManager.default.removeItem(at: directory)

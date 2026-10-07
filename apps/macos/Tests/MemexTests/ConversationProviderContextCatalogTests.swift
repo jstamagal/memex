@@ -269,6 +269,19 @@ struct ConversationProviderContextCatalogTests {
     }
   }
 
+  @Test func repeatedDiscoveryReapsProcessesThatExitBeforeCleanup() async throws {
+    let fixture = try Fixture()
+    defer { fixture.remove() }
+    try fixture.executable("echo $$ > pid\necho '[]'")
+    for _ in 0..<20 {
+      let catalog = try await ConversationProviderContextCatalog.load(
+        installation: fixture.installation(.claude))
+      #expect(catalog.issues.isEmpty)
+      #expect(kill(try fixture.pid(), 0) == -1)
+      await Task.yield()
+    }
+  }
+
   @Test func cancellationStopsAndReapsDiscovery() async throws {
     let fixture = try Fixture()
     defer { fixture.remove() }
