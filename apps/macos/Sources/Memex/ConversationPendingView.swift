@@ -7,6 +7,8 @@ import SQACPUI
 /// Local send state stays outside the source transcript and its search results.
 struct ConversationPendingView: View {
     let conversation: LiveConversation
+    @Environment(\.accessibilityReduceMotion) private var systemReduceMotion
+    @Environment(\.memexReduceMotion) private var appReduceMotion
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -37,18 +39,27 @@ struct ConversationPendingView: View {
                 }
             }
             #if canImport(SQACPUI)
-            if conversation.snapshot.running && conversation.snapshot.approvals.isEmpty && conversation.snapshot.questions.isEmpty {
-                AcpShimmerText("Thinking…", font: .system(size: 12))
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("Agent is working")
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(.regularMaterial, in: Capsule())
+            if conversation.isWorking && conversation.snapshot.approvals.isEmpty && conversation.snapshot.questions.isEmpty {
+                Group {
+                    if systemReduceMotion || appReduceMotion {
+                        Text(activityLabel).foregroundStyle(.secondary)
+                    } else {
+                        AcpShimmerText(activityLabel)
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(activityLabel)
+                .padding(.vertical, 8)
             }
             #endif
         }
         .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
         .padding(.horizontal, ConversationReadingLane.minimumMargin)
         .frame(maxWidth: .infinity)
+    }
+
+    private var activityLabel: String {
+        conversation.status == "Working…" ? "Thinking..." : conversation.status
     }
 
     private func recoveryLabel(_ phase: ConversationPendingPrompt.Phase) -> String? {

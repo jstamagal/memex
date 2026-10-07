@@ -209,7 +209,7 @@ struct HomeTests {
             #expect(separators.count == 1)
             #expect(toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.search } == (scope != .home))
             #expect(toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.title } == (scope != .home))
-            #expect(toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.refresh } == (scope != .home))
+            #expect(toolbar.items.contains { $0.itemIdentifier == BrowserToolbarController.conversationActions } == (scope != .home))
             #expect(controller.readerHost.view.frame.width > 0)
         }
     }

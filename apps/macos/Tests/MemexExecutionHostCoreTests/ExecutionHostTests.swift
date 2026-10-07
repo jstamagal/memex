@@ -6,19 +6,28 @@ final class ExecutionHostTests: XCTestCase {
         var providers = ["codex"]
         var created: [HostedConversation] = []
         var commands: [HostedCommand] = []
+        var resumed: [HostedConversation] = []
         var connected = true
         var running = false
         var rejectAfterAcceptance = false
         var sequence: Double = 1
+        var permissionMode: String?
+        var pendingPermission = false
         func create(id: String, provider: String, workspaceID: String, cwd: String, title: String) throws -> HostedConversation {
             let c = HostedConversation(id: id, nativeSessionID: "native-" + id, provider: provider,
                 providerInstanceID: "codex:test-home", workspaceID: workspaceID, cwd: cwd,
                 title: title, createdAt: "2026-10-05T12:00:00Z")
             created.append(c); return c
         }
-        func resume(_ conversation: HostedConversation) throws { connected = true }
+        func resume(_ conversation: HostedConversation) throws { resumed.append(conversation); connected = true }
         func read(_ conversation: HostedConversation) throws -> HostValue {
             .object(["ready": .bool(connected), "running": .bool(running), "connected": .bool(connected),
+                "controls": .object([
+                    "pendingControlCommandIds": .array(pendingPermission ? [.string("pending")] : []),
+                    "configOptions": .array(permissionMode.map { mode in [.object([
+                        "id": .string("permission_mode"), "currentValue": .string(mode)
+                    ])] } ?? [])
+                ]),
                 "thread": .object(["snapshotSequence": .number(sequence), "messages": .array([])])])
         }
         func perform(_ command: HostedCommand) throws -> HostValue {
@@ -52,6 +61,44 @@ final class ExecutionHostTests: XCTestCase {
         let response = call(host, "conversation.create", ["provider": .string("codex"), "workspaceId": .string(workspace.path)])
         XCTAssertNil(response.error)
         return try XCTUnwrap(response.result?["conversation"]["id"].string)
+    }
+
+    func testClaudeResumePassesSelectedNativePermissionsWithoutChangingAnActiveSession() throws {
+        let (directory, workspace) = try fixture()
+        let provider = Provider()
+        provider.providers = ["claude"]
+        let host = try ExecutionHost(directory: directory, workspaceRoots: [workspace]) { _ in provider }
+        let created = call(host, "conversation.create", ["provider": .string("claude"), "workspaceId": .string(workspace.path)])
+        let id = try XCTUnwrap(created.result?["conversation"]["id"].string)
+        for mode in ["auto", "default", "acceptEdits"] {
+            provider.connected = false
+            let result = call(host, "conversation.resume", ["conversationId": .string(id), "claudePermissionMode": .string(mode)])
+            XCTAssertNil(result.error)
+            XCTAssertEqual(provider.resumed.last?.claudePermissionMode, mode)
+        }
+        XCTAssertNil(call(host, "conversation.resume", ["conversationId": .string(id), "claudePermissionMode": .string("auto")]).error)
+        XCTAssertEqual(provider.resumed.count, 3)
+        provider.connected = false
+        XCTAssertEqual(call(host, "conversation.resume", ["conversationId": .string(id), "claudePermissionMode": .string("invalid")]).error?.code, "invalid_params")
+        XCTAssertEqual(provider.resumed.count, 3)
+    }
+
+    func testClaudeAcknowledgedPermissionsSurviveHeadlessHostReopen() throws {
+        let (directory, workspace) = try fixture()
+        let provider = Provider()
+        provider.providers = ["claude"]
+        let host = try ExecutionHost(directory: directory, workspaceRoots: [workspace]) { _ in provider }
+        let created = call(host, "conversation.create", ["provider": .string("claude"), "workspaceId": .string(workspace.path)])
+        let id = try XCTUnwrap(created.result?["conversation"]["id"].string)
+        provider.permissionMode = "default"
+        provider.pendingPermission = true
+        XCTAssertNil(call(host, "conversation.read", ["conversationId": .string(id)]).result?["conversation"]["claudePermissionMode"].string)
+        provider.pendingPermission = false
+        XCTAssertEqual(call(host, "conversation.read", ["conversationId": .string(id)]).result?["conversation"]["claudePermissionMode"].string, "default")
+        provider.connected = false
+        let reopened = try ExecutionHost(directory: directory, workspaceRoots: [workspace]) { _ in provider }
+        XCTAssertNil(call(reopened, "conversation.resume", ["conversationId": .string(id)]).error)
+        XCTAssertEqual(provider.resumed.last?.claudePermissionMode, "default")
     }
 
     func testDuplicateCommandsPreserveNativeIdentityAndExecuteOnce() throws {

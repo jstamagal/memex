@@ -40,6 +40,13 @@ import Testing
         try #require(actions.popover?.contentViewController?.view.subviews.compactMap { $0 as? NSButton }.first)
     }
 
+    private func activate(_ button: NSButton) throws {
+        // performClick runs AppKit's press animation in a nested event loop.
+        // Its delayed CFRunLoopStop can stop Swift Testing's async-main loop.
+        #expect(button.isEnabled)
+        #expect(NSApplication.shared.sendAction(try #require(button.action), to: button.target, from: button))
+    }
+
     @Test(arguments: ["Before **selected café 👋** after.", "Before\n\n```swift\nlet selected = 42\n```\n\nAfter"])
     func selectedTextIsCapturedFromProseAndCode(_ markdown: String) throws {
         let controller = TranscriptController()
@@ -59,7 +66,7 @@ import Testing
         #expect(controller.selectionActions.popover?.isShown == true)
         #expect(text is TranscriptSelectionTextView)
         try expectActionsAboveSelection(controller.selectionActions, text: text)
-        try addButton(controller.selectionActions).performClick(nil)
+        try activate(addButton(controller.selectionActions))
         #expect(received?.text == expected)
         #expect(received?.sourceIDs == [source.sourceID])
         #expect(received?.location?.range == text.selectedRange())
@@ -149,7 +156,7 @@ import Testing
         let oldButton = try addButton(controller.selectionActions)
         controller.update(sessionID: "two", records: [record("Second chat")], provider: "codex")
         #expect(controller.selectionActions.popover == nil)
-        oldButton.performClick(nil)
+        try activate(oldButton)
         #expect(count == 0)
     }
 
@@ -166,7 +173,7 @@ import Testing
         text.setSelectedRange(NSRange(location: 0, length: 5))
         try showActions(in: text)
         text.setSelectedRange(NSRange(location: 6, length: 6))
-        try addButton(controller.selectionActions).performClick(nil)
+        try activate(addButton(controller.selectionActions))
         #expect(count == 0)
         let error = controller.selectionActions.popover?.contentViewController?.view.subviews.compactMap { $0 as? NSTextField }.first
         #expect(error?.stringValue == "The selection changed. Select the text again.")
@@ -191,7 +198,7 @@ import Testing
         var captured: TranscriptSelection?
         controller.onAddSelection = { captured = $0; return nil }
         try showActions(in: text)
-        try addButton(controller.selectionActions).performClick(nil)
+        try activate(addButton(controller.selectionActions))
         let saved = try JSONEncoder().encode(try #require(captured))
         let restored = try JSONDecoder().decode(TranscriptSelection.self, from: saved)
         // Recreate the rendered row, as happens after navigation or relaunch.

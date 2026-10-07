@@ -17,12 +17,17 @@ the chooser and file/image paste or drop also open an unsent draft. The normal H
 send applies saved provider-specific choices before sending; an unconfirmed setting retains the
 draft for inspection. Settings are only exposed when the provider supplies them.
 Model and permission controls remain available during active turns and approval
-requests. Claude inherits its native permission configuration unless you explicitly
-choose a mode. The provider determines when a change takes effect; rejected changes
+requests. Claude starts and resumes in native Auto mode unless you have explicitly
+chosen a different conversation or provider mode. The provider determines when a change takes effect; rejected changes
 leave the conversation connected and display the reason beside the composer.
 
-The conversation header is a single title row. Its adjacent **…** menu contains
-branch, fork, rewind, and parent/child navigation actions. An empty new conversation
+The selected conversation title appears in the main toolbar. The grouped controls
+end with **…**, containing branch, fork, rewind, and parent/child navigation actions.
+A narrow tick rail beside the transcript previews prompts on hover and jumps to
+them on click. Pending messages, activity, approvals, and questions stay above the
+workspace changes bar; thinking uses the shared Sidequery shimmer without a bubble.
+Models appear directly in their picker, with submenus only for variants and effort.
+An empty new conversation
 does not warn merely because its provider has not written a transcript yet.
 
 Inside a conversation, the composer supports captured file and image attachments,

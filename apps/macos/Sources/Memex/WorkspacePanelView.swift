@@ -7,8 +7,7 @@ struct WorkspacePanelView: View {
         VStack(spacing: 0) {
             if store.selectedID != nil {
                 WorkspacePanelTabs(panels: store.openWorkspacePanels, selection: store.workspacePanel,
-                                   select: store.selectWorkspacePanel, closeTab: store.closeWorkspacePanel,
-                                   close: { store.showingWorkspaceChanges = false })
+                                   select: store.selectWorkspacePanel, closeTab: store.closeWorkspacePanel)
             }
             Divider()
             // Keep opened panes mounted so the launcher and tab switches retain selections and edits.
@@ -82,7 +81,6 @@ private struct WorkspacePanelTabs: View {
     let selection: Store.WorkspacePanel
     let select: (Store.WorkspacePanel) -> Void
     let closeTab: (Store.WorkspacePanel) -> Void
-    let close: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
@@ -111,9 +109,6 @@ private struct WorkspacePanelTabs: View {
                     .help("Open a workspace tool").accessibilityLabel("Open a workspace tool")
             }
             Spacer(minLength: 4)
-            Button(action: close) { Image(systemName: "sidebar.right").frame(width: 28, height: 28) }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-                .help("Hide workspace panel").accessibilityLabel("Hide workspace panel")
         }
         .padding(.horizontal, 6).padding(.vertical, 5)
         .background(.bar)

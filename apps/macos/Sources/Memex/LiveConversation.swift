@@ -619,9 +619,14 @@ final class LiveConversation {
         }
         for (id, value) in configurationValues.sorted(by: { $0.key < $1.key }) {
             guard let option = snapshot.controls?.configurations.first(where: { $0.id == id }),
-                  option.choices.contains(where: { $0.id == value }), option.selectedID != value else { continue }
-            guard await perform(ConversationCommand(.configuration, text: value, requestID: id)),
-                  await waitForSettings({ $0.configurations.first(where: { $0.id == id })?.selectedID == value }) else { return false }
+                  option.choices.contains(where: { $0.id == value }) else { continue }
+            if option.selectedID != value {
+                guard await perform(ConversationCommand(.configuration, text: value, requestID: id)),
+                      await waitForSettings({ $0.configurations.first(where: { $0.id == id })?.selectedID == value }) else { return false }
+            }
+            if session.source == "claude", id == "permission_mode" {
+                ConversationComposerPreferences.saveClaudePermissionMode(value, sessionID: session.id)
+            }
         }
         return error == nil && snapshot.ready
     }

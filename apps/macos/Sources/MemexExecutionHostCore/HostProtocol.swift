@@ -75,6 +75,7 @@ public struct HostedConversation: Codable, Equatable, Sendable {
     public var parentID: String?
     public var createdAt: String
     public var handoffResume: Bool? = nil
+    public var claudePermissionMode: String? = nil
 }
 
 public struct HostedCommand: Codable, Equatable, Sendable {

@@ -71,6 +71,24 @@ import Testing
         #expect(ConversationComposerPreferences.selection(provider: "claude", defaults: defaults).modelID == nil)
     }
 
+    @Test func claudeDefaultsToNativeAutoForNewAndResumedChatsAndKeepsExplicitChoices() throws {
+        let name = "memex.permissions.tests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        #expect(ConversationComposerPreferences.claudePermissionMode(defaults: defaults) == "auto")
+        #expect(ConversationComposerPreferences.claudePermissionMode(sessionID: "resumed", defaults: defaults) == "auto")
+        #expect(ConversationComposerPreferences.selection(provider: "claude", defaults: defaults).configurations.isEmpty)
+        ConversationComposerPreferences.saveConfiguration("permission_mode", value: "acceptEdits", provider: "claude", defaults: defaults)
+        #expect(ConversationComposerPreferences.claudePermissionMode(defaults: defaults) == "acceptEdits")
+        #expect(ConversationComposerPreferences.claudePermissionMode(sessionID: "resumed", defaults: defaults) == "acceptEdits")
+        ConversationComposerPreferences.saveClaudePermissionMode("default", sessionID: "resumed", defaults: defaults)
+        ConversationComposerPreferences.saveConfiguration("permission_mode", value: "auto", provider: "claude", defaults: defaults)
+        #expect(ConversationComposerPreferences.claudePermissionMode(sessionID: "resumed", defaults: defaults) == "default")
+        #expect(ConversationComposerPreferences.claudePermissionMode(sessionID: "resumed", hostedMode: "auto", defaults: defaults) == "default")
+        #expect(ConversationComposerPreferences.claudePermissionMode(sessionID: "hosted", hostedMode: "acceptEdits", defaults: defaults) == "acceptEdits")
+        #expect(ConversationComposerPreferences.claudePermissionMode(sessionID: "other", defaults: defaults) == "auto")
+    }
+
     @Test func fileAndSkillCatalogUsesWorkspaceAndOwningProviderRoots() throws {
         let root = try directory()
         defer { try? FileManager.default.removeItem(at: root) }

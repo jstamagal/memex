@@ -57,7 +57,13 @@ actor RemoteConversationRuntime: ConversationRuntime {
               expectedPath == target.session.sourcePath else {
             throw ConversationRuntimeError(message: "The hosted conversation's provider, transcript, or workspace identity does not match this session.")
         }
-        _ = try await client.call("conversation.resume", params: ["conversationId": .string(id)], mutation: true)
+        var resumeParameters: [String: HostValue] = ["conversationId": .string(id)]
+        if target.session.source == "claude" {
+            resumeParameters["claudePermissionMode"] = .string(
+                ConversationComposerPreferences.claudePermissionMode(sessionID: target.session.id,
+                    hostedMode: identity["claudePermissionMode"].string))
+        }
+        _ = try await client.call("conversation.resume", params: resumeParameters, mutation: true)
         try await publish()
         poll = Task { [weak self] in
             while !Task.isCancelled {

@@ -11,6 +11,7 @@ struct ConversationComposer: View {
     @Bindable var conversation: LiveConversation
     var contextSessions: [Session] = []
     var onRevealSelection: ((TranscriptSelection) -> Void)? = nil
+    var workspaceSummary: AnyView? = nil
     @State private var catalog = ConversationComposerCatalog()
     @State private var providerCatalog = ConversationProviderContextCatalog()
     @State private var loadingProviderCatalog = false
@@ -101,6 +102,7 @@ struct ConversationComposer: View {
                 sendButton: { AcpSendButton().accessibilityLabel("Send") },
                 cancelButton: { AcpStopButton().accessibilityLabel("Stop") }
             )
+            .editorHeader { workspaceSummary }
             .disabled(conversation.isOpenElsewhere)
             .onPasteCommand(of: ConversationClipboard.supportedTypes) { providers in
                 Task { await captureClipboard(providers) }
@@ -792,6 +794,7 @@ struct ConversationComposer: View {
     let conversation: LiveConversation
     var contextSessions: [Session] = []
     var onRevealSelection: ((TranscriptSelection) -> Void)? = nil
+    var workspaceSummary: AnyView? = nil
     var body: some View { EmptyView() }
 }
 #endif

@@ -129,7 +129,7 @@ struct BrowserToolbarTests {
         store.sessions = [session]
         store.selectedID = session.id
         await pumpNative(window)
-        let find = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.find })
+        let find = try #require(allItems(toolbar).first { $0.itemIdentifier == BrowserToolbarController.find })
         #expect(find.isEnabled)
 
         for revision in 1...3 {
@@ -148,7 +148,7 @@ struct BrowserToolbarTests {
             #expect(separators.allSatisfy { $0.splitView === currentSplit && $0.splitView.window === window })
             let search = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.search } as? NSSearchToolbarItem)
             #expect(search.searchField.stringValue == store.query)
-            let refresh = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.refresh })
+            let refresh = try #require(allItems(toolbar).first { $0.itemIdentifier == BrowserToolbarController.refresh })
             #expect(refresh.isEnabled == !store.loadingSessions)
             let filter = try filterView(in: window)
             #expect(filter.frame.width >= 28)
@@ -169,7 +169,7 @@ struct BrowserToolbarTests {
         store.selectedID = session.id
         await pumpNative(window)
         #expect(find.isEnabled)
-        let more = try #require(toolbar.items.first { $0.itemIdentifier == BrowserToolbarController.more } as? NSMenuToolbarItem)
+        let more = try #require(allItems(toolbar).first { $0.itemIdentifier == BrowserToolbarController.more } as? NSMenuToolbarItem)
         let reveal = try #require(more.menu.items.first { $0.action == #selector(BrowserToolbarController.revealSource) })
         #expect(!reveal.isEnabled)
     }
@@ -301,8 +301,45 @@ struct BrowserToolbarTests {
         return try #require(find(in: frame))
     }
 
+    private func allItems(_ toolbar: NSToolbar) -> [NSToolbarItem] {
+        toolbar.items.flatMap { item in
+            if let group = item as? NSToolbarItemGroup { return [item] + group.subitems }
+            return [item]
+        }
+    }
+
+    @Test func trailingNativeGroupKeepsEllipsisLastAndHistoryActionsAvailable() async throws {
+        let (window, _, controller) = fixture()
+        defer { window.close() }
+        let group = try #require(controller.toolbar.items.last as? NSToolbarItemGroup)
+        #expect(group.subitems.map(\.itemIdentifier) == [BrowserToolbarController.newConversation,
+            BrowserToolbarController.refresh, BrowserToolbarController.find,
+            BrowserToolbarController.workspaceChanges, BrowserToolbarController.more])
+        let session = Session(source: "codex", sessionID: "group-title", sourcePath: "/fixture",
+                              project: "memex", label: "Selected chat title")
+        controller.store.sessions = [session]
+        controller.store.selectedID = session.id
+        controller.update()
+        window.alphaValue = 0
+        window.orderBack(nil)
+        await pumpNative(window)
+        #expect(try item(BrowserToolbarController.title, in: controller).label == session.title)
+        let more = try #require(group.subitems.last as? NSMenuToolbarItem)
+        controller.menuNeedsUpdate(more.menu)
+        let branch = try #require(more.menu.items.first { $0.title == "Branch with context…" })
+        #expect(branch.isEnabled)
+        #expect(NSApplication.shared.sendAction(try #require(branch.action), to: branch.target, from: branch))
+        #expect(controller.historyPresentation.showingBranch)
+        await pumpNative(window)
+        #expect(window.attachedSheet != nil)
+        controller.historyPresentation.showingBranch = false
+        await pumpNative(window)
+        #expect(more.menu.items.first { $0.title == "Fork native history…" }?.isEnabled == false)
+        #expect(more.menu.items.first { $0.title == "Rewind conversation…" }?.isEnabled == false)
+    }
+
     private func item(_ identifier: NSToolbarItem.Identifier, in controller: BrowserToolbarController) throws -> NSToolbarItem {
-        try #require(controller.toolbar.items.first { $0.itemIdentifier == identifier })
+        try #require(allItems(controller.toolbar).first { $0.itemIdentifier == identifier })
     }
 
     private func fixture() -> (NSWindow, NSSplitView, BrowserToolbarController) {

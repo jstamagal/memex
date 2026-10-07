@@ -4,6 +4,10 @@ import SwiftUI
 struct ReaderView: View {
     @Bindable var store: Store
     @State private var navigation = TranscriptNavigationState()
+    @State private var outline = ConversationOutline()
+    @State private var requestedRecordID: String?
+    @State private var requestGeneration = 0
+    @State private var outlineRevealID = UUID()
     @State private var find: ConversationFindState?
     @State private var rawTranscript = false
     @State private var footerHeight: CGFloat = 0
@@ -17,8 +21,6 @@ struct ReaderView: View {
             if let session = store.selected {
                 VStack(spacing: 0) {
                     header(session)
-                        .contextMenu { Toggle("Raw transcript", isOn: $rawTranscript) }
-                    Divider().opacity(0.5)
                     if let error = store.createdConversations.error {
                         HStack {
                             Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
@@ -36,6 +38,16 @@ struct ReaderView: View {
                                          branchPlan: { planBranch = PlanBranch(source: session, plan: $0) })
                     ZStack(alignment: .bottom) {
                         transcript(session)
+                            .contextMenu { Toggle("Raw transcript", isOn: $rawTranscript) }
+                            .overlay(alignment: .topLeading) {
+                                GeometryReader { geometry in
+                                    ConversationOutlineRail(outline: outline,
+                                        previewWidth: min(360, max(80, geometry.size.width - 64)),
+                                        reveal: revealPrompt)
+                                        .frame(height: max(0, geometry.size.height - footerHeight - 16))
+                                        .padding(.leading, 4).padding(.top, 8)
+                                }
+                            }
                         footer(session)
                             .fixedSize(horizontal: false, vertical: true)
                             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { footerHeight = $0 }
@@ -56,7 +68,15 @@ struct ReaderView: View {
         .onChange(of: store.selected?.id) { _, _ in
             selectionLoadID = UUID()
             selectionReveal = nil
+            outlineRevealID = UUID()
+            requestedRecordID = nil
         }
+        .task(id: store.readerTranscriptKey) {
+            if store.readerUsesLiveSnapshot { outline.load(records: currentRecords) }
+            else { await outline.load(session: store.selected, client: store.client) }
+            outline.follow(navigation.visibleRecordID)
+        }
+        .onChange(of: navigation.visibleRecordID) { _, id in outline.follow(id) }
         .task(id: store.selectedLiveConversation?.session.id) {
             guard let live = store.selectedLiveConversation else { return }
             while !Task.isCancelled {
@@ -73,7 +93,11 @@ struct ReaderView: View {
         }
         .onChange(of: find?.query) { _, _ in search() }
         .onChange(of: store.selectedLiveConversation?.revision) { _, _ in
-            if store.readerUsesLiveSnapshot { search() }
+            if store.readerUsesLiveSnapshot {
+                search()
+                outline.load(records: currentRecords)
+                outline.follow(navigation.visibleRecordID)
+            }
             store.updateCreatedConversationTitle()
         }
         .task(id: find?.generation) {
@@ -101,6 +125,7 @@ struct ReaderView: View {
                                  findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
                                  rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session),
                                  mcpAppTransport: live.snapshot.connected ? live.snapshot.mcpAppConnection?.transport : nil, sourcePath: session.sourcePath,
+                                 requestedRecordID: requestedRecordID, requestGeneration: requestGeneration,
                                  followLatest: true, bottomInset: footerHeight,
                                  onAddSelection: selectionHandler(for: session),
                                  selectionReveal: selectionReveal, onSelectionRevealResult: selectionRevealResult)
@@ -116,7 +141,8 @@ struct ReaderView: View {
                                  findQuery: find?.isOpen == true ? find?.query ?? "" : "",
                                  findHit: find?.selectedHit, findGeneration: find?.generation ?? 0,
                                  rawTranscript: rawTranscript, isLocalHost: store.canAccessLocalFiles(for: session),
-                                 sourcePath: session.sourcePath, bottomInset: footerHeight,
+                                 sourcePath: session.sourcePath, requestedRecordID: requestedRecordID,
+                                 requestGeneration: requestGeneration, bottomInset: footerHeight,
                                  onAddSelection: selectionHandler(for: session),
                                  selectionReveal: selectionReveal, onSelectionRevealResult: selectionRevealResult)
                 if let error = store.readerError {
@@ -135,14 +161,20 @@ struct ReaderView: View {
 
     private func footer(_ session: Session) -> some View {
         VStack(spacing: 0) {
-            if let directory = store.selectedWorkspace {
+            if let live = store.selectedLiveConversation {
+                ConversationPendingView(conversation: live)
+            }
+            if store.selectedLiveConversation == nil, let directory = store.selectedWorkspace {
                 WorkspaceChangeSummary(directory: directory,
                                        isWorking: store.selectedLiveConversation?.isWorking == true,
                                        review: store.reviewWorkspaceChange)
             }
             if let live = store.selectedLiveConversation {
-                ConversationPendingView(conversation: live)
-                ConversationComposer(conversation: live, contextSessions: contextSessions, onRevealSelection: revealSelection)
+                ConversationComposer(conversation: live, contextSessions: contextSessions, onRevealSelection: revealSelection,
+                    workspaceSummary: store.selectedWorkspace.map { directory in
+                        AnyView(WorkspaceChangeSummary(directory: directory, isWorking: live.isWorking,
+                            review: store.reviewWorkspaceChange, horizontalInset: 0))
+                    })
             } else if !InAppResumeTarget.isArchived(session) {
                 Label(InAppResumeTarget.unavailableReason(for: session)
                       ?? "This build supports continuing conversations through Open in.", systemImage: "info.circle")
@@ -158,6 +190,23 @@ struct ReaderView: View {
     private func search() {
         if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot { find?.search(records: live.snapshot.records) }
         else { find?.search(in: store.selected) }
+    }
+
+    private func revealPrompt(_ prompt: ConversationPrompt) {
+        guard let session = store.selected else { return }
+        let requestID = UUID()
+        outlineRevealID = requestID
+        Task { @MainActor in
+            if let live = store.selectedLiveConversation, store.readerUsesLiveSnapshot {
+                live.revealRecord(prompt.id)
+            } else {
+                await store.revealRecord(prompt.id, offset: prompt.offset)
+            }
+            guard outlineRevealID == requestID, store.selected?.id == session.id else { return }
+            requestedRecordID = prompt.id
+            requestGeneration += 1
+            outline.selectedID = prompt.id
+        }
     }
 
     private var currentRecords: [TranscriptRecord] {
@@ -232,7 +281,7 @@ struct ReaderView: View {
     private func header(_ session: Session) -> some View {
         ConversationHistoryActions(store: store, session: session)
             .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
-            .padding(.horizontal, ConversationReadingLane.minimumMargin).padding(.vertical, 6)
+            .padding(.horizontal, ConversationReadingLane.minimumMargin)
             .frame(maxWidth: .infinity)
             .help([session.source, store.projectName(for: session),
                    session.machineID == "local" ? nil : session.machineID,

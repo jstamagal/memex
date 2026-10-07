@@ -170,7 +170,8 @@ actor NativeConversationRuntime: ConversationRuntime {
             } else if let helper = target.helperURL {
                 try service.connectClaude(binding, hostExecutablePath: helper.path,
                     claudeExecutablePath: target.executableURL.path, environment: target.environment,
-                    pluginLocalPaths: ProviderLocalPlugins.paths(home: target.providerHome.path))
+                    pluginLocalPaths: ProviderLocalPlugins.paths(home: target.providerHome.path),
+                    permissionMode: ConversationComposerPreferences.claudePermissionMode(sessionID: target.session.id))
             }
         } catch {
             throw conversationProviderError(error)

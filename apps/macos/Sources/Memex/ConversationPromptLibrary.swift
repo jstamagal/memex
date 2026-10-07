@@ -130,6 +130,19 @@ enum ConversationComposerPreferences {
         save(value, provider: provider, defaults: defaults)
     }
 
+    /// Memex starts Claude in native Auto mode. Explicit conversation choices
+    /// take precedence over the remembered provider preference on reconnect.
+    static func claudePermissionMode(sessionID: String? = nil, hostedMode: String? = nil, defaults: UserDefaults = .standard) -> String {
+        if let sessionID, let selected = defaults.string(forKey: "conversation.claude.permissions.\(sessionID)") {
+            return selected
+        }
+        return hostedMode ?? selection(provider: "claude", defaults: defaults).configurations["permission_mode"] ?? "auto"
+    }
+
+    static func saveClaudePermissionMode(_ mode: String, sessionID: String, defaults: UserDefaults = .standard) {
+        defaults.set(mode, forKey: "conversation.claude.permissions.\(sessionID)")
+    }
+
     private static func save(_ selection: Selection, provider: String, defaults: UserDefaults) {
         guard let data = try? JSONEncoder().encode(selection) else { return }
         defaults.set(data, forKey: "conversation.composer.settings.\(provider)")

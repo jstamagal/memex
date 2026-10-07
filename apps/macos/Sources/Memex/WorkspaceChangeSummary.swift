@@ -5,6 +5,7 @@ struct WorkspaceChangeSummary: View {
     let directory: URL
     let isWorking: Bool
     let review: (String?) -> Void
+    var horizontalInset: CGFloat = ConversationReadingLane.minimumMargin
     @State private var snapshot: WorkspaceChangesSnapshot?
     @State private var loadedDirectory: URL?
     @State private var activeDirectory: URL?
@@ -39,7 +40,7 @@ struct WorkspaceChangeSummary: View {
             }
         }
         .frame(maxWidth: ConversationReadingLane.maximumWidth, alignment: .leading)
-        .padding(.horizontal, ConversationReadingLane.minimumMargin)
+        .padding(.horizontal, horizontalInset)
         .frame(maxWidth: .infinity)
         .task(id: directory) {
             activeDirectory = directory

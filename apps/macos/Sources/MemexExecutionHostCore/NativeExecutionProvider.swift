@@ -41,7 +41,8 @@ public final class NativeExecutionProvider: ExecutionProvider {
         if provider == "codex" {
             creation = try .codex(executablePath: executable, cwd: cwd, environment: environment)
         } else if provider == "claude", let claudeHelper {
-            creation = try .claude(hostExecutablePath: claudeHelper, claudeExecutablePath: executable, cwd: cwd, environment: environment)
+            creation = try .claude(hostExecutablePath: claudeHelper, claudeExecutablePath: executable, cwd: cwd, environment: environment,
+                permissionMode: "auto")
         } else { throw HostFailure("provider_unavailable", "Claude helper is not configured on the execution host") }
         let home = providerHome(provider)
         let transcript = creation.transcriptPath ?? (provider == "claude"
@@ -74,7 +75,8 @@ public final class NativeExecutionProvider: ExecutionProvider {
             try service.connectCodex(binding(conversation), executablePath: executable, environment: environment,
                                      resumePath: conversation.handoffResume == true ? conversation.transcriptPath : nil)
         } else if conversation.provider == "claude", let claudeHelper {
-            try service.connectClaude(binding(conversation), hostExecutablePath: claudeHelper, claudeExecutablePath: executable, environment: environment)
+            try service.connectClaude(binding(conversation), hostExecutablePath: claudeHelper, claudeExecutablePath: executable, environment: environment,
+                permissionMode: conversation.claudePermissionMode ?? "auto")
         } else { throw HostFailure("provider_unavailable", "Provider is not configured on this host") }
         connected.insert(conversation.id)
     }

@@ -299,8 +299,14 @@ public final class ExecutionHost: @unchecked Sendable {
             }
             return .object(["conversation": try .encoded(created), "forkKind": parent == nil ? .null : .string("context_handoff")])
         case "conversation.resume":
-            let c = try conversation(required(p, "conversationId"))
+            var c = try conversation(required(p, "conversationId"))
             _ = try authorizedWorkspace(c.workspaceID)
+            if c.provider == "claude", let mode = p["claudePermissionMode"]?.string {
+                guard ["auto", "default", "acceptEdits", "read-only", "dontAsk", "full-access"].contains(mode) else {
+                    throw HostFailure("invalid_params", "Unsupported Claude permission mode")
+                }
+                c.claudePermissionMode = mode
+            }
             if !provider.isConnected(c.id) { try provider.resume(c) }
             return try read(c.id)
         case "conversation.send", "conversation.steer", "conversation.interrupt", "conversation.approval", "conversation.userInput", "conversation.model", "conversation.configuration":
@@ -572,9 +578,20 @@ public final class ExecutionHost: @unchecked Sendable {
     }
 
     private func read(_ id: String) throws -> HostValue {
-        let c = try conversation(id)
+        var c = try conversation(id)
         _ = try authorizedWorkspace(c.workspaceID)
         var result = try provider.read(c).object
+        // Retain only provider-confirmed modes, never an unacknowledged request.
+        // The headless host can reconnect queued work without a desktop viewer.
+        if c.provider == "claude", result["ready"]?.bool == true,
+           result["controls"]?["pendingControlCommandIds"].array.isEmpty == true,
+           let mode = result["controls"]?["configOptions"].array.first(where: { $0["id"].string == "permission_mode" })?["currentValue"].string,
+           mode != c.claudePermissionMode,
+           let index = catalog.conversations.firstIndex(where: { $0.id == id }) {
+            c.claudePermissionMode = mode
+            catalog.conversations[index] = c
+            try save()
+        }
         result["conversation"] = try .encoded(c)
         result["queueHeld"] = .bool(catalog.heldConversations.contains(id))
         result["handoffBlocked"] = .bool(isHandoffFenced(id))

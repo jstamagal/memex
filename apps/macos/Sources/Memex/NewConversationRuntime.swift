@@ -108,7 +108,8 @@ enum NewConversationRuntime {
                 }
                 creation = try .claude(hostExecutablePath: helper.path, claudeExecutablePath: config.executableURL.path,
                     cwd: cwd.path, environment: config.environment,
-                    pluginLocalPaths: ProviderLocalPlugins.paths(home: config.providerHome.path))
+                    pluginLocalPaths: ProviderLocalPlugins.paths(home: config.providerHome.path),
+                    permissionMode: ConversationComposerPreferences.claudePermissionMode())
             }
             let sourcePath: String
             if request.provider == "codex" {

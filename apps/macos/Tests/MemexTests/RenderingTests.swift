@@ -8,6 +8,9 @@ struct RenderingTests {
     @Test(arguments: [false, true])
     func streamingRetainsExistingCellsAndSelectionWhileUpdatingContentAndHeight(recreateFonts: Bool) throws {
         let controller = TranscriptController()
+        // Give the ordered window a viewport before installing the controller;
+        // its zero-sized initial view otherwise makes every row offscreen.
+        controller.view.frame = NSRect(x: 0, y: 0, width: 700, height: 600)
         let window = readerWindow(controller)
         defer { window.close() }
         // NSTableView only installs and retains visible row views in an ordered
@@ -20,6 +23,7 @@ struct RenderingTests {
         }
         controller.update(sessionID: "stream", records: records, provider: "codex", followLatest: true)
         pump(window)
+        try #require(!controller.table.visibleRect.isEmpty)
         let firstCell = try #require(controller.table.view(atColumn: 0, row: 0, makeIfNecessary: true))
         let firstText = try #require(descendants(of: firstCell, as: NSTextView.self).first)
         let selected = NSRange(location: 0, length: 7)

@@ -54,7 +54,7 @@ import SwiftUI
     }
 }
 
-@MainActor final class BrowserToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDelegate, NSPopoverDelegate {
+@MainActor final class BrowserToolbarController: NSObject, NSToolbarDelegate, NSSearchFieldDelegate, NSPopoverDelegate, NSMenuDelegate {
     // AppKit synchronizes item changes between toolbars with the same identifier.
     // Each window must switch between Home and the reader independently.
     let toolbar = NSToolbar(identifier: "MemexBrowserColumns-\(UUID().uuidString)")
@@ -64,9 +64,11 @@ import SwiftUI
     private var actionItems: [NSToolbarItem.Identifier: NSToolbarItem] = [:]
     private var searchItem: NSSearchToolbarItem?
     private var utilityMenu: NSMenu?
+    let historyPresentation = ConversationHistoryPresentation()
     private var sidebarObservation: NSKeyValueObservation?
     private(set) var filterPopover: NSPopover?
 
+    static let conversationActions = NSToolbarItem.Identifier("MemexConversationActions")
     static let sidebarBoundary = NSToolbarItem.Identifier("MemexSidebarBoundary")
     static let title = NSToolbarItem.Identifier("MemexConversationTitle")
     static let filters = NSToolbarItem.Identifier("MemexFilters")
@@ -127,8 +129,7 @@ import SwiftUI
         }
         let sidebarItems: [NSToolbarItem.Identifier] = sidebarVisible
             ? [.toggleSidebar, .flexibleSpace, Self.filters] : [.toggleSidebar]
-        return sidebarItems + [Self.sidebarBoundary, Self.title, Self.newConversation, Self.refresh, Self.find,
-         .flexibleSpace, Self.search, Self.resume, Self.more, Self.workspaceChanges]
+        return sidebarItems + [Self.sidebarBoundary, Self.title, .flexibleSpace, Self.search, Self.resume, Self.conversationActions]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
@@ -136,16 +137,27 @@ import SwiftUI
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier,
                  willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         switch id {
+        case Self.conversationActions:
+            let group = NSToolbarItemGroup(itemIdentifier: id)
+            group.label = "Conversation controls"
+            group.isBordered = true
+            group.autovalidates = false
+            group.controlRepresentation = .expanded
+            group.subitems = [Self.newConversation, Self.refresh, Self.find, Self.workspaceChanges, Self.more].compactMap {
+                self.toolbar(toolbar, itemForItemIdentifier: $0, willBeInsertedIntoToolbar: flag)
+            }
+            return group
         case Self.sidebarBoundary:
             return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 0)
         case Self.title:
             let item = NSToolbarItem(itemIdentifier: id)
-            let title = NSHostingView(rootView: ConversationToolbarTitle(store: store))
+            let title = NSHostingView(rootView: ConversationToolbarTitle(store: store, historyPresentation: historyPresentation))
             title.setContentHuggingPriority(.defaultLow, for: .horizontal)
             title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             item.view = title
             item.isBordered = false
             item.label = "Conversations"
+            actionItems[id] = item
             return item
         case Self.filters:
             return action(id, title: "Filter conversations", symbol: "line.3.horizontal.decrease", selector: #selector(toggleFilters))
@@ -176,6 +188,7 @@ import SwiftUI
             item.autovalidates = false
             let menu = NSMenu(title: item.label)
             menu.autoenablesItems = false
+            menu.delegate = self
             for (title, symbol, selector) in [
                 ("Copy session ID", "link", #selector(copySessionID)),
                 ("Reveal source", "doc", #selector(revealSource))
@@ -221,20 +234,81 @@ import SwiftUI
         }
         if #available(macOS 26.0, *) {
             actionItems[Self.filters]?.style = filterPopover?.isShown == true || store.filters.isActive ? .prominent : .plain
-            actionItems[Self.workspaceChanges]?.style = store.showingWorkspaceChanges ? .prominent : .plain
         }
 
+        actionItems[Self.title]?.label = store.selected?.title ?? "Chats"
+        actionItems[Self.title]?.toolTip = Self.titleHelp(store: store)
         actionItems[Self.refresh]?.isEnabled = !store.loadingSessions
         resumeController.update()
         actionItems[Self.find]?.isEnabled = store.selected != nil
         actionItems[Self.more]?.isEnabled = store.selected != nil
-        for item in utilityMenu?.items ?? [] {
+        for item in utilityMenu?.items.prefix(2) ?? [] {
             item.isEnabled = item.action == #selector(revealSource)
                 ? store.selected?.machineID == "local" : store.selected != nil
         }
         actionItems[Self.newConversation]?.isEnabled = InAppAgentRuntime.isAvailable
         actionItems[Self.workspaceChanges]?.isEnabled = store.selected != nil
+        actionItems[Self.workspaceChanges]?.toolTip = store.showingWorkspaceChanges ? "Hide workspace panel" : "Show workspace panel"
         if let field = searchItem?.searchField, field.stringValue != store.query { field.stringValue = store.query }
+    }
+    static func titleHelp(store: Store) -> String {
+        guard let session = store.selected else { return "Chats" }
+        return [session.title, session.source, store.projectName(for: session),
+                session.machineID == "local" ? nil : session.machineID,
+                store.createdConversations.contexts[session.id]?.workspace.branch]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === utilityMenu else { return }
+        while menu.items.count > 2 { menu.removeItem(at: 2) }
+        guard let session = store.selected else { return }
+        menu.addItem(.separator())
+        let enabled = !store.historyActionInProgress && !store.conversationRelationships.pending.contains { $0.source.id == session.id }
+        func add(_ title: String, _ selector: Selector, enabled: Bool, session: Session? = nil, to menu: NSMenu) {
+            let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+            item.representedObject = session
+            menu.addItem(item)
+        }
+        if let parent = store.conversationRelationships.parent(of: session.id) {
+            add("Open parent: \(parent.parent.title)", #selector(openRelated(_:)), enabled: enabled, session: parent.parent, to: menu)
+        }
+        let children = store.conversationRelationships.children(of: session.id)
+        if !children.isEmpty {
+            let branches = NSMenu(title: "Branches")
+            branches.autoenablesItems = false
+            for child in children {
+                add(child.child.title, #selector(openRelated(_:)), enabled: enabled, session: child.child, to: branches)
+            }
+            let item = NSMenuItem(title: "Branches (\(children.count))", action: nil, keyEquivalent: "")
+            item.submenu = branches
+            item.isEnabled = enabled
+            menu.addItem(item)
+        }
+        add("Branch with context…", #selector(branchWithContext), enabled: enabled, to: menu)
+        let canMutate = enabled && store.selectedLiveConversation?.canMutateHistory == true && !store.selectedHistoryBoundaries.isEmpty
+        add("Fork native history…", #selector(forkHistory), enabled: canMutate, to: menu)
+        add("Rewind conversation…", #selector(rewindHistory), enabled: canMutate, to: menu)
+        if store.conversationRelationships.parent(of: session.id) != nil {
+            add("Add context to parent draft", #selector(addContextToParent), enabled: enabled, to: menu)
+        }
+    }
+    @objc func openRelated(_ sender: NSMenuItem) {
+        guard let session = sender.representedObject as? Session else { return }
+        store.openRelatedConversation(session)
+    }
+    @objc func branchWithContext() { historyPresentation.showingBranch = true }
+    @objc func forkHistory() { historyPresentation.begin(.fork, boundaries: store.selectedHistoryBoundaries) }
+    @objc func rewindHistory() { historyPresentation.begin(.revert, boundaries: store.selectedHistoryBoundaries) }
+    @objc func addContextToParent() {
+        guard let session = store.selected else { return }
+        store.historyActionError = nil
+        Task {
+            do { try await store.mergeContextToParent(from: session) }
+            catch { store.historyActionError = error.localizedDescription }
+        }
     }
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? NSSearchField else { return }
@@ -281,16 +355,27 @@ import SwiftUI
 
 private struct ConversationToolbarTitle: View {
     @Bindable var store: Store
+    @Bindable var historyPresentation: ConversationHistoryPresentation
+
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(store.scope == .home ? "Home" : "Chats").font(.headline).lineLimit(1)
-            if store.scope != .home {
+            Text(store.selected?.title ?? (store.scope == .home ? "Home" : "Chats"))
+                .font(.headline).lineLimit(1).truncationMode(.tail)
+                .help(BrowserToolbarController.titleHelp(store: store))
+            if store.selected == nil && store.scope != .home {
                 Text(store.sessionCountLabel)
                     .font(.subheadline).foregroundStyle(.secondary).monospacedDigit().lineLimit(1)
                     .fixedSize(horizontal: true, vertical: false)
                     .help(store.sessionCountHelp)
             }
         }
-        .frame(minWidth: 70, idealWidth: 110, maxWidth: 150, alignment: .leading)
+        .frame(minWidth: 70, idealWidth: 260, maxWidth: 400, alignment: .leading)
+        .background {
+            if let session = store.selected {
+                ConversationHistoryActions(store: store, session: session,
+                                           presentation: historyPresentation, showsStatus: false)
+                    .id(session.id)
+            }
+        }
     }
 }

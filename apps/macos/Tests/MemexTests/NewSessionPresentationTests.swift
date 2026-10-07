@@ -76,14 +76,14 @@ import SQACPHost
             sessionID: runtimeSessionID, commandID: "different-command"))
     }
 
-    @Test func conversationTitleAndActionsFitOneRowAtNarrowAndWideWidths() {
+    @Test func historyStatusDoesNotReserveARowWhenIdle() {
         let store = Store()
         let session = Session(source: "claude", sessionID: "header", sourcePath: "/fixture",
             project: "fixture", label: String(repeating: "Long conversation title ", count: 20))
         for width: CGFloat in [320, 780] {
             let view = NSHostingView(rootView: ConversationHistoryActions(store: store, session: session).frame(width: width))
             view.layoutSubtreeIfNeeded()
-            #expect(view.fittingSize.height <= 32)
+            #expect(view.fittingSize.height == 0)
         }
     }
 }

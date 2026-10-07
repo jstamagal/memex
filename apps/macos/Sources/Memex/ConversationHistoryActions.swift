@@ -1,12 +1,23 @@
 import SwiftUI
+import Observation
+
+@Observable @MainActor final class ConversationHistoryPresentation {
+    var showingBranch = false
+    var operation: ConversationHistoryMutation.Operation?
+    var selectedBoundary: String?
+    var confirmingMutation = false
+
+    func begin(_ operation: ConversationHistoryMutation.Operation, boundaries: [ConversationHistoryBoundary]) {
+        selectedBoundary = boundaries.last?.id
+        self.operation = operation
+    }
+}
 
 struct ConversationHistoryActions: View {
     @Bindable var store: Store
     let session: Session
-    @State private var showingBranch = false
-    @State private var operation: ConversationHistoryMutation.Operation?
-    @State private var selectedBoundary: String?
-    @State private var confirmingMutation = false
+    @Bindable var presentation: ConversationHistoryPresentation = .init()
+    var showsStatus = true
     @State private var inspectedOperation: ConversationRelationships.Pending?
 
     private var pending: [ConversationRelationships.Pending] {
@@ -16,55 +27,27 @@ struct ConversationHistoryActions: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(session.title).font(.headline).lineLimit(1).truncationMode(.tail)
-                    .help(session.title)
-                Menu {
-                    if let link = store.conversationRelationships.parent(of: session.id) {
-                        Button("Open parent: \(link.parent.title)") { store.openRelatedConversation(link.parent) }
-                    }
-                    let children = store.conversationRelationships.children(of: session.id)
-                    if !children.isEmpty {
-                        Menu("Branches (\(children.count))") {
-                            ForEach(children) { link in
-                                Button(link.child.title) { store.openRelatedConversation(link.child) }
-                            }
-                        }
-                    }
-                    Button("Branch with context…") { showingBranch = true }
-                    Button("Fork native history…") { beginMutation(.fork) }
-                        .disabled(store.selectedLiveConversation?.canMutateHistory != true || boundaries.isEmpty)
-                    Button("Rewind conversation…") { beginMutation(.revert) }
-                        .disabled(store.selectedLiveConversation?.canMutateHistory != true || boundaries.isEmpty)
-                    if store.conversationRelationships.parent(of: session.id) != nil {
-                        Button("Add context to parent draft") { perform { try await store.mergeContextToParent(from: session) } }
-                    }
-                } label: { Image(systemName: "ellipsis").frame(width: 24, height: 24) }
-                .menuIndicator(.hidden)
-                .accessibilityLabel("Conversation actions")
-                .help("Conversation actions")
-                .disabled(store.historyActionInProgress || !pending.isEmpty)
+            if showsStatus {
                 if store.historyActionInProgress { ProgressView().controlSize(.small) }
-                Spacer(minLength: 0)
-            }.font(.caption).buttonStyle(.borderless)
-            ForEach(pending) { request in
-                HStack(alignment: .top) {
-                    Text("A previous \(request.operation) request needs inspection. It will not be retried automatically.")
-                    if let result = request.result {
-                        Button("Open result") { store.openRelatedConversation(result) }
-                    }
-                    Button("Mark inspected…") { inspectedOperation = request }
-                }.font(.caption).foregroundStyle(.orange)
-            }
-            if let error = store.historyActionError ?? store.conversationRelationships.error {
-                Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
-            }
-            if let warning = store.workspaceCheckpointWarning {
-                Text(warning).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                ForEach(pending) { request in
+                    HStack(alignment: .top) {
+                        Text("A previous \(request.operation) request needs inspection. It will not be retried automatically.")
+                        if let result = request.result {
+                            Button("Open result") { store.openRelatedConversation(result) }
+                        }
+                        Button("Mark inspected…") { inspectedOperation = request }
+                    }.font(.caption).foregroundStyle(.orange)
+                }
+                if let error = store.historyActionError ?? store.conversationRelationships.error {
+                    Text(error).font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+                }
+                if let warning = store.workspaceCheckpointWarning {
+                    Text(warning).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
             }
         }
-        .sheet(isPresented: $showingBranch) { ConversationContextBranchSheet(store: store, source: session) }
-        .sheet(isPresented: Binding(get: { operation != nil }, set: { if !$0 { operation = nil } })) {
+        .sheet(isPresented: $presentation.showingBranch) { ConversationContextBranchSheet(store: store, source: session) }
+        .sheet(isPresented: Binding(get: { presentation.operation != nil }, set: { if !$0 { presentation.operation = nil } })) {
             mutationSheet
         }
         .confirmationDialog("Mark the previous history request as inspected?", isPresented: Binding(
@@ -83,36 +66,32 @@ struct ConversationHistoryActions: View {
 
     private var mutationSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(operation == .fork ? "Fork native history" : "Rewind conversation").font(.title2)
-            Text(operation == .fork
+            Text(presentation.operation == .fork ? "Fork native history" : "Rewind conversation").font(.title2)
+            Text(presentation.operation == .fork
                  ? "Create a native branch through the selected turn. The source conversation and workspace files remain unchanged."
                  : "Remove the selected turn and later turns from the resumed conversation. Claude preserves the original as a separate branch. Workspace files are unchanged; use Checkpoints to restore an owned worktree separately.")
                 .font(.callout).foregroundStyle(.secondary)
-            Picker("Turn", selection: $selectedBoundary) {
+            Picker("Turn", selection: $presentation.selectedBoundary) {
                 ForEach(boundaries) { boundary in Text(boundary.title).tag(Optional(boundary.id)) }
             }
             HStack {
                 Spacer()
-                Button("Cancel") { operation = nil }.keyboardShortcut(.cancelAction)
-                Button(operation == .fork ? "Fork" : "Rewind", role: operation == .revert ? .destructive : nil) {
-                    confirmingMutation = true
-                }.disabled(selectedBoundary == nil || store.historyActionInProgress)
+                Button("Cancel") { presentation.operation = nil }.keyboardShortcut(.cancelAction)
+                Button(presentation.operation == .fork ? "Fork" : "Rewind", role: presentation.operation == .revert ? .destructive : nil) {
+                    presentation.confirmingMutation = true
+                }.disabled(presentation.selectedBoundary == nil || store.historyActionInProgress)
             }
         }.padding(24).frame(width: 540)
-            .confirmationDialog("Apply this native history change?", isPresented: $confirmingMutation, titleVisibility: .visible) {
-                Button(operation == .fork ? "Fork" : "Rewind", role: operation == .revert ? .destructive : nil) {
-                    guard let operation, let boundary = boundaries.first(where: { $0.id == selectedBoundary }) else { return }
-                    self.operation = nil
+            .confirmationDialog("Apply this native history change?", isPresented: $presentation.confirmingMutation, titleVisibility: .visible) {
+                Button(presentation.operation == .fork ? "Fork" : "Rewind", role: presentation.operation == .revert ? .destructive : nil) {
+                    guard let operation = presentation.operation, let boundary = boundaries.first(where: { $0.id == presentation.selectedBoundary }) else { return }
+                    presentation.operation = nil
                     perform { _ = try await store.mutateConversation(source: session, operation: operation, boundary: boundary) }
                 }
                 Button("Cancel", role: .cancel) {}
             }
     }
 
-    private func beginMutation(_ value: ConversationHistoryMutation.Operation) {
-        selectedBoundary = boundaries.last?.id
-        operation = value
-    }
     private func perform(_ action: @escaping @MainActor () async throws -> Void) {
         store.historyActionError = nil
         Task { do { try await action() } catch { store.historyActionError = error.localizedDescription } }
