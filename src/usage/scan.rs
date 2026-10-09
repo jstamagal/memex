@@ -156,6 +156,10 @@ pub(crate) fn source_spec(filter: SourceFilter) -> SourceSpec {
             parser_version: crate::sources::kilocode::VERSIONS.usage,
             volatile_reuse_ms: no_volatile_reuse,
         },
+        SourceFilter::Custom(_) => SourceSpec {
+            parser_version: 0,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
     }
 }
 
@@ -213,6 +217,7 @@ pub(crate) fn source_files(filter: SourceFilter) -> Vec<PathBuf> {
             .map(|file| file.path)
             .collect(),
         SourceFilter::Kilocode => crate::sources::kilocode::usage_files(),
+        SourceFilter::Custom(_) => Vec::new(),
     }
 }
 
@@ -548,6 +553,7 @@ pub(crate) fn parse_source_file(
             crate::sources::antigravity::parse_usage_file(path).map(FileParse::cacheable)
         }
         SourceFilter::Kiro => crate::sources::kiro::parse_usage_file(path),
+        SourceFilter::Custom(_) => Ok(FileParse::cacheable(Vec::new())),
     }
 }
 

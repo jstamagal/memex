@@ -1,8 +1,6 @@
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SourceKind {
     #[default]
     Claude,
@@ -25,10 +23,40 @@ pub enum SourceKind {
     Kiro,
     Kilocode,
     Forge,
+    Custom(&'static str),
+}
+
+impl From<SourceKind> for String {
+    fn from(source: SourceKind) -> Self {
+        source.label().to_string()
+    }
+}
+
+impl TryFrom<String> for SourceKind {
+    type Error = String;
+    fn try_from(label: String) -> Result<Self, Self::Error> {
+        Self::from_label(&label).ok_or(label)
+    }
+}
+
+impl Serialize for SourceKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::OpenClaw => "open-claw",
+            _ => self.label(),
+        })
+    }
+}
+impl<'de> Deserialize<'de> for SourceKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let label = String::deserialize(deserializer)?;
+        Self::from_label(&label)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown source {label}")))
+    }
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 20] = [
+    pub const ALL: [SourceKind; 21] = [
         SourceKind::Claude,
         SourceKind::Codex,
         SourceKind::Opencode,
@@ -49,6 +77,7 @@ impl SourceKind {
         SourceKind::Js,
         SourceKind::Bitchtea,
         SourceKind::Forge,
+        SourceKind::Custom("custom"),
     ];
     pub const COUNT: usize = Self::ALL.len();
 
@@ -74,6 +103,7 @@ impl SourceKind {
             SourceKind::Kiro => 15,
             SourceKind::Kilocode => 16,
             SourceKind::Forge => 19,
+            SourceKind::Custom(_) => 20,
         }
     }
 
@@ -99,6 +129,7 @@ impl SourceKind {
             15 => Some(SourceKind::Kiro),
             16 => Some(SourceKind::Kilocode),
             19 => Some(SourceKind::Forge),
+            20 => Some(SourceKind::Custom("custom")),
             _ => None,
         }
     }
@@ -125,6 +156,7 @@ impl SourceKind {
             SourceKind::Kiro => "kiro",
             SourceKind::Kilocode => "kilocode",
             SourceKind::Forge => "forge",
+            SourceKind::Custom(name) => name,
         }
     }
 
@@ -150,6 +182,7 @@ impl SourceKind {
             SourceKind::Kiro => "kiro",
             SourceKind::Kilocode => "kilocode",
             SourceKind::Forge => "forge",
+            SourceKind::Custom(name) => name,
         }
     }
 
@@ -166,7 +199,7 @@ impl SourceKind {
             "pi" => Some(SourceKind::Pi),
             "js" => Some(SourceKind::Js),
             "bitchtea" => Some(SourceKind::Bitchtea),
-            "openclaw" => Some(SourceKind::OpenClaw),
+            "openclaw" | "open-claw" => Some(SourceKind::OpenClaw),
             "copilot" => Some(SourceKind::Copilot),
             "omp" => Some(SourceKind::Omp),
             "grok" => Some(SourceKind::Grok),
@@ -179,14 +212,12 @@ impl SourceKind {
             "kiro" => Some(SourceKind::Kiro),
             "kilocode" => Some(SourceKind::Kilocode),
             "forge" => Some(SourceKind::Forge),
-            _ => None,
+            _ => crate::sources::custom::kind(label),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum, Serialize, Deserialize)]
-#[value(rename_all = "kebab-case")]
-#[serde(rename_all = "kebab-case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SourceFilter {
     Claude,
     Codex,
@@ -195,7 +226,6 @@ pub enum SourceFilter {
     Pi,
     Js,
     Bitchtea,
-    #[value(name = "openclaw", alias = "open-claw")]
     OpenClaw,
     Copilot,
     Omp,
@@ -209,9 +239,82 @@ pub enum SourceFilter {
     Kiro,
     Kilocode,
     Forge,
+    Custom(&'static str),
+}
+
+impl From<SourceFilter> for String {
+    fn from(source: SourceFilter) -> Self {
+        source.as_str().to_string()
+    }
+}
+
+impl TryFrom<String> for SourceFilter {
+    type Error = String;
+    fn try_from(label: String) -> Result<Self, Self::Error> {
+        Self::from_str(&label, true).map_err(|_| label)
+    }
+}
+
+impl Serialize for SourceFilter {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(match self {
+            Self::OpenClaw => "open-claw",
+            _ => self.as_str(),
+        })
+    }
+}
+impl<'de> Deserialize<'de> for SourceFilter {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let label = String::deserialize(deserializer)?;
+        label.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+impl std::str::FromStr for SourceFilter {
+    type Err = String;
+    fn from_str(label: &str) -> Result<Self, Self::Err> {
+        if let Ok(source) = Self::from_str(label, true) {
+            return Ok(source);
+        }
+        if label.is_empty()
+            || !label
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+        {
+            return Err(format!("invalid source '{label}'"));
+        }
+        Ok(Self::Custom(Box::leak(label.to_string().into_boxed_str())))
+    }
 }
 
 impl SourceFilter {
+    pub fn from_str(label: &str, _ignore_case: bool) -> Result<Self, String> {
+        let kind =
+            SourceKind::from_label(label).ok_or_else(|| format!("unknown source '{label}'"))?;
+        Ok(match kind {
+            SourceKind::Claude => Self::Claude,
+            SourceKind::Codex => Self::Codex,
+            SourceKind::Opencode => Self::Opencode,
+            SourceKind::Cursor => Self::Cursor,
+            SourceKind::Pi => Self::Pi,
+            SourceKind::Js => Self::Js,
+            SourceKind::Bitchtea => Self::Bitchtea,
+            SourceKind::OpenClaw => Self::OpenClaw,
+            SourceKind::Copilot => Self::Copilot,
+            SourceKind::Omp => Self::Omp,
+            SourceKind::Grok => Self::Grok,
+            SourceKind::Hermes => Self::Hermes,
+            SourceKind::Jcode => Self::Jcode,
+            SourceKind::Muse => Self::Muse,
+            SourceKind::Antigravity => Self::Antigravity,
+            SourceKind::Bob => Self::Bob,
+            SourceKind::Zcode => Self::Zcode,
+            SourceKind::Kiro => Self::Kiro,
+            SourceKind::Kilocode => Self::Kilocode,
+            SourceKind::Forge => Self::Forge,
+            SourceKind::Custom(name) => Self::Custom(name),
+        })
+    }
     pub fn matches(self, source: SourceKind) -> bool {
         match self {
             SourceFilter::Claude => source == SourceKind::Claude,
@@ -234,11 +337,12 @@ impl SourceFilter {
             SourceFilter::Kiro => source == SourceKind::Kiro,
             SourceFilter::Kilocode => source == SourceKind::Kilocode,
             SourceFilter::Forge => source == SourceKind::Forge,
+            SourceFilter::Custom(name) => source == SourceKind::Custom(name),
         }
     }
 
-    pub fn storage_labels(self) -> &'static [&'static str] {
-        match self {
+    pub fn storage_labels(self) -> Vec<&'static str> {
+        let labels: &[&'static str] = match self {
             SourceFilter::Claude => &["claude"],
             SourceFilter::Codex => &["codex", "codex-session", "codex-history"],
             SourceFilter::Opencode => &["opencode"],
@@ -259,7 +363,9 @@ impl SourceFilter {
             SourceFilter::Kiro => &["kiro"],
             SourceFilter::Kilocode => &["kilocode"],
             SourceFilter::Forge => &["forge"],
-        }
+            SourceFilter::Custom(name) => return vec![name],
+        };
+        labels.to_vec()
     }
 
     pub fn as_str(self) -> &'static str {
@@ -284,6 +390,7 @@ impl SourceFilter {
             SourceFilter::Kiro => "kiro",
             SourceFilter::Kilocode => "kilocode",
             SourceFilter::Forge => "forge",
+            SourceFilter::Custom(name) => name,
         }
     }
 }
@@ -428,7 +535,6 @@ mod tests {
     use super::{
         SourceFilter, SourceKind, jcode_text_is_subagent_directive, jcode_tmp_cwd_is_worker_sandbox,
     };
-    use clap::ValueEnum;
     use std::collections::HashSet;
 
     #[test]
@@ -492,8 +598,26 @@ mod tests {
             assert!(indices.insert(source.idx()));
             assert!(labels.insert(source.storage_label()));
             assert_eq!(SourceKind::from_idx(source.idx()), Some(source));
-            assert_eq!(SourceKind::from_label(source.storage_label()), Some(source));
+            if source != SourceKind::Custom("custom") {
+                assert_eq!(SourceKind::from_label(source.storage_label()), Some(source));
+            }
         }
+    }
+
+    #[test]
+    fn openclaw_keeps_its_existing_json_spelling() {
+        assert_eq!(
+            serde_json::to_string(&SourceKind::OpenClaw).unwrap(),
+            "\"open-claw\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SourceKind>("\"open-claw\"").unwrap(),
+            SourceKind::OpenClaw
+        );
+        assert_eq!(
+            serde_json::to_string(&SourceFilter::OpenClaw).unwrap(),
+            "\"open-claw\""
+        );
     }
 
     #[test]

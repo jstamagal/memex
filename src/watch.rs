@@ -819,6 +819,7 @@ mod tests {
 
     fn test_options() -> IngestOptions {
         IngestOptions {
+            custom_sources: Vec::new(),
             claude_sources: vec![PathBuf::from("/tmp/memex-watch-test/claude")],
             include_agents: false,
             include_reasoning: false,

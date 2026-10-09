@@ -1,5 +1,40 @@
 use super::*;
 
+pub(super) fn parse_custom_file(
+    task: &FileTask,
+    name: &str,
+    options: &IngestOptions,
+    tx_record: &RecordSender,
+    tx_update: &Sender<FileUpdate>,
+    next_doc_id: &AtomicU64,
+    progress: &Arc<Progress>,
+) -> Result<()> {
+    let config = options
+        .custom_sources
+        .iter()
+        .find(|config| config.name == name)
+        .ok_or_else(|| anyhow!("missing custom source configuration: {name}"))?;
+    let source_path = task.path.to_string_lossy().into_owned();
+    let parsed = crate::sources::custom::parse_index_records(
+        &task.path,
+        task.source,
+        config,
+        crate::sources::IndexParseState {
+            offset: task.offset,
+            turn_id: task.turn_id,
+            legacy_turn_id: task.legacy_turn_id,
+            pending_tool_calls: task.pending_tool_calls.clone(),
+        },
+        options.include_reasoning,
+        next_doc_id,
+        |record| {
+            progress.add_produced(task.source, 1);
+            tx_record.send(record)
+        },
+    )?;
+    finish_source_parse(task, tx_update, progress, task.source, source_path, parsed)
+}
+
 pub(super) fn parse_claude_file(
     task: &FileTask,
     include_reasoning: bool,
@@ -1128,6 +1163,15 @@ impl ParserContext<'_> {
                 SourceKind::Kiro => parse_kiro_file(
                     task,
                     self.options.include_reasoning,
+                    self.records,
+                    self.updates,
+                    self.next_id,
+                    self.progress,
+                ),
+                SourceKind::Custom(name) => parse_custom_file(
+                    task,
+                    name,
+                    self.options,
                     self.records,
                     self.updates,
                     self.next_id,

@@ -36,6 +36,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 fn ingest_options(embeddings: bool, model: ModelChoice) -> IngestOptions {
     IngestOptions {
+        custom_sources: Vec::new(),
         claude_sources: vec![PathBuf::from("/does/not/exist")],
         exclude_patterns: Vec::new(),
         include_agents: false,
@@ -66,6 +67,65 @@ fn ingest_options(embeddings: bool, model: ModelChoice) -> IngestOptions {
         tool_content_limits: IndexedToolContentLimits::default(),
         defer_merges: false,
     }
+}
+
+#[test]
+fn configured_jsonl_indexes_and_incrementally_refreshes_a_session() {
+    use std::io::Write;
+
+    let temp = tempfile::tempdir().unwrap();
+    let sessions = temp.path().join("sessions");
+    fs::create_dir_all(sessions.join("nested")).unwrap();
+    let transcript = sessions.join("nested/session.jsonl");
+    fs::copy(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/custom/session.jsonl"),
+        &transcript,
+    )
+    .unwrap();
+    let paths = Paths::new(Some(temp.path().join("index-root"))).unwrap();
+    paths.ensure_dirs().unwrap();
+    let config_text = include_str!("../../fixtures/custom/config.toml")
+        .replace("fixtures/custom", &sessions.to_string_lossy())
+        .replace("fixture-agent", "fixture-agent-ingest");
+    fs::write(paths.root.join("config.toml"), config_text).unwrap();
+    let config = crate::config::UserConfig::load(&paths).unwrap();
+    assert_eq!(
+        SourceKind::from_path(&transcript.to_string_lossy()).label(),
+        "fixture-agent-ingest"
+    );
+    let mut options = ingest_options(false, ModelChoice::default());
+    options.custom_sources = config.custom_sources;
+    let index = SearchIndex::open_or_create(&paths.index).unwrap();
+    let lease = ingest_lease(&paths);
+    let first = ingest_all(&paths, &index, &options, &lease).unwrap();
+    assert_eq!((first.records_added, first.files_scanned), (3, 1));
+    let records = index.records_by_session_id("configured-session").unwrap();
+    assert_eq!(records.len(), 3);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.source.label() == "fixture-agent-ingest")
+    );
+    let second = ingest_all(&paths, &index, &options, &lease).unwrap();
+    assert_eq!(second.records_added, 0);
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&transcript)
+        .unwrap();
+    file.write_all(
+        b"{\"message\":{\"role\":\"bot\",\"content\":\"appended reply\"},\"ts\":1780000003}\n",
+    )
+    .unwrap();
+    drop(file);
+    let third = ingest_all(&paths, &index, &options, &lease).unwrap();
+    assert_eq!(third.records_added, 1);
+    assert_eq!(
+        index
+            .records_by_session_id("configured-session")
+            .unwrap()
+            .len(),
+        4
+    );
 }
 
 #[test]
@@ -2890,6 +2950,7 @@ fn ingest_claude_records_preserve_sidechain_and_tool_links() {
     paths.ensure_dirs().expect("ensure dirs");
     let index = SearchIndex::open_or_create(&paths.index).expect("index");
     let options = IngestOptions {
+        custom_sources: Vec::new(),
         include_kiro: false,
         claude_sources: vec![claude_root],
         exclude_patterns: Vec::new(),
@@ -3671,6 +3732,7 @@ fn ingest_pi_session_records_supported_message_shapes() {
     paths.ensure_dirs().expect("ensure dirs");
     let index = SearchIndex::open_or_create(&paths.index).expect("index");
     let options = IngestOptions {
+        custom_sources: Vec::new(),
         include_kiro: false,
         claude_sources: vec![tmp.path().join("missing-claude")],
         exclude_patterns: Vec::new(),

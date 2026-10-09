@@ -51,6 +51,12 @@ pub(super) fn discover_transcripts(
     if options.include_js && full_scan {
         files.extend(crate::sources::js::discover(walk.as_deref_mut()));
     }
+    if full_scan {
+        files.extend(crate::sources::custom::discover(
+            &options.custom_sources,
+            walk.as_deref_mut(),
+        ));
+    }
     if options.include_pi && full_scan {
         files.extend(crate::sources::pi::discover(walk.as_deref_mut()));
     }

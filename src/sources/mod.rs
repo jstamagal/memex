@@ -13,6 +13,7 @@ pub mod codex;
 pub mod common;
 pub mod copilot;
 pub mod cursor;
+pub mod custom;
 pub mod forge;
 pub mod grok;
 pub mod hermes;
@@ -303,6 +304,7 @@ pub fn versions(source: SourceKind) -> ParserVersions {
         SourceKind::Zcode => zcode::VERSIONS,
         SourceKind::Kiro => kiro::VERSIONS,
         SourceKind::Kilocode => kilocode::VERSIONS,
+        SourceKind::Custom(_) => custom::VERSIONS,
     }
 }
 
@@ -325,6 +327,9 @@ pub fn session_cwd(source: SourceKind, path: &Path, session_id: &str) -> Option<
         SourceKind::Hermes => hermes::session_cwd(path, session_id),
         SourceKind::Js => js::session_cwd(path),
         SourceKind::Forge => forge::session_cwd(path, session_id),
+        SourceKind::Custom(name) => {
+            custom::config(name).and_then(|config| custom::session_cwd(path, &config))
+        }
         _ => jsonl::scan_session_cwd(path, session_id),
     }
 }
@@ -381,6 +386,17 @@ pub fn index_state_version(source: SourceKind) -> u32 {
 }
 
 pub fn index_state_version_for(source: SourceKind, include_reasoning: bool) -> u32 {
+    if let SourceKind::Custom(name) = source {
+        use sha2::{Digest, Sha256};
+        let serialized = custom::config(name)
+            // serde_json's map is key ordered, including the user role map.
+            .and_then(|config| serde_json::to_value(&*config).ok())
+            .map(|value| value.to_string())
+            .unwrap_or_default();
+        let digest = Sha256::digest(serialized.as_bytes());
+        let version = u32::from_le_bytes(digest[..4].try_into().expect("sha256 has four bytes"));
+        return version ^ u32::from(include_reasoning);
+    }
     let versions = versions(source);
     let reasoning_mode = include_reasoning
         && matches!(
@@ -400,6 +416,7 @@ pub fn index_state_version_for(source: SourceKind, include_reasoning: bool) -> u
                 | SourceKind::Zcode
                 | SourceKind::Kiro
                 | SourceKind::Kilocode
+                | SourceKind::Custom(_)
         );
     (versions.identity.saturating_mul(10_000) + versions.index)
         .saturating_mul(2)
@@ -447,6 +464,8 @@ pub fn classify_path(path: &str) -> SourceKind {
         SourceKind::Forge
     } else if hermes::matches_path(path) {
         SourceKind::Hermes
+    } else if let Some(source) = custom::classify_path(path) {
+        source
     } else {
         SourceKind::Claude
     }

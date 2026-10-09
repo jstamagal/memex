@@ -402,6 +402,7 @@ fn record_semantics(source: SourceKind, value: &Value, top_level: &str, audit: &
         SourceKind::Zcode => {}
         // KiloCode sessions are SQLite rows, not per-line JSON documents.
         SourceKind::Kilocode => {}
+        SourceKind::Custom(_) => {}
     }
 }
 

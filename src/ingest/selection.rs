@@ -98,6 +98,15 @@ fn roots(options: &IngestOptions) -> Vec<Root> {
                 .map(|root| Root::new(root, Shape::Jsonl(SourceKind::Js))),
         );
     }
+    for config in &options.custom_sources {
+        if let Some(source) = sources::custom::kind(&config.name) {
+            roots.extend(
+                config.roots.iter().map(|root| {
+                    Root::new(sources::custom::expand_root(root), Shape::Jsonl(source))
+                }),
+            );
+        }
+    }
     if options.include_pi {
         roots.push(Root::new(
             sources::pi::sessions_root(),
@@ -219,6 +228,9 @@ fn classify(root: &Root, path: &Path) -> Match {
                 .any(|ancestor| ancestor.file_name().is_some_and(|name| name == "subagents"));
             (jsonl && (!subagents || name.starts_with("agent-")) && (parts.len() <= 2 || subagents))
                 .then_some(SourceKind::Claude)
+        }
+        Shape::Jsonl(SourceKind::Custom(name)) => {
+            sources::custom::matches_relative(name, relative).then_some(SourceKind::Custom(name))
         }
         Shape::Jsonl(source) => jsonl.then_some(source),
         Shape::CodexHome => {
@@ -585,6 +597,7 @@ mod tests {
 
     fn options() -> IngestOptions {
         IngestOptions {
+            custom_sources: Vec::new(),
             claude_sources: Vec::new(),
             include_agents: false,
             include_reasoning: false,

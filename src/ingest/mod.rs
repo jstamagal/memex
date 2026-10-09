@@ -58,6 +58,7 @@ const RECORD_CHANNEL_CAPACITY: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct IngestOptions {
+    pub custom_sources: Vec<crate::config::CustomSourceConfig>,
     pub claude_sources: Vec<PathBuf>,
     pub include_agents: bool,
     pub include_reasoning: bool,

@@ -3085,6 +3085,7 @@ fn index_local(paths: &Paths, config: &UserConfig, stale_only: bool) -> Result<I
 
 fn local_ingest_options(config: &UserConfig) -> Result<IngestOptions> {
     Ok(IngestOptions {
+        custom_sources: config.custom_sources.clone(),
         claude_sources: default_claude_sources(),
         include_agents: false,
         include_reasoning: config.include_reasoning_default(),

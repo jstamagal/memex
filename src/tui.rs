@@ -404,6 +404,7 @@ enum HomeDropdown {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SourceChoice {
     All,
+    Custom(&'static str),
     Claude,
     Codex,
     Opencode,
@@ -450,12 +451,14 @@ impl SourceChoice {
             SourceChoice::Zcode => SourceChoice::Kiro,
             SourceChoice::Kiro => SourceChoice::Kilocode,
             SourceChoice::Kilocode => SourceChoice::All,
+            SourceChoice::Custom(_) => SourceChoice::All,
         }
     }
 
     fn as_filter(self) -> Option<SourceFilter> {
         match self {
             SourceChoice::All => None,
+            SourceChoice::Custom(name) => Some(SourceFilter::Custom(name)),
             SourceChoice::Claude => Some(SourceFilter::Claude),
             SourceChoice::Codex => Some(SourceFilter::Codex),
             SourceChoice::Opencode => Some(SourceFilter::Opencode),
@@ -482,6 +485,7 @@ impl SourceChoice {
     fn label(self) -> &'static str {
         match self {
             SourceChoice::All => "all",
+            SourceChoice::Custom(name) => name,
             SourceChoice::Claude => "claude",
             SourceChoice::Codex => "codex",
             SourceChoice::Opencode => "opencode",
@@ -527,6 +531,7 @@ impl SourceChoice {
             SourceKind::Zcode => SourceChoice::Zcode,
             SourceKind::Kiro => SourceChoice::Kiro,
             SourceKind::Kilocode => SourceChoice::Kilocode,
+            SourceKind::Custom(name) => SourceChoice::Custom(name),
         }
     }
 }
@@ -1180,6 +1185,7 @@ impl App {
                 let model_choice = config.resolve_model(None)?;
                 let tool_content_limits = config.indexed_tool_content_limits()?;
                 let opts = IngestOptions {
+                    custom_sources: config.custom_sources.clone(),
                     claude_sources: default_claude_sources(),
                     include_agents: false,
                     include_reasoning: config.include_reasoning_default(),
@@ -1699,13 +1705,10 @@ impl App {
             let (sources, projects) = (|| -> Result<(Vec<SourceChoice>, Vec<String>)> {
                 let store = AnalyticsStore::open_read_only(analytics_path(&paths.state))?;
                 let labels = store.query_source_labels()?;
-                let sources = SourceKind::ALL
-                    .into_iter()
-                    .map(SourceChoice::from_source)
-                    .filter(|choice| {
-                        labels
-                            .iter()
-                            .any(|label| source_choice_matches_storage_label(*choice, label))
+                let sources = labels
+                    .iter()
+                    .filter_map(|label| {
+                        SourceKind::from_label(label).map(SourceChoice::from_source)
                     })
                     .collect();
                 let rows = store.query_project_timestamps(None, None, grouping)?;
@@ -2731,6 +2734,7 @@ impl App {
             SourceKind::Zcode => "zcode",
             SourceKind::Kilocode => "kilocode",
             SourceKind::Kiro => "kiro",
+            SourceKind::Custom(name) => name,
         };
         let source_path = session.source_path.clone();
 
@@ -4190,8 +4194,10 @@ fn match_context_spans(
     spans
 }
 
+#[cfg(test)]
 fn source_choice_matches_storage_label(choice: SourceChoice, label: &str) -> bool {
     match choice {
+        SourceChoice::Custom(name) => name == label,
         SourceChoice::Claude => label == "claude",
         SourceChoice::Codex => SourceFilter::Codex.storage_labels().contains(&label),
         SourceChoice::Opencode => label == "opencode",
@@ -4238,6 +4244,7 @@ fn source_color(source: SourceKind) -> Color {
         SourceKind::Zcode => Color::Rgb(96, 222, 228),
         SourceKind::Kilocode => Color::Rgb(255, 122, 189),
         SourceKind::Kiro => Color::Rgb(180, 130, 240),
+        SourceKind::Custom(_) => Color::Rgb(130, 190, 170),
     }
 }
 

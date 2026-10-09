@@ -71,6 +71,11 @@ pub fn resume_template(config: &UserConfig, source: SourceKind, remote: bool) ->
         SourceKind::Kiro => None,
         // KiloCode sessions resume with `kilo --session <id>` in a project directory.
         SourceKind::Kilocode => config.kilocode_resume_cmd.clone(),
+        SourceKind::Custom(name) => config
+            .custom_sources
+            .iter()
+            .find(|entry| entry.name == name)
+            .and_then(|entry| entry.resume.clone()),
     };
     configured.or_else(|| default_resume_template(source.label(), remote))
 }
@@ -134,6 +139,14 @@ pub fn default_resume_template(cmd: &str, remote: bool) -> Option<String> {
 pub fn expand_resume_template(template: &str, session: &ResumeSession, cwd: &str) -> String {
     let agent = if session.source == SourceKind::Js {
         crate::sources::js::session_agent(Path::new(session.source_path))
+    } else if let SourceKind::Custom(name) = session.source {
+        crate::sources::custom::config(name)
+            .and_then(|config| {
+                config.agent.as_deref().and_then(|pointer| {
+                    crate::sources::custom::session_field(Path::new(session.source_path), pointer)
+                })
+            })
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -145,6 +158,15 @@ pub fn expand_resume_template(template: &str, session: &ResumeSession, cwd: &str
         .replace("{source}", session.source.label())
         .replace("{source_path_shell}", &shell_quote(session.source_path))
         .replace("{source_path}", session.source_path)
+        .replace("{path}", session.source_path)
+        .replace(
+            "{stem}",
+            Path::new(session.source_path)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .as_ref(),
+        )
         .replace("{source_dir_shell}", &shell_quote(session.source_dir))
         .replace("{source_dir}", session.source_dir)
         .replace("{cwd_shell}", &shell_quote(cwd))

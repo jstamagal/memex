@@ -78,6 +78,7 @@ tool. **Import into** creates a conversation in another tool using the
 | Kiro CLI | Yes | Credits only | No | No | No |
 | Hermes | Yes | Yes | No | No | No |
 | forge (ForgeCode) | Yes | No counters recorded | Yes | No | No |
+| custom JSONL (configured) | Yes | No counters recorded | Template | No | No |
 
 - **History coverage depends on the local records a tool saves.** Cursor history
   comes from agent transcripts; its usage data comes from local databases.

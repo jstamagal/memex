@@ -202,6 +202,9 @@ impl Default for IndexedToolContentLimits {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UserConfig {
+    /// Configured JSONL session stores.
+    #[serde(default)]
+    pub custom_sources: Vec<CustomSourceConfig>,
     /// Embedding mode: true or "local", "remote", or false (default).
     pub embeddings: Option<EmbeddingsMode>,
     pub auto_index_on_search: Option<bool>,
@@ -318,6 +321,55 @@ pub struct UserConfig {
     pub mcp: McpConfig,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CustomSourceConfig {
+    pub name: String,
+    pub roots: Vec<PathBuf>,
+    #[serde(default = "default_custom_glob")]
+    pub glob: String,
+    #[serde(default = "default_session_id")]
+    pub session_id: String,
+    pub cwd: Option<String>,
+    pub agent: Option<String>,
+    pub role: String,
+    pub text: String,
+    pub ts: Option<String>,
+    pub id: Option<String>,
+    pub parent: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_input: Option<String>,
+    pub tool_output: Option<String>,
+    pub reasoning: Option<String>,
+    pub tool_calls: Option<String>,
+    pub tool_call_name: Option<String>,
+    pub tool_call_input: Option<String>,
+    pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub metadata: Vec<String>,
+    pub text_parts: Option<CustomTextParts>,
+    #[serde(default)]
+    pub roles: std::collections::BTreeMap<String, String>,
+    pub resume: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CustomTextParts {
+    pub type_key: String,
+    pub text_key: String,
+    #[serde(default = "default_text_type")]
+    pub type_value: String,
+}
+
+fn default_custom_glob() -> String {
+    "**/*.jsonl".into()
+}
+fn default_session_id() -> String {
+    "stem".into()
+}
+fn default_text_type() -> String {
+    "text".into()
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct McpConfig {
     pub listen: Option<SocketAddr>,
@@ -405,6 +457,7 @@ impl UserConfig {
         }
         let contents = std::fs::read_to_string(path)?;
         let config: UserConfig = toml::from_str(&contents)?;
+        crate::sources::custom::register(&config.custom_sources)?;
         Ok(config)
     }
 

@@ -2,6 +2,64 @@
 
 [Back to Memex](../README.md)
 
+## Custom JSONL sources
+
+Add a `[[custom_sources]]` entry to `~/.memex/config.toml` (or to the
+`config.toml` inside a `--root` directory). Each entry names one JSONL session
+store. The name becomes the source label in `search --source`, `sessions`, the
+TUI, and the web UI. Names must be unique lowercase letters, digits, `-`, or
+`_`, and cannot replace a built-in source.
+
+```toml
+[[custom_sources]]
+name = "myagent"
+roots = ["~/.myagent/sessions"]
+glob = "**/*.jsonl"             # relative to each root; default shown
+session_id = "stem"             # filename stem, or a JSON pointer
+cwd = "/cwd"                    # optional; unknown if absent
+agent = "/agent"                # optional; available to resume templates
+role = "/message/role"
+text = "/message/content"
+ts = "/ts"
+id = "/id"
+parent = "/parent"
+tool_name = "/message/name"
+tool_input = "/message/tool_calls/0/function/arguments"
+tool_output = "/message/content"
+reasoning = "/message/reasoning_content"
+resume = "cd {cwd_shell} && myagent --resume {source_path_shell}"
+
+[custom_sources.roles]
+user = "user"
+assistant = "assistant"
+tool = "tool_result"
+```
+
+Fields use RFC 6901 JSON pointers. Missing fields are empty; a missing `role`
+skips the row unless a configured metadata pointer has content. `text` accepts
+a string or an array of parts. For part arrays, add
+`[custom_sources.text_parts]` with `type_key = "/type"`,
+`text_key = "/data/text"`, and `type_value = "text"`. These pointers are
+relative to each part. `ts` accepts seconds, milliseconds, or RFC 3339.
+Malformed lines are counted and skipped. Reasoning is indexed only with
+`include_reasoning = true` or `--include-reasoning`.
+
+For stores with separate tool-call objects, set `tool_calls` to the array
+pointer and `tool_call_name`, `tool_call_input`, and `tool_call_id` to pointers
+relative to each call. `metadata = ["/agent", "/model", "/tags"]` indexes
+non-message rows with those fields. Resume templates support `{cwd}`, `{path}`,
+`{stem}`, `{session_id}`, and `{agent}`, plus the existing `{cwd_shell}`,
+`{source_path_shell}`, and `{agent_shell}` shell-quoted forms. The transcript
+roots are read only.
+
+```bash
+memex index --only-source myagent
+memex search "term" --source myagent
+```
+
+Configured sources use one shared parser and progress slot. The stored source
+label is the configured name, so adding another store needs only TOML.
+
 ## Embeddings
 
 Enable during indexing:

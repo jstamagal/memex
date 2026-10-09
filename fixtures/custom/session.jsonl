@@ -1,0 +1,4 @@
+{"session/id":"configured-session","cwd":"/work/demo","agent":"testbot","id":"a","ts":1780000000.25,"message":{"role":"human","content":"hello fixture"}}
+broken JSON
+{"session/id":"configured-session","id":"b","parent":"a","ts":1780000001250,"message":{"role":"bot","content":[{"type":"image","data":{"text":"ignore me"}},{"type":"text","data":{"text":"array content"}}],"reasoning":"private thoughts"}}
+{"session/id":"configured-session","id":"c","ts":"2026-05-28T00:00:02Z","message":{"role":"tool","name":"shell","content":"tool output"}}

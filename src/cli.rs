@@ -100,11 +100,11 @@ struct IndexArgs {
     )]
     source: Option<PathBuf>,
     /// Index only these providers (repeatable); exclusions take precedence
-    #[arg(long, value_enum, value_name = "SOURCE", help_heading = "Sources")]
-    only_source: Vec<IndexSource>,
+    #[arg(long, value_name = "SOURCE", help_heading = "Sources")]
+    only_source: Vec<String>,
     /// Skip these providers (repeatable)
-    #[arg(long, value_enum, value_name = "SOURCE", help_heading = "Sources")]
-    exclude_source: Vec<IndexSource>,
+    #[arg(long, value_name = "SOURCE", help_heading = "Sources")]
+    exclude_source: Vec<String>,
     /// Deprecated no-op (kept for compatibility): agent subprocess
     /// conversations are always indexed now; filter them at query time
     #[arg(long, hide = true)]
@@ -2671,6 +2671,22 @@ fn run_index_args(index: &IndexArgs, reindex: bool) -> Result<()> {
 /// one-shot indexer and the event-driven daemon (which needs the same source
 /// set to compute its watch roots).
 fn build_ingest_options(index: &IndexArgs, config: &UserConfig) -> Result<IngestOptions> {
+    for name in index.only_source.iter().chain(&index.exclude_source) {
+        let built_in = IndexSource::value_variants().iter().any(|source| {
+            source
+                .to_possible_value()
+                .is_some_and(|value| value.get_name() == name)
+        });
+        if !built_in
+            && name != "open-claw"
+            && !config
+                .custom_sources
+                .iter()
+                .any(|source| source.name == *name)
+        {
+            return Err(anyhow!("unknown source '{name}'"));
+        }
+    }
     // Config exclusions apply to every index run; CLI --exclude adds one-off patterns.
     let mut excludes = index.exclude.clone();
     excludes.extend(config.exclude_path_patterns());
@@ -2687,6 +2703,15 @@ fn build_ingest_options(index: &IndexArgs, config: &UserConfig) -> Result<Ingest
         "embeddings",
     )?;
     Ok(IngestOptions {
+        custom_sources: config
+            .custom_sources
+            .iter()
+            .filter(|source| {
+                (index.only_source.is_empty() || index.only_source.contains(&source.name))
+                    && !index.exclude_source.contains(&source.name)
+            })
+            .cloned()
+            .collect(),
         claude_sources: if index.source_enabled(IndexSource::Claude) {
             index
                 .source
@@ -6043,6 +6068,7 @@ fn run_share(session_id: String, title: Option<String>, root: Option<PathBuf>) -
         crate::types::SourceKind::Zcode => "zcode",
         crate::types::SourceKind::Kiro => "kiro",
         crate::types::SourceKind::Kilocode => "kilocode",
+        crate::types::SourceKind::Custom(name) => name,
     };
     let source_path = &record.source_path;
     if record.source == crate::types::SourceKind::Bob {
@@ -7336,13 +7362,7 @@ fn build_index_command_args(
     ] {
         for source in sources {
             args.push(flag.to_string());
-            args.push(
-                source
-                    .to_possible_value()
-                    .expect("index source")
-                    .get_name()
-                    .to_string(),
-            );
+            args.push(source.clone());
         }
     }
     if index.include_agents {

@@ -28,6 +28,7 @@ const UI_JS: &[u8] = include_bytes!("../web/dist/assets/app.js");
 pub fn serve(root: Option<PathBuf>, listen: &str) -> Result<()> {
     validate_listener(listen)?;
     let paths = Paths::new(root)?;
+    UserConfig::load(&paths)?;
     let auth = Arc::new(WebAuth::load_or_create(&paths)?);
     let server = bind(listen)?;
     let login_url = bootstrap_url_for_auth(&auth, listen)?;
@@ -40,6 +41,7 @@ pub fn serve(root: Option<PathBuf>, listen: &str) -> Result<()> {
 pub fn spawn(root: Option<PathBuf>, listen: &str) -> Result<JoinHandle<()>> {
     validate_listener(listen)?;
     let paths = Paths::new(root)?;
+    UserConfig::load(&paths)?;
     let auth = Arc::new(WebAuth::load_or_create(&paths)?);
     let server = bind(listen)?;
     let cookie_name = session_cookie_name(&paths, listen)?;
@@ -1175,9 +1177,7 @@ impl SessionContentRequest {
 }
 
 fn parse_session_source(value: &str) -> Result<crate::types::SourceKind> {
-    crate::types::SourceKind::ALL
-        .into_iter()
-        .find(|source| source.label() == value)
+    crate::types::SourceKind::from_label(value)
         .ok_or_else(|| anyhow!("unknown session_source: {value}"))
 }
 
@@ -1432,19 +1432,27 @@ fn parse_source(value: &str) -> Result<SourceFilter> {
         "zcode" => Ok(SourceFilter::Zcode),
         "kilocode" => Ok(SourceFilter::Kilocode),
         "kiro" => Ok(SourceFilter::Kiro),
-        _ => Err(anyhow!("unknown source: {value}")),
+        _ => crate::types::SourceFilter::from_str(value, true)
+            .map_err(|_| anyhow!("unknown source: {value}")),
     }
 }
 
 #[derive(Serialize)]
 struct StatsPayload {
     documents: usize,
+    custom_sources: Vec<String>,
 }
 
 fn stats_payload(paths: &Paths) -> Result<StatsPayload> {
     let index = open_index(paths)?;
+    let config = UserConfig::load(paths)?;
     Ok(StatsPayload {
         documents: index.doc_count()?,
+        custom_sources: config
+            .custom_sources
+            .into_iter()
+            .map(|source| source.name)
+            .collect(),
     })
 }
 

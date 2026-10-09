@@ -1,0 +1,26 @@
+[[custom_sources]]
+name = "fixture-agent"
+roots = ["fixtures/custom"]
+glob = "**/*.jsonl"
+session_id = "/session~1id"
+cwd = "/cwd"
+agent = "/agent"
+role = "/message/role"
+text = "/message/content"
+ts = "/ts"
+id = "/id"
+parent = "/parent"
+tool_name = "/message/name"
+tool_output = "/message/content"
+reasoning = "/message/reasoning"
+resume = "cd {cwd_shell} && fixture --agent {agent_shell} --resume {source_path_shell}"
+
+[custom_sources.text_parts]
+type_key = "/type"
+text_key = "/data/text"
+type_value = "text"
+
+[custom_sources.roles]
+human = "user"
+bot = "assistant"
+tool = "tool_result"

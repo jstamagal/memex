@@ -568,6 +568,7 @@ function ResultContinuation({
 function App() {
   const [query, setQuery] = useState(paramsAtLoad.get("q") || "")
   const [source, setSource] = useState(paramsAtLoad.get("source") || "all")
+  const [customSources, setCustomSources] = useState<string[]>([])
   const [project, setProject] = useState(paramsAtLoad.get("project") || "")
   const [origin, setOrigin] = useState(
     paramsAtLoad.get("origin") || "interactive",
@@ -626,6 +627,12 @@ function App() {
     document.documentElement.classList.toggle("dark", theme === "dark")
     localStorage.setItem("memex-theme", theme)
   }, [theme])
+
+  useEffect(() => {
+    void api<{ custom_sources: string[] }>("/api/stats")
+      .then((stats) => setCustomSources(stats.custom_sources || []))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     localStorage.setItem("memex-preview-mode", mode)
@@ -1070,6 +1077,7 @@ function App() {
                   <SelectItem value="copilot">Copilot</SelectItem>
                   <SelectItem value="kiro">Kiro</SelectItem>
                   <SelectItem value="kilocode">KiloCode</SelectItem>
+                  {customSources.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
                 </SelectGroup>
               </SelectContent>
             </Select>
@@ -1400,6 +1408,7 @@ function App() {
                           <SelectItem value="copilot">Copilot</SelectItem>
                           <SelectItem value="kiro">Kiro</SelectItem>
                           <SelectItem value="kilocode">KiloCode</SelectItem>
+                          {customSources.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}
                         </SelectGroup>
                       </SelectContent>
                     </Select>

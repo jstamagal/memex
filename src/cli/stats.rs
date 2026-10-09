@@ -116,6 +116,12 @@ fn build_report(paths: &Paths) -> Result<StatsReport> {
                     .get_name()
                     .to_string()
             })
+            .chain(
+                config
+                    .custom_sources
+                    .iter()
+                    .map(|source| source.name.clone()),
+            )
             .collect(),
     })
 }

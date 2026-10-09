@@ -265,8 +265,15 @@ impl IndexArgs {
             IndexSource::Kilocode => self.kilocode && !self.no_kilocode,
         };
         legacy_enabled
-            && (self.only_source.is_empty() || self.only_source.contains(&source))
-            && !self.exclude_source.contains(&source)
+            && (self.only_source.is_empty()
+                || self.only_source.iter().any(|name| {
+                    name == source.to_possible_value().expect("index source").get_name()
+                        || (source == IndexSource::Openclaw && name == "open-claw")
+                }))
+            && !self.exclude_source.iter().any(|name| {
+                name == source.to_possible_value().expect("index source").get_name()
+                    || (source == IndexSource::Openclaw && name == "open-claw")
+            })
     }
 }
 
