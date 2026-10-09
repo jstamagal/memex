@@ -54,6 +54,9 @@ pub(super) fn discover_transcripts(
     if options.include_pi && full_scan {
         files.extend(crate::sources::pi::discover(walk.as_deref_mut()));
     }
+    if options.include_bitchtea && full_scan {
+        files.extend(crate::sources::bitchtea::discover(walk.as_deref_mut()));
+    }
     if options.include_omp && full_scan {
         files.extend(crate::sources::omp::discover(walk.as_deref_mut()));
     }
@@ -244,6 +247,9 @@ fn discovery_fingerprint(options: &IngestOptions) -> String {
     for root in crate::sources::js::roots() {
         feed(root.as_os_str().as_encoded_bytes());
     }
+    for root in crate::sources::bitchtea::sessions_roots() {
+        feed(root.as_os_str().as_encoded_bytes());
+    }
     for root in crate::sources::omp::session_roots() {
         feed(root.as_os_str().as_encoded_bytes());
     }
@@ -257,6 +263,7 @@ fn discovery_fingerprint(options: &IngestOptions) -> String {
         options.include_codex,
         options.include_pi,
         options.include_js,
+        options.include_bitchtea,
         options.include_omp,
         options.include_muse,
     ] {

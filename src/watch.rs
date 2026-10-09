@@ -143,6 +143,9 @@ pub(crate) fn watch_roots(options: &IngestOptions) -> Vec<PathBuf> {
         roots.push(crate::sources::pi::sessions_root());
         roots.push(crate::sources::pi::agent_root());
     }
+    if options.include_bitchtea {
+        roots.extend(crate::sources::bitchtea::sessions_roots());
+    }
     if options.include_omp {
         roots.extend(crate::sources::omp::session_roots());
     }
@@ -819,6 +822,7 @@ mod tests {
             include_cursor: true,
             include_pi: true,
             include_js: true,
+            include_bitchtea: true,
             include_omp: true,
             include_openclaw: true,
             include_copilot: true,
@@ -939,6 +943,7 @@ mod tests {
         options.include_cursor = false;
         options.include_pi = false;
         options.include_js = false;
+        options.include_bitchtea = false;
         options.include_omp = false;
         options.include_openclaw = false;
         options.include_copilot = false;

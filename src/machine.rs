@@ -3093,6 +3093,7 @@ fn local_ingest_options(config: &UserConfig) -> Result<IngestOptions> {
         include_cursor: true,
         include_pi: true,
         include_js: true,
+        include_bitchtea: true,
         include_omp: true,
         include_openclaw: true,
         include_copilot: true,

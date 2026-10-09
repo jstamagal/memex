@@ -150,6 +150,7 @@ cursor_resume_cmd = "cursor-agent --resume {session_id}"
 opencode_resume_cmd = "opencode --session {session_id}"
 pi_resume_cmd = "pi --session {source_path_shell}"
 # js uses: cd {cwd_shell} && js -a {agent_shell} -s {session_id_shell}
+# bitchtea_resume_cmd = "cd {cwd_shell} && bitchtea --resume {source_path_shell}"
 # copilot_resume_cmd = "your-copilot-resume-command {session_id}"
 grok_resume_cmd = "cd {cwd_shell} && grok --resume {session_id}"
 bob_resume_cmd = "cd {cwd_shell} && bob --resume {session_id}"

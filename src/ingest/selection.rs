@@ -104,6 +104,13 @@ fn roots(options: &IngestOptions) -> Vec<Root> {
         ));
         roots.push(Root::new(sources::pi::agent_root(), Shape::PiSettings));
     }
+    if options.include_bitchtea {
+        roots.extend(
+            sources::bitchtea::sessions_roots()
+                .into_iter()
+                .map(|root| Root::new(root, Shape::Jsonl(SourceKind::Bitchtea))),
+        );
+    }
     if options.include_omp {
         // This helper reads only profile entries, never transcript trees.
         roots.extend(
@@ -568,6 +575,7 @@ mod tests {
             include_cursor: false,
             include_pi: false,
             include_js: false,
+            include_bitchtea: false,
             include_omp: false,
             include_openclaw: false,
             include_copilot: false,

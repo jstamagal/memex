@@ -27,6 +27,9 @@ is read from local OpenTelemetry JSONL exports under `~/.copilot/otel` (or
 alone are insufficient. Antigravity history is searchable, but its token buckets
 are not yet validated and Memex does not report usage for it.
 
+The observed bitchtea session formats do not persist token counters, so its
+history is searchable but no usage totals are reported.
+
 `--cost auto` prefers a provider-stored request cost and otherwise applies the versioned built-in API price catalog. `--cost source` uses only stored costs; `--cost reprice` always applies the catalog. Calculated costs are API-equivalent estimates, not subscription charges. Events with unknown models or prices remain in token totals and are reported as unpriced.
 
 Each source also reports prompt-cache efficiency: the cache hit rate, plus an estimate of cache waste — prompt tokens that were in the previous request's prompt but were re-billed at input rates instead of read from cache, priced at catalog rates and attributed to idle gaps past the cache TTL or model switches where those apply. Waste is estimated per transcript file chain and errs toward undercounting: subagent sidechains, ambiguous dedupe deltas, and prompts that shrink past compaction are not counted.

@@ -1537,6 +1537,12 @@ fn resolve_cwd_from_source(records: &[Record]) -> Option<PathBuf> {
         SourceKind::Js => {
             crate::sources::js::session_cwd(Path::new(&first.source_path)).map(PathBuf::from)
         }
+        SourceKind::Bitchtea => crate::sources::session_cwd(
+            SourceKind::Bitchtea,
+            Path::new(&first.source_path),
+            &first.session_id,
+        )
+        .map(PathBuf::from),
         SourceKind::Omp => cwd_from_pi_session(Path::new(&first.source_path)),
         SourceKind::OpenClaw => cwd_from_pi_session(Path::new(&first.source_path)),
         SourceKind::Grok => {

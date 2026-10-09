@@ -11,6 +11,7 @@ pub enum SourceKind {
     Cursor,
     Pi,
     Js,
+    Bitchtea,
     OpenClaw,
     Copilot,
     Omp,
@@ -26,12 +27,13 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 18] = [
+    pub const ALL: [SourceKind; 19] = [
         SourceKind::Claude,
         SourceKind::Codex,
         SourceKind::Opencode,
         SourceKind::Cursor,
         SourceKind::Pi,
+        SourceKind::Bitchtea,
         SourceKind::OpenClaw,
         SourceKind::Copilot,
         SourceKind::Omp,
@@ -56,6 +58,7 @@ impl SourceKind {
             SourceKind::Cursor => 3,
             SourceKind::Pi => 4,
             SourceKind::Js => 17,
+            SourceKind::Bitchtea => 18,
             SourceKind::OpenClaw => 5,
             SourceKind::Copilot => 6,
             SourceKind::Omp => 7,
@@ -79,6 +82,7 @@ impl SourceKind {
             3 => Some(SourceKind::Cursor),
             4 => Some(SourceKind::Pi),
             17 => Some(SourceKind::Js),
+            18 => Some(SourceKind::Bitchtea),
             5 => Some(SourceKind::OpenClaw),
             6 => Some(SourceKind::Copilot),
             7 => Some(SourceKind::Omp),
@@ -103,6 +107,7 @@ impl SourceKind {
             SourceKind::Cursor => "cursor",
             SourceKind::Pi => "pi",
             SourceKind::Js => "js",
+            SourceKind::Bitchtea => "bitchtea",
             SourceKind::OpenClaw => "openclaw",
             SourceKind::Copilot => "copilot",
             SourceKind::Omp => "omp",
@@ -126,6 +131,7 @@ impl SourceKind {
             SourceKind::Cursor => "cursor",
             SourceKind::Pi => "pi",
             SourceKind::Js => "js",
+            SourceKind::Bitchtea => "bitchtea",
             SourceKind::OpenClaw => "openclaw",
             SourceKind::Copilot => "copilot",
             SourceKind::Omp => "omp",
@@ -153,6 +159,7 @@ impl SourceKind {
             "cursor" => Some(SourceKind::Cursor),
             "pi" => Some(SourceKind::Pi),
             "js" => Some(SourceKind::Js),
+            "bitchtea" => Some(SourceKind::Bitchtea),
             "openclaw" => Some(SourceKind::OpenClaw),
             "copilot" => Some(SourceKind::Copilot),
             "omp" => Some(SourceKind::Omp),
@@ -180,6 +187,7 @@ pub enum SourceFilter {
     Cursor,
     Pi,
     Js,
+    Bitchtea,
     #[value(name = "openclaw", alias = "open-claw")]
     OpenClaw,
     Copilot,
@@ -204,6 +212,7 @@ impl SourceFilter {
             SourceFilter::Cursor => source == SourceKind::Cursor,
             SourceFilter::Pi => source == SourceKind::Pi,
             SourceFilter::Js => source == SourceKind::Js,
+            SourceFilter::Bitchtea => source == SourceKind::Bitchtea,
             SourceFilter::OpenClaw => source == SourceKind::OpenClaw,
             SourceFilter::Copilot => source == SourceKind::Copilot,
             SourceFilter::Omp => source == SourceKind::Omp,
@@ -227,6 +236,7 @@ impl SourceFilter {
             SourceFilter::Cursor => &["cursor"],
             SourceFilter::Pi => &["pi"],
             SourceFilter::Js => &["js"],
+            SourceFilter::Bitchtea => &["bitchtea"],
             SourceFilter::OpenClaw => &["openclaw"],
             SourceFilter::Copilot => &["copilot"],
             SourceFilter::Omp => &["omp"],
@@ -250,6 +260,7 @@ impl SourceFilter {
             SourceFilter::Cursor => "cursor",
             SourceFilter::Pi => "pi",
             SourceFilter::Js => "js",
+            SourceFilter::Bitchtea => "bitchtea",
             SourceFilter::OpenClaw => "openclaw",
             SourceFilter::Copilot => "copilot",
             SourceFilter::Omp => "omp",
@@ -469,6 +480,7 @@ mod tests {
         for source in SourceKind::ALL {
             assert!(indices.insert(source.idx()));
             assert!(labels.insert(source.storage_label()));
+            assert_eq!(SourceKind::from_idx(source.idx()), Some(source));
             assert_eq!(SourceKind::from_label(source.storage_label()), Some(source));
         }
     }

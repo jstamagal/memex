@@ -55,6 +55,7 @@ pub fn resume_template(config: &UserConfig, source: SourceKind, remote: bool) ->
         SourceKind::Cursor => config.cursor_resume_cmd.clone(),
         SourceKind::Pi => config.pi_resume_cmd.clone(),
         SourceKind::Js => None,
+        SourceKind::Bitchtea => config.bitchtea_resume_cmd.clone(),
         SourceKind::Omp => config.omp_resume_cmd.clone(),
         SourceKind::OpenClaw => return None,
         SourceKind::Copilot => config.copilot_resume_cmd.clone(),
@@ -86,6 +87,9 @@ pub fn default_resume_template(cmd: &str, remote: bool) -> Option<String> {
         }
         "cursor" => (remote || find_in_path("cursor-agent").is_some())
             .then(|| "cursor-agent --resume {session_id}".to_string()),
+        "bitchtea" if remote || find_in_path("bitchtea").is_some() => {
+            Some("cd {cwd_shell} && bitchtea --resume {source_path_shell}".to_string())
+        }
         "pi" if remote || find_in_path("pi").is_some() => {
             Some("pi --session {source_path_shell}".to_string())
         }

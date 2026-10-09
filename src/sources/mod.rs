@@ -6,6 +6,7 @@
 
 pub mod antigravity;
 pub mod audit;
+pub mod bitchtea;
 pub mod bob;
 pub mod claude;
 pub mod codex;
@@ -287,6 +288,7 @@ pub fn versions(source: SourceKind) -> ParserVersions {
         SourceKind::Opencode => opencode::VERSIONS,
         SourceKind::Pi => pi::VERSIONS,
         SourceKind::Js => js::VERSIONS,
+        SourceKind::Bitchtea => bitchtea::VERSIONS,
         SourceKind::Omp => omp::VERSIONS,
         SourceKind::OpenClaw => openclaw::VERSIONS,
         SourceKind::Copilot => copilot::VERSIONS,
@@ -352,6 +354,7 @@ fn state_store_roots() -> Vec<PathBuf> {
     roots.extend(opencode::data_roots());
     roots.push(pi::sessions_root());
     roots.extend(js::roots());
+    roots.extend(bitchtea::sessions_roots());
     roots.extend(omp::session_roots());
     roots.extend(openclaw::state_dirs());
     roots.push(copilot::root());
@@ -424,6 +427,8 @@ pub fn classify_path(path: &str) -> SourceKind {
         SourceKind::Omp
     } else if js::matches_path(path) {
         SourceKind::Js
+    } else if bitchtea::matches_path(path) {
+        SourceKind::Bitchtea
     } else if pi::matches_path(path) {
         SourceKind::Pi
     } else if openclaw::matches_path(path) {

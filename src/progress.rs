@@ -343,6 +343,7 @@ fn progress_label(source: SourceKind) -> &'static str {
         SourceKind::Cursor => "cursor",
         SourceKind::Pi => "pi",
         SourceKind::Js => "js",
+        SourceKind::Bitchtea => "bitchtea",
         SourceKind::OpenClaw => "openclaw",
         SourceKind::Copilot => "copilot",
         SourceKind::Omp => "omp",

@@ -88,6 +88,10 @@ pub(crate) fn source_spec(filter: SourceFilter) -> SourceSpec {
             parser_version: crate::sources::opencode::VERSIONS.usage,
             volatile_reuse_ms: volatile_reuse_opencode,
         },
+        SourceFilter::Bitchtea => SourceSpec {
+            parser_version: crate::sources::bitchtea::VERSIONS.usage,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
         SourceFilter::Pi => SourceSpec {
             parser_version: crate::sources::pi::VERSIONS.usage,
             volatile_reuse_ms: no_volatile_reuse,
@@ -161,6 +165,10 @@ pub(crate) fn source_files(filter: SourceFilter) -> Vec<PathBuf> {
             .map(|file| file.path)
             .collect(),
         SourceFilter::Opencode => crate::sources::opencode::usage_files(),
+        SourceFilter::Bitchtea => crate::sources::bitchtea::discover(None)
+            .into_iter()
+            .map(|file| file.path)
+            .collect(),
         SourceFilter::Pi => crate::sources::pi::discover(None)
             .into_iter()
             .map(|file| file.path)
@@ -497,6 +505,9 @@ pub(crate) fn parse_source_file(
         SourceFilter::Opencode => {
             crate::sources::opencode::parse_usage_file(path).map(FileParse::cacheable)
         }
+        SourceFilter::Bitchtea => {
+            crate::sources::bitchtea::parse_usage_file(path).map(FileParse::cacheable)
+        }
         SourceFilter::Pi => crate::sources::pi::parse_usage_file(path).map(FileParse::cacheable),
         SourceFilter::Js => crate::sources::js::parse_usage_file(path).map(FileParse::cacheable),
         SourceFilter::Omp => crate::sources::omp::parse_usage_file(path).map(FileParse::cacheable),
@@ -625,6 +636,27 @@ pub(crate) fn scan_js(
         warnings,
         out,
         |path| crate::sources::js::parse_usage_file(path).map(FileParse::cacheable),
+    );
+    Ok(())
+}
+
+pub(crate) fn scan_bitchtea(
+    out: &mut Vec<UsageEvent>,
+    warnings: &mut Vec<String>,
+    cache: Option<&mut UsageCache>,
+) -> Result<()> {
+    let files = source_files(SourceFilter::Bitchtea);
+    scan_files_cached(
+        SourceScan {
+            source: "bitchtea",
+            parser_version: crate::sources::bitchtea::VERSIONS.usage,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
+        &files,
+        cache,
+        warnings,
+        out,
+        |path| crate::sources::bitchtea::parse_usage_file(path).map(FileParse::cacheable),
     );
     Ok(())
 }
@@ -940,12 +972,13 @@ pub(crate) type SourceScanner =
 
 /// Scanner ordinals double as merge tiebreaks: partitions are laid out and merged in
 /// this order, reproducing the combined assembly's stable sort exactly.
-pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 18] = [
+pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 19] = [
     (SourceFilter::Claude, scan_claude),
     (SourceFilter::Codex, scan_codex),
     (SourceFilter::Opencode, scan_opencode),
     (SourceFilter::Pi, scan_pi),
     (SourceFilter::Js, scan_js),
+    (SourceFilter::Bitchtea, scan_bitchtea),
     (SourceFilter::Omp, scan_omp),
     (SourceFilter::OpenClaw, scan_openclaw),
     (SourceFilter::Cursor, scan_cursor),

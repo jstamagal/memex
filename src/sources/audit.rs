@@ -67,6 +67,13 @@ pub fn audit_installed_sources(source: Option<SourceFilter>) -> Result<Vec<Sourc
             .collect(),
     );
     push(
+        SourceKind::Bitchtea,
+        super::bitchtea::discover(None)
+            .into_iter()
+            .map(|file| file.path)
+            .collect(),
+    );
+    push(
         SourceKind::OpenClaw,
         super::openclaw::discover()
             .into_iter()
@@ -328,6 +335,13 @@ fn record_semantics(source: SourceKind, value: &Value, top_level: &str, audit: &
                 increment(&mut audit.semantic_types, &format!("message/{role}"));
                 record_content_blocks(message.get("content"), audit);
             }
+        }
+        SourceKind::Bitchtea => {
+            let message = value.get("msg").unwrap_or(value);
+            if let Some(role) = message.get("role").and_then(Value::as_str) {
+                increment(&mut audit.semantic_types, role);
+            }
+            record_content_blocks(message.get("content"), audit);
         }
         SourceKind::Opencode | SourceKind::Cursor | SourceKind::Copilot => {
             if let Some(role) = value.get("role").and_then(Value::as_str) {
