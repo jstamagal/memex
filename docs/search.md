@@ -106,7 +106,7 @@ is enabled by this evaluator.
 Index all supported sources by default. Use repeatable `--only-source <source>` or
 `--exclude-source <source>` options to select providers, and `--claude-path <path>`
 to use a non-default Claude projects directory. Index sources are `claude`, `codex`,
-`cursor`, `opencode`, `pi`, `omp`, `openclaw`, `copilot`, `grok`, `hermes`, `jcode`,
+`cursor`, `opencode`, `pi`, `js`, `omp`, `openclaw`, `copilot`, `grok`, `hermes`, `jcode`,
 `muse`, `antigravity`, `bob`, `zcode`, and `kilocode`.
 Hermes transcripts and usage are read from `state.db` under `~/.hermes` and its
 named profiles; `HERMES_PROFILE_ROOTS` (comma-separated paths) selects alternate
@@ -199,8 +199,9 @@ plus the durable per-session event revision when `event_sequence` is available.
 Without that revision, same-count replacements or edits that leave both maxima
 unchanged require an index rebuild; direct middle-row deletions are detected.
 
-The default scan indexes Pi sessions from `~/.pi/agent/sessions` and Oh My Pi sessions
-separately from `~/.omp/agent/sessions` plus named profile session directories.
+The default scan indexes Pi sessions from `~/.pi/agent/sessions`, js sessions from
+`~/.js/sessions` (override with comma-separated `JS_SESSIONS_DIR`), and Oh My Pi
+sessions separately from `~/.omp/agent/sessions` plus named profile session directories.
 
 Plaintext reasoning is excluded by default because it is usually low-value search noise. Opt
 in with `memex index --include-reasoning`; reasoning records remain BM25-only. Encrypted and
@@ -328,7 +329,7 @@ envelope. Its identifiers remain searchable through the `event_id` field.
 - `--role <user|assistant|tool_use|tool_result>`
 - `--tool <tool_name>`
 - `--session <session_id>`
-- `--source claude|codex|cursor|opencode|pi|omp|openclaw|copilot|grok|hermes|jcode|muse|antigravity|bob|zcode|kilocode`
+- `--source claude|codex|cursor|opencode|pi|js|omp|openclaw|copilot|grok|hermes|jcode|muse|antigravity|bob|zcode|kilocode`
 - `--since <iso|unix>` / `--until <iso|unix>`
 - `--limit <n>`
 - `--min-score <float>`

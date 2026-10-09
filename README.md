@@ -63,6 +63,7 @@ tool. **Import into** creates a conversation in another tool using the
 | Cursor | Yes | Yes | CLI sessions | No | Experimental |
 | OpenCode | Yes | Yes | Yes | No | Experimental |
 | Pi | Yes | Yes | Yes | No | Experimental |
+| js (Python harness) | Yes | Yes | Yes | No | No |
 | Oh My Pi | Yes | Yes | Yes | No | No |
 | OpenClaw | Yes | Yes | No | No | No |
 | GitHub Copilot CLI | Yes | Yes | Yes | No | Experimental |
@@ -83,6 +84,7 @@ tool. **Import into** creates a conversation in another tool using the
   ZCode reads `~/.zcode/cli/db/db.sqlite`, which its SSH-attached runtimes also
   write on remote hosts; `ZCODE_HOME` (comma-separated) indexes extra stores.
   Kiro reads `~/.kiro/sessions`; set `KIRO_SESSIONS_DIR` for copied sessions.
+  js reads `~/.js/sessions`; set `JS_SESSIONS_DIR` to comma-separated roots.
   KiloCode CLI reads `~/.local/share/kilo/kilo.db` (`$XDG_DATA_HOME/kilo/kilo.db`);
   set `KILO_DATA_DIR` (comma-separated) to index extra stores.
 - **Token usage is opt-in and depends on recorded counters.** Cost estimates are

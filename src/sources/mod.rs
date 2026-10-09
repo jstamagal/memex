@@ -15,6 +15,7 @@ pub mod cursor;
 pub mod grok;
 pub mod hermes;
 pub mod jcode;
+pub mod js;
 mod jsonl;
 pub mod kilocode;
 pub mod kiro;
@@ -285,6 +286,7 @@ pub fn versions(source: SourceKind) -> ParserVersions {
         SourceKind::Cursor => cursor::VERSIONS,
         SourceKind::Opencode => opencode::VERSIONS,
         SourceKind::Pi => pi::VERSIONS,
+        SourceKind::Js => js::VERSIONS,
         SourceKind::Omp => omp::VERSIONS,
         SourceKind::OpenClaw => openclaw::VERSIONS,
         SourceKind::Copilot => copilot::VERSIONS,
@@ -317,6 +319,7 @@ pub fn session_cwd(source: SourceKind, path: &Path, session_id: &str) -> Option<
             kilocode::session_cwd(path, session_id).map(|cwd| cwd.to_string_lossy().into_owned())
         }
         SourceKind::Hermes => hermes::session_cwd(path, session_id),
+        SourceKind::Js => js::session_cwd(path),
         _ => jsonl::scan_session_cwd(path, session_id),
     }
 }
@@ -348,6 +351,7 @@ fn state_store_roots() -> Vec<PathBuf> {
     roots.push(cursor::projects_root());
     roots.extend(opencode::data_roots());
     roots.push(pi::sessions_root());
+    roots.extend(js::roots());
     roots.extend(omp::session_roots());
     roots.extend(openclaw::state_dirs());
     roots.push(copilot::root());
@@ -373,6 +377,7 @@ pub fn index_state_version_for(source: SourceKind, include_reasoning: bool) -> u
             SourceKind::Claude
                 | SourceKind::Codex
                 | SourceKind::Pi
+                | SourceKind::Js
                 | SourceKind::Omp
                 | SourceKind::OpenClaw
                 | SourceKind::Opencode
@@ -417,6 +422,8 @@ pub fn classify_path(path: &str) -> SourceKind {
         SourceKind::Cursor
     } else if omp::matches_path(path) {
         SourceKind::Omp
+    } else if js::matches_path(path) {
+        SourceKind::Js
     } else if pi::matches_path(path) {
         SourceKind::Pi
     } else if openclaw::matches_path(path) {

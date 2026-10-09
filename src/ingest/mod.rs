@@ -65,6 +65,7 @@ pub struct IngestOptions {
     pub include_opencode: bool,
     pub include_cursor: bool,
     pub include_pi: bool,
+    pub include_js: bool,
     pub include_omp: bool,
     pub include_openclaw: bool,
     pub include_copilot: bool,

@@ -222,6 +222,7 @@ pub(super) enum IndexSource {
     Opencode,
     Cursor,
     Pi,
+    Js,
     Omp,
     #[value(alias = "open-claw")]
     Openclaw,
@@ -245,6 +246,7 @@ impl IndexArgs {
             IndexSource::Opencode => self.opencode && !self.no_opencode,
             IndexSource::Cursor => self.cursor,
             IndexSource::Pi => self.pi && !self.no_pi,
+            IndexSource::Js => true,
             IndexSource::Omp => self.omp && !self.no_omp,
             IndexSource::Openclaw => self.openclaw && !self.no_openclaw,
             IndexSource::Copilot => self.copilot && !self.no_copilot,

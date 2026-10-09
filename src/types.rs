@@ -10,6 +10,7 @@ pub enum SourceKind {
     Opencode,
     Cursor,
     Pi,
+    Js,
     OpenClaw,
     Copilot,
     Omp,
@@ -25,7 +26,7 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 17] = [
+    pub const ALL: [SourceKind; 18] = [
         SourceKind::Claude,
         SourceKind::Codex,
         SourceKind::Opencode,
@@ -43,6 +44,7 @@ impl SourceKind {
         SourceKind::Zcode,
         SourceKind::Kiro,
         SourceKind::Kilocode,
+        SourceKind::Js,
     ];
     pub const COUNT: usize = Self::ALL.len();
 
@@ -53,6 +55,7 @@ impl SourceKind {
             SourceKind::Opencode => 2,
             SourceKind::Cursor => 3,
             SourceKind::Pi => 4,
+            SourceKind::Js => 17,
             SourceKind::OpenClaw => 5,
             SourceKind::Copilot => 6,
             SourceKind::Omp => 7,
@@ -75,6 +78,7 @@ impl SourceKind {
             2 => Some(SourceKind::Opencode),
             3 => Some(SourceKind::Cursor),
             4 => Some(SourceKind::Pi),
+            17 => Some(SourceKind::Js),
             5 => Some(SourceKind::OpenClaw),
             6 => Some(SourceKind::Copilot),
             7 => Some(SourceKind::Omp),
@@ -98,6 +102,7 @@ impl SourceKind {
             SourceKind::Opencode => "opencode",
             SourceKind::Cursor => "cursor",
             SourceKind::Pi => "pi",
+            SourceKind::Js => "js",
             SourceKind::OpenClaw => "openclaw",
             SourceKind::Copilot => "copilot",
             SourceKind::Omp => "omp",
@@ -120,6 +125,7 @@ impl SourceKind {
             SourceKind::Opencode => "opencode",
             SourceKind::Cursor => "cursor",
             SourceKind::Pi => "pi",
+            SourceKind::Js => "js",
             SourceKind::OpenClaw => "openclaw",
             SourceKind::Copilot => "copilot",
             SourceKind::Omp => "omp",
@@ -146,6 +152,7 @@ impl SourceKind {
             "opencode" => Some(SourceKind::Opencode),
             "cursor" => Some(SourceKind::Cursor),
             "pi" => Some(SourceKind::Pi),
+            "js" => Some(SourceKind::Js),
             "openclaw" => Some(SourceKind::OpenClaw),
             "copilot" => Some(SourceKind::Copilot),
             "omp" => Some(SourceKind::Omp),
@@ -172,6 +179,7 @@ pub enum SourceFilter {
     Opencode,
     Cursor,
     Pi,
+    Js,
     #[value(name = "openclaw", alias = "open-claw")]
     OpenClaw,
     Copilot,
@@ -195,6 +203,7 @@ impl SourceFilter {
             SourceFilter::Opencode => source == SourceKind::Opencode,
             SourceFilter::Cursor => source == SourceKind::Cursor,
             SourceFilter::Pi => source == SourceKind::Pi,
+            SourceFilter::Js => source == SourceKind::Js,
             SourceFilter::OpenClaw => source == SourceKind::OpenClaw,
             SourceFilter::Copilot => source == SourceKind::Copilot,
             SourceFilter::Omp => source == SourceKind::Omp,
@@ -217,6 +226,7 @@ impl SourceFilter {
             SourceFilter::Opencode => &["opencode"],
             SourceFilter::Cursor => &["cursor"],
             SourceFilter::Pi => &["pi"],
+            SourceFilter::Js => &["js"],
             SourceFilter::OpenClaw => &["openclaw"],
             SourceFilter::Copilot => &["copilot"],
             SourceFilter::Omp => &["omp"],
@@ -239,6 +249,7 @@ impl SourceFilter {
             SourceFilter::Opencode => "opencode",
             SourceFilter::Cursor => "cursor",
             SourceFilter::Pi => "pi",
+            SourceFilter::Js => "js",
             SourceFilter::OpenClaw => "openclaw",
             SourceFilter::Copilot => "copilot",
             SourceFilter::Omp => "omp",

@@ -1,0 +1,10 @@
+{"id":"meta","parent":null,"kind":"session_metadata","ts":1780000000.125,"version":3,"cwd":"/work/alpha-beta","agent":"research","model":"opus:latest","mode":"repl"}
+{"id":"start","parent":null,"kind":"mark","ts":1780000000.126,"version":1,"marker":"session_start"}
+{"id":"u1","parent":"start","kind":"message","ts":1780000001.25,"version":1,"message":{"role":"user","content":"Where is the falcon cache?"}}
+{"id":"a1","parent":"u1","kind":"message","ts":1780000002.5,"version":1,"message":{"role":"assistant","content":"","reasoning_content":"Search the hidden cache.","tool_calls":[{"id":"call1","type":"function","function":{"name":"shell","arguments":"{\"command\":\"pwd\"}"}}]}}
+{"id":"t1","parent":"a1","kind":"message","ts":1780000003.5,"version":1,"message":{"role":"tool","name":"shell","tool_call_id":"call1","content":"shell=/bin/sh\nexit=0\n--- stdout ---\n/work/alpha-beta"}}
+{"id":"a2","parent":"t1","kind":"message","ts":1780000004.75,"version":1,"message":{"role":"assistant","content":"Falcon cache is in the project."}}
+{"id":"use1","parent":"a2","kind":"usage","ts":1780000005.25,"version":1,"call":{"model":"opus:latest","provider":"cpa","input_tokens":100,"output_tokens":20,"cache_read_tokens":80,"cache_write_tokens":0,"reasoning_tokens":2,"cost":0.01}}
+{"id":"tags1","parent":"a2","kind":"tags","ts":1780000005.5,"version":1,"tags":["cache","project"]}
+{"id":"title1","parent":"a2","kind":"title","ts":1780000005.75,"version":1,"title":"Falcon cache location"}
+malformed

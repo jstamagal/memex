@@ -90,6 +90,13 @@ fn roots(options: &IngestOptions) -> Vec<Root> {
     if options.include_cursor {
         roots.push(Root::new(sources::cursor::projects_root(), Shape::Cursor));
     }
+    if options.include_js {
+        roots.extend(
+            sources::js::roots()
+                .into_iter()
+                .map(|root| Root::new(root, Shape::Jsonl(SourceKind::Js))),
+        );
+    }
     if options.include_pi {
         roots.push(Root::new(
             sources::pi::sessions_root(),
@@ -560,6 +567,7 @@ mod tests {
             include_opencode: false,
             include_cursor: false,
             include_pi: false,
+            include_js: false,
             include_omp: false,
             include_openclaw: false,
             include_copilot: false,

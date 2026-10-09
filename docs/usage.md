@@ -10,7 +10,7 @@ Token tracking is disabled by default because it scans and caches local agent lo
 token_usage = true
 ```
 
-Then reconstruct historical token usage from local Claude Code, Codex, Cursor, OpenCode, Pi, Oh My Pi, OpenClaw, Copilot, Grok, Hermes, Jcode, Muse, and IBM Bob records:
+Then reconstruct historical token usage from local Claude Code, Codex, Cursor, OpenCode, Pi, js, Oh My Pi, OpenClaw, Copilot, Grok, Hermes, Jcode, Muse, and IBM Bob records:
 
 ```
 memex usage

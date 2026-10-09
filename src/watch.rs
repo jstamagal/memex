@@ -136,6 +136,9 @@ pub(crate) fn watch_roots(options: &IngestOptions) -> Vec<PathBuf> {
     if options.include_cursor {
         roots.push(crate::sources::cursor::projects_root());
     }
+    if options.include_js {
+        roots.extend(crate::sources::js::roots());
+    }
     if options.include_pi {
         roots.push(crate::sources::pi::sessions_root());
         roots.push(crate::sources::pi::agent_root());
@@ -815,6 +818,7 @@ mod tests {
             include_opencode: true,
             include_cursor: true,
             include_pi: true,
+            include_js: true,
             include_omp: true,
             include_openclaw: true,
             include_copilot: true,
@@ -934,6 +938,7 @@ mod tests {
         options.include_opencode = false;
         options.include_cursor = false;
         options.include_pi = false;
+        options.include_js = false;
         options.include_omp = false;
         options.include_openclaw = false;
         options.include_copilot = false;

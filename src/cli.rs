@@ -348,7 +348,7 @@ OUTPUT FIELDS (--fields):
         /// Filter by session ID
         #[arg(long, help_heading = "Filters")]
         session: Option<String>,
-        /// Filter by source: claude, codex, cursor, opencode, pi, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
         #[arg(long, help_heading = "Filters")]
         source: Option<SourceFilter>,
         /// Filter by origin: regular (default), interactive, subagent, or all (includes permission reviews)
@@ -686,7 +686,7 @@ EXAMPLES:
         /// Filter by project (repository grouping)
         #[arg(long)]
         project: Option<String>,
-        /// Filter by source: claude, codex, cursor, opencode, pi, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
         #[arg(long)]
         source: Option<SourceFilter>,
         /// Only include sessions active on or after this date/timestamp
@@ -735,7 +735,7 @@ EXAMPLES:
     memex usage --source codex --since 2026-07-01
     memex usage --format json")]
     Usage {
-        /// Filter by source: claude, codex, cursor, opencode, pi, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, or muse
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, or muse
         #[arg(long)]
         source: Option<SourceFilter>,
         /// Session origin; all includes permission-review usage
@@ -936,7 +936,7 @@ enum HerdrCommand {
         /// Refuse when no resumable session exists in --cwd instead of using another project
         #[arg(long)]
         strict_cwd: bool,
-        /// Filter by source: claude, codex, cursor, opencode, pi, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
         #[arg(long)]
         source: Option<SourceFilter>,
         /// Path to memex data directory [default: ~/.memex]
@@ -2696,6 +2696,7 @@ fn build_ingest_options(index: &IndexArgs, config: &UserConfig) -> Result<Ingest
         include_opencode: index.source_enabled(IndexSource::Opencode),
         include_cursor: index.source_enabled(IndexSource::Cursor),
         include_pi: index.source_enabled(IndexSource::Pi),
+        include_js: index.source_enabled(IndexSource::Js),
         include_omp: index.source_enabled(IndexSource::Omp),
         include_openclaw: index.source_enabled(IndexSource::Openclaw),
         include_copilot: index.source_enabled(IndexSource::Copilot),
@@ -6019,6 +6020,7 @@ fn run_share(session_id: String, title: Option<String>, root: Option<PathBuf>) -
         crate::types::SourceKind::Opencode => "opencode",
         crate::types::SourceKind::Cursor => "cursor",
         crate::types::SourceKind::Pi => "pi",
+        crate::types::SourceKind::Js => "js",
         crate::types::SourceKind::OpenClaw => "openclaw",
         crate::types::SourceKind::Copilot => "copilot",
         crate::types::SourceKind::Grok => "grok",
@@ -7520,7 +7522,11 @@ fn service_environment_variables(paths: Option<&Paths>) -> Result<Vec<(String, S
         vars.push(("HF_HOME".to_string(), embed_cache));
     }
 
-    for key in ["PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR"] {
+    for key in [
+        "PI_CODING_AGENT_DIR",
+        "PI_CODING_AGENT_SESSION_DIR",
+        "JS_SESSIONS_DIR",
+    ] {
         if let Some(value) = std::env::var_os(key)
             && !value.is_empty()
         {

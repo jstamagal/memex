@@ -1448,6 +1448,9 @@ fn resolve_session_cwd_from_parts(
     {
         return Some(cwd.to_string_lossy().to_string());
     }
+    if source == SourceKind::Js {
+        return crate::sources::js::session_cwd(Path::new(source_path));
+    }
     if source == SourceKind::Kiro {
         return crate::sources::kiro::session_cwd(Path::new(source_path));
     }
@@ -2138,6 +2141,13 @@ fn extract_session_label(
         SourceKind::Jcode => {
             if let Some(text) = jcode_label_from_file(source_path) {
                 text
+            } else {
+                first_user_text?.to_string()
+            }
+        }
+        SourceKind::Js => {
+            if let Some(title) = crate::sources::js::session_title(Path::new(source_path)) {
+                title
             } else {
                 first_user_text?.to_string()
             }

@@ -54,6 +54,7 @@ pub fn resume_template(config: &UserConfig, source: SourceKind, remote: bool) ->
         SourceKind::Opencode => config.opencode_resume_cmd.clone(),
         SourceKind::Cursor => config.cursor_resume_cmd.clone(),
         SourceKind::Pi => config.pi_resume_cmd.clone(),
+        SourceKind::Js => None,
         SourceKind::Omp => config.omp_resume_cmd.clone(),
         SourceKind::OpenClaw => return None,
         SourceKind::Copilot => config.copilot_resume_cmd.clone(),
@@ -88,6 +89,9 @@ pub fn default_resume_template(cmd: &str, remote: bool) -> Option<String> {
         "pi" if remote || find_in_path("pi").is_some() => {
             Some("pi --session {source_path_shell}".to_string())
         }
+        "js" if remote || find_in_path("js").is_some() => {
+            Some("cd {cwd_shell} && js -a {agent_shell} -s {session_id_shell}".to_string())
+        }
         "omp" if remote || find_in_path("omp").is_some() => {
             Some("omp --resume {source_path_shell}".to_string())
         }
@@ -120,7 +124,14 @@ pub fn default_resume_template(cmd: &str, remote: bool) -> Option<String> {
 }
 
 pub fn expand_resume_template(template: &str, session: &ResumeSession, cwd: &str) -> String {
+    let agent = if session.source == SourceKind::Js {
+        crate::sources::js::session_agent(Path::new(session.source_path))
+    } else {
+        String::new()
+    };
     template
+        .replace("{agent_shell}", &shell_quote(&agent))
+        .replace("{session_id_shell}", &shell_quote(session.session_id))
         .replace("{session_id}", session.session_id)
         .replace("{project}", session.project)
         .replace("{source}", session.source.label())
@@ -224,6 +235,31 @@ mod tests {
         assert_eq!(
             default_resume_template("omp", true).as_deref(),
             Some("omp --resume {source_path_shell}")
+        );
+    }
+
+    #[test]
+    fn js_resume_uses_recorded_agent_and_quotes_arguments() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("named session.jsonl");
+        std::fs::write(
+            &path,
+            r#"{"kind":"session_metadata","agent":"researcher's","cwd":"/work/o'brien"}"#,
+        )
+        .unwrap();
+        let path_string = path.to_string_lossy();
+        let session = ResumeSession {
+            source: SourceKind::Js,
+            session_id: "named session",
+            project: "o'brien",
+            source_path: &path_string,
+            source_dir: "",
+        };
+        let template = default_resume_template("js", true).unwrap();
+        let command = expand_resume_template(&template, &session, "/work/o'brien");
+        assert_eq!(
+            command,
+            "cd '/work/o'\\''brien' && js -a 'researcher'\\''s' -s 'named session'"
         );
     }
 

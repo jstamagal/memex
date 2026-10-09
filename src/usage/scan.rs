@@ -92,6 +92,10 @@ pub(crate) fn source_spec(filter: SourceFilter) -> SourceSpec {
             parser_version: crate::sources::pi::VERSIONS.usage,
             volatile_reuse_ms: no_volatile_reuse,
         },
+        SourceFilter::Js => SourceSpec {
+            parser_version: crate::sources::js::VERSIONS.usage,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
         SourceFilter::Omp => SourceSpec {
             parser_version: crate::sources::omp::VERSIONS.usage,
             volatile_reuse_ms: no_volatile_reuse,
@@ -158,6 +162,10 @@ pub(crate) fn source_files(filter: SourceFilter) -> Vec<PathBuf> {
             .collect(),
         SourceFilter::Opencode => crate::sources::opencode::usage_files(),
         SourceFilter::Pi => crate::sources::pi::discover(None)
+            .into_iter()
+            .map(|file| file.path)
+            .collect(),
+        SourceFilter::Js => crate::sources::js::discover(None)
             .into_iter()
             .map(|file| file.path)
             .collect(),
@@ -490,6 +498,7 @@ pub(crate) fn parse_source_file(
             crate::sources::opencode::parse_usage_file(path).map(FileParse::cacheable)
         }
         SourceFilter::Pi => crate::sources::pi::parse_usage_file(path).map(FileParse::cacheable),
+        SourceFilter::Js => crate::sources::js::parse_usage_file(path).map(FileParse::cacheable),
         SourceFilter::Omp => crate::sources::omp::parse_usage_file(path).map(FileParse::cacheable),
         SourceFilter::OpenClaw => {
             crate::sources::openclaw::parse_usage_file(path).map(FileParse::cacheable)
@@ -595,6 +604,27 @@ pub(crate) fn scan_pi(
         warnings,
         out,
         |path| crate::sources::pi::parse_usage_file(path).map(FileParse::cacheable),
+    );
+    Ok(())
+}
+
+pub(crate) fn scan_js(
+    out: &mut Vec<UsageEvent>,
+    warnings: &mut Vec<String>,
+    cache: Option<&mut UsageCache>,
+) -> Result<()> {
+    let files = source_files(SourceFilter::Js);
+    scan_files_cached(
+        SourceScan {
+            source: "js",
+            parser_version: crate::sources::js::VERSIONS.usage,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
+        &files,
+        cache,
+        warnings,
+        out,
+        |path| crate::sources::js::parse_usage_file(path).map(FileParse::cacheable),
     );
     Ok(())
 }
@@ -910,11 +940,12 @@ pub(crate) type SourceScanner =
 
 /// Scanner ordinals double as merge tiebreaks: partitions are laid out and merged in
 /// this order, reproducing the combined assembly's stable sort exactly.
-pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 17] = [
+pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 18] = [
     (SourceFilter::Claude, scan_claude),
     (SourceFilter::Codex, scan_codex),
     (SourceFilter::Opencode, scan_opencode),
     (SourceFilter::Pi, scan_pi),
+    (SourceFilter::Js, scan_js),
     (SourceFilter::Omp, scan_omp),
     (SourceFilter::OpenClaw, scan_openclaw),
     (SourceFilter::Cursor, scan_cursor),

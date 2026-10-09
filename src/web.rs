@@ -1418,6 +1418,7 @@ fn parse_source(value: &str) -> Result<SourceFilter> {
         "opencode" => Ok(SourceFilter::Opencode),
         "cursor" => Ok(SourceFilter::Cursor),
         "pi" => Ok(SourceFilter::Pi),
+        "js" => Ok(SourceFilter::Js),
         "omp" => Ok(SourceFilter::Omp),
         "openclaw" | "open-claw" => Ok(SourceFilter::OpenClaw),
         "copilot" => Ok(SourceFilter::Copilot),
