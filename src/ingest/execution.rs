@@ -140,6 +140,40 @@ pub(super) fn parse_hermes_file(
     )
 }
 
+pub(super) fn parse_forge_file(
+    task: &FileTask,
+    include_reasoning: bool,
+    tx_record: &RecordSender,
+    tx_update: &Sender<FileUpdate>,
+    next_doc_id: &AtomicU64,
+    progress: &Arc<Progress>,
+) -> Result<()> {
+    let source_path = task.path.to_string_lossy().to_string();
+    let parsed = crate::sources::forge::parse_index_records(
+        &task.path,
+        crate::sources::IndexParseState {
+            offset: task.offset,
+            turn_id: task.turn_id,
+            legacy_turn_id: task.legacy_turn_id,
+            pending_tool_calls: task.pending_tool_calls.clone(),
+        },
+        include_reasoning,
+        next_doc_id,
+        |record| {
+            progress.add_produced(SourceKind::Forge, 1);
+            tx_record.send(record)
+        },
+    )?;
+    finish_source_parse(
+        task,
+        tx_update,
+        progress,
+        SourceKind::Forge,
+        source_path,
+        parsed,
+    )
+}
+
 pub(super) fn parse_zcode_file(
     task: &FileTask,
     include_reasoning: bool,
@@ -1021,6 +1055,14 @@ impl ParserContext<'_> {
                     self.progress,
                 ),
                 SourceKind::Grok => parse_grok_session(
+                    task,
+                    self.options.include_reasoning,
+                    self.records,
+                    self.updates,
+                    self.next_id,
+                    self.progress,
+                ),
+                SourceKind::Forge => parse_forge_file(
                     task,
                     self.options.include_reasoning,
                     self.records,

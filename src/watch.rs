@@ -161,6 +161,9 @@ pub(crate) fn watch_roots(options: &IngestOptions) -> Vec<PathBuf> {
     if options.include_hermes {
         roots.extend(crate::sources::hermes::watch_roots());
     }
+    if options.include_forge {
+        roots.extend(crate::sources::forge::roots());
+    }
     if options.include_jcode {
         roots.push(crate::sources::jcode::sessions_root());
     }
@@ -232,6 +235,7 @@ fn interesting_event_paths(event: &Event, excluder: &PathExcluder) -> (Vec<PathB
                     || crate::sources::zcode::db_paths().contains(&database)
                     || crate::sources::kilocode::db_paths().contains(&database)
                     || crate::sources::hermes::is_configured_database(&database)
+                    || crate::sources::forge::database_paths().contains(&database)
                     || (crate::sources::antigravity::is_db_path(&database)
                         && crate::sources::antigravity::matches_path(&database.to_string_lossy()))
             })
@@ -745,13 +749,14 @@ impl WatchService {
             let reader = CheckpointReader::open(&paths.state.join("ingest.json"))?;
             sweep_candidates(&reader, cutoff)?
         };
-        // A Bob/ZCode/KiloCode database with no indexed session yet has no state key; seed it
+        // A Bob/ZCode/KiloCode/Forge database with no indexed session yet has no state key; seed it
         // from the configuration whenever this daemon watches its directory, so the first
         // commits through a held-open WAL are noticed too.
         for database in crate::sources::bob::database_paths()
             .into_iter()
             .chain(crate::sources::zcode::db_paths())
             .chain(crate::sources::kilocode::db_paths())
+            .chain(crate::sources::forge::database_paths())
         {
             if database.is_file()
                 && crate::sources::bob::canonical_alias(&database)
@@ -828,6 +833,7 @@ mod tests {
             include_copilot: true,
             include_grok: true,
             include_hermes: true,
+            include_forge: true,
             include_jcode: true,
             include_muse: true,
             include_antigravity: true,
@@ -949,6 +955,7 @@ mod tests {
         options.include_copilot = false;
         options.include_grok = false;
         options.include_hermes = false;
+        options.include_forge = false;
         options.include_jcode = false;
         options.include_muse = false;
         options.include_antigravity = false;

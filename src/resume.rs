@@ -61,6 +61,7 @@ pub fn resume_template(config: &UserConfig, source: SourceKind, remote: bool) ->
         SourceKind::Copilot => config.copilot_resume_cmd.clone(),
         SourceKind::Grok => config.grok_resume_cmd.clone(),
         SourceKind::Hermes => None,
+        SourceKind::Forge => None,
         SourceKind::Jcode => config.jcode_resume_cmd.clone(),
         SourceKind::Muse => config.muse_resume_cmd.clone(),
         SourceKind::Antigravity => config.antigravity_resume_cmd.clone(),
@@ -107,6 +108,9 @@ pub fn default_resume_template(cmd: &str, remote: bool) -> Option<String> {
         }
         "muse" if remote || find_in_path("muse").is_some() => {
             Some("cd {cwd_shell} && muse resume {session_id}".to_string())
+        }
+        "forge" if remote || find_in_path("forge").is_some() => {
+            Some("cd {cwd_shell} && forge --conversation-id {session_id}".to_string())
         }
         "grok" if remote || find_in_path("grok").is_some() => {
             Some("cd {cwd_shell} && grok --resume {session_id}".to_string())

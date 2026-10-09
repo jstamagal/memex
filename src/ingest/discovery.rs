@@ -72,6 +72,9 @@ pub(super) fn discover_transcripts(
     if options.include_hermes && full_scan {
         files.extend(crate::sources::hermes::discover());
     }
+    if options.include_forge && full_scan {
+        files.extend(crate::sources::forge::discover());
+    }
     if options.include_jcode && full_scan {
         files.extend(crate::sources::jcode::discover());
     }
@@ -342,6 +345,13 @@ fn journal_hints(
                         .filter(|database| database.is_file()),
                 );
             }
+            if options.include_forge {
+                paths.extend(
+                    crate::sources::forge::database_paths()
+                        .into_iter()
+                        .filter(|database| database.is_file()),
+                );
+            }
             // KiloCode writes the same way: WAL-only commits leave no checkpoint
             // to sweep from until the first full index sees the store.
             if options.include_kilocode {
@@ -502,7 +512,7 @@ pub(super) fn prepare_file_task(
     if (source == SourceKind::Antigravity && crate::sources::antigravity::is_db_path(&path))
         || matches!(
             source,
-            SourceKind::Hermes | SourceKind::Zcode | SourceKind::Kilocode
+            SourceKind::Hermes | SourceKind::Forge | SourceKind::Zcode | SourceKind::Kilocode
         )
     {
         identity.sqlite_wal = Some(crate::state::SqliteWalIdentity::read(&path));

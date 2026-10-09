@@ -101,6 +101,7 @@ pub fn audit_installed_sources(source: Option<SourceFilter>) -> Result<Vec<Sourc
             .map(|file| file.path)
             .collect(),
     );
+    push(SourceKind::Forge, Vec::new());
     push(
         SourceKind::Jcode,
         super::jcode::discover()
@@ -388,6 +389,7 @@ fn record_semantics(source: SourceKind, value: &Value, top_level: &str, audit: &
                 increment(&mut audit.semantic_types, "records");
             }
         }
+        SourceKind::Forge => {}
         SourceKind::Antigravity => {
             increment(&mut audit.semantic_types, top_level);
             if value.get("tool_calls").and_then(Value::as_array).is_some() {

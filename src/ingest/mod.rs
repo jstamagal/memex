@@ -72,6 +72,7 @@ pub struct IngestOptions {
     pub include_copilot: bool,
     pub include_grok: bool,
     pub include_hermes: bool,
+    pub include_forge: bool,
     pub include_jcode: bool,
     pub include_muse: bool,
     pub include_antigravity: bool,

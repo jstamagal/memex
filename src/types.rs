@@ -24,16 +24,16 @@ pub enum SourceKind {
     Zcode,
     Kiro,
     Kilocode,
+    Forge,
 }
 
 impl SourceKind {
-    pub const ALL: [SourceKind; 19] = [
+    pub const ALL: [SourceKind; 20] = [
         SourceKind::Claude,
         SourceKind::Codex,
         SourceKind::Opencode,
         SourceKind::Cursor,
         SourceKind::Pi,
-        SourceKind::Bitchtea,
         SourceKind::OpenClaw,
         SourceKind::Copilot,
         SourceKind::Omp,
@@ -47,6 +47,8 @@ impl SourceKind {
         SourceKind::Kiro,
         SourceKind::Kilocode,
         SourceKind::Js,
+        SourceKind::Bitchtea,
+        SourceKind::Forge,
     ];
     pub const COUNT: usize = Self::ALL.len();
 
@@ -71,6 +73,7 @@ impl SourceKind {
             SourceKind::Zcode => 14,
             SourceKind::Kiro => 15,
             SourceKind::Kilocode => 16,
+            SourceKind::Forge => 19,
         }
     }
 
@@ -95,6 +98,7 @@ impl SourceKind {
             14 => Some(SourceKind::Zcode),
             15 => Some(SourceKind::Kiro),
             16 => Some(SourceKind::Kilocode),
+            19 => Some(SourceKind::Forge),
             _ => None,
         }
     }
@@ -120,6 +124,7 @@ impl SourceKind {
             SourceKind::Zcode => "zcode",
             SourceKind::Kiro => "kiro",
             SourceKind::Kilocode => "kilocode",
+            SourceKind::Forge => "forge",
         }
     }
 
@@ -144,6 +149,7 @@ impl SourceKind {
             SourceKind::Zcode => "zcode",
             SourceKind::Kiro => "kiro",
             SourceKind::Kilocode => "kilocode",
+            SourceKind::Forge => "forge",
         }
     }
 
@@ -172,6 +178,7 @@ impl SourceKind {
             "zcode" => Some(SourceKind::Zcode),
             "kiro" => Some(SourceKind::Kiro),
             "kilocode" => Some(SourceKind::Kilocode),
+            "forge" => Some(SourceKind::Forge),
             _ => None,
         }
     }
@@ -201,6 +208,7 @@ pub enum SourceFilter {
     Zcode,
     Kiro,
     Kilocode,
+    Forge,
 }
 
 impl SourceFilter {
@@ -225,6 +233,7 @@ impl SourceFilter {
             SourceFilter::Zcode => source == SourceKind::Zcode,
             SourceFilter::Kiro => source == SourceKind::Kiro,
             SourceFilter::Kilocode => source == SourceKind::Kilocode,
+            SourceFilter::Forge => source == SourceKind::Forge,
         }
     }
 
@@ -249,6 +258,7 @@ impl SourceFilter {
             SourceFilter::Zcode => &["zcode"],
             SourceFilter::Kiro => &["kiro"],
             SourceFilter::Kilocode => &["kilocode"],
+            SourceFilter::Forge => &["forge"],
         }
     }
 
@@ -273,6 +283,7 @@ impl SourceFilter {
             SourceFilter::Zcode => "zcode",
             SourceFilter::Kiro => "kiro",
             SourceFilter::Kilocode => "kilocode",
+            SourceFilter::Forge => "forge",
         }
     }
 }

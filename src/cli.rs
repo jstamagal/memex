@@ -163,6 +163,12 @@ struct IndexArgs {
     /// Skip indexing Hermes sessions
     #[arg(long = "no-hermes", default_value_t = false, hide = true)]
     no_hermes: bool,
+    /// Index ForgeCode conversations from ~/.forge/.forge.db
+    #[arg(long, default_value_t = true, hide = true)]
+    forge: bool,
+    /// Skip indexing ForgeCode conversations
+    #[arg(long = "no-forge", default_value_t = false, hide = true)]
+    no_forge: bool,
     /// Index Jcode sessions from ~/.jcode/sessions [default: true]
     #[arg(long, default_value_t = true, hide = true)]
     jcode: bool,
@@ -348,7 +354,7 @@ OUTPUT FIELDS (--fields):
         /// Filter by session ID
         #[arg(long, help_heading = "Filters")]
         session: Option<String>,
-        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, forge, jcode, muse, or kiro
         #[arg(long, help_heading = "Filters")]
         source: Option<SourceFilter>,
         /// Filter by origin: regular (default), interactive, subagent, or all (includes permission reviews)
@@ -686,7 +692,7 @@ EXAMPLES:
         /// Filter by project (repository grouping)
         #[arg(long)]
         project: Option<String>,
-        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, forge, jcode, muse, or kiro
         #[arg(long)]
         source: Option<SourceFilter>,
         /// Only include sessions active on or after this date/timestamp
@@ -735,7 +741,7 @@ EXAMPLES:
     memex usage --source codex --since 2026-07-01
     memex usage --format json")]
     Usage {
-        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, or muse
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, forge, jcode, or muse
         #[arg(long)]
         source: Option<SourceFilter>,
         /// Session origin; all includes permission-review usage
@@ -936,7 +942,7 @@ enum HerdrCommand {
         /// Refuse when no resumable session exists in --cwd instead of using another project
         #[arg(long)]
         strict_cwd: bool,
-        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, jcode, muse, or kiro
+        /// Filter by source: claude, codex, cursor, opencode, pi, js, bitchtea, omp (Oh My Pi), openclaw, copilot, grok, hermes, forge, jcode, muse, or kiro
         #[arg(long)]
         source: Option<SourceFilter>,
         /// Path to memex data directory [default: ~/.memex]
@@ -2703,6 +2709,7 @@ fn build_ingest_options(index: &IndexArgs, config: &UserConfig) -> Result<Ingest
         include_copilot: index.source_enabled(IndexSource::Copilot),
         include_grok: index.source_enabled(IndexSource::Grok),
         include_hermes: index.source_enabled(IndexSource::Hermes),
+        include_forge: index.source_enabled(IndexSource::Forge),
         include_jcode: index.source_enabled(IndexSource::Jcode),
         include_muse: index.source_enabled(IndexSource::Muse),
         include_antigravity: index.source_enabled(IndexSource::Antigravity),
@@ -6028,6 +6035,7 @@ fn run_share(session_id: String, title: Option<String>, root: Option<PathBuf>) -
         crate::types::SourceKind::Grok => "grok",
         crate::types::SourceKind::Omp => "omp",
         crate::types::SourceKind::Hermes => "hermes",
+        crate::types::SourceKind::Forge => "forge",
         crate::types::SourceKind::Jcode => "jcode",
         crate::types::SourceKind::Muse => "muse",
         crate::types::SourceKind::Antigravity => "antigravity",
@@ -7376,6 +7384,9 @@ fn build_index_command_args(
     }
     if !index.hermes || index.no_hermes {
         args.push("--no-hermes".to_string());
+    }
+    if !index.forge || index.no_forge {
+        args.push("--no-forge".to_string());
     }
     if !index.kiro || index.no_kiro {
         args.push("--no-kiro".to_string());
@@ -9031,6 +9042,8 @@ mod tests {
             no_grok: false,
             hermes: true,
             no_hermes: false,
+            forge: true,
+            no_forge: false,
             no_jcode: false,
             no_muse: false,
             no_antigravity: false,
@@ -9101,6 +9114,8 @@ mod tests {
             no_grok: false,
             hermes: true,
             no_hermes: false,
+            forge: true,
+            no_forge: false,
             no_jcode: false,
             no_muse: false,
             no_antigravity: false,
@@ -9164,6 +9179,8 @@ mod tests {
             no_grok: false,
             hermes: true,
             no_hermes: false,
+            forge: true,
+            no_forge: false,
             no_jcode: false,
             no_muse: false,
             no_antigravity: false,
@@ -9229,6 +9246,8 @@ mod tests {
             no_grok: false,
             hermes: true,
             no_hermes: false,
+            forge: true,
+            no_forge: false,
             no_jcode: false,
             no_muse: false,
             no_antigravity: false,

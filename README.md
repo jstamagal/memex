@@ -77,6 +77,7 @@ tool. **Import into** creates a conversation in another tool using the
 | KiloCode CLI | Yes | Yes | Yes | No | No |
 | Kiro CLI | Yes | Credits only | No | No | No |
 | Hermes | Yes | Yes | No | No | No |
+| forge (ForgeCode) | Yes | No counters recorded | Yes | No | No |
 
 - **History coverage depends on the local records a tool saves.** Cursor history
   comes from agent transcripts; its usage data comes from local databases.
@@ -90,6 +91,8 @@ tool. **Import into** creates a conversation in another tool using the
   to a comma-separated list of session directories for copied sessions.
   KiloCode CLI reads `~/.local/share/kilo/kilo.db` (`$XDG_DATA_HOME/kilo/kilo.db`);
   set `KILO_DATA_DIR` (comma-separated) to index extra stores.
+  forge reads `~/.forge/.forge.db` read-only; set `FORGE_DB` to comma-separated
+  database paths. Sessions resume with `forge --conversation-id`.
 - **Token usage is opt-in and depends on recorded counters.** Cost estimates are
   not subscription charges or quota balances. Hermes history and usage are read from
   its local `state.db`; plaintext reasoning is indexed only with `--include-reasoning`.

@@ -30,6 +30,7 @@ enum Shape {
     Copilot,
     Grok,
     Hermes,
+    Forge,
     Jcode,
     Muse,
     Antigravity,
@@ -137,6 +138,13 @@ fn roots(options: &IngestOptions) -> Vec<Root> {
             sources::hermes::profile_roots()
                 .into_iter()
                 .map(|root| Root::new(root, Shape::Hermes)),
+        );
+    }
+    if options.include_forge {
+        roots.extend(
+            sources::forge::database_paths()
+                .into_iter()
+                .map(|root| Root::new(root, Shape::Forge)),
         );
     }
     if options.include_jcode {
@@ -262,6 +270,7 @@ fn classify(root: &Root, path: &Path) -> Match {
         Shape::Hermes => {
             sources::hermes::is_database_in_root(&root.lexical, path).then_some(SourceKind::Hermes)
         }
+        Shape::Forge => (path == root.lexical).then_some(SourceKind::Forge),
         Shape::Jcode => {
             (name.starts_with("session_") && name.ends_with(".json")).then_some(SourceKind::Jcode)
         }
@@ -344,7 +353,7 @@ fn resolve(
         for root in roots {
             // Normalize before remapping: a configured root can be the database
             // file itself, with the WAL beside it rather than beneath it.
-            let lookup = if matches!(root.shape, Shape::Hermes) {
+            let lookup = if matches!(root.shape, Shape::Hermes | Shape::Forge) {
                 hermes_database_hint.as_deref().unwrap_or(hint)
             } else {
                 hint
@@ -374,6 +383,15 @@ fn resolve(
                     .and_then(|name| name.to_str())
                     .and_then(|name| name.strip_suffix("-wal"))
                     .filter(|name| name.ends_with(".db"))
+                    .map(|name| path.with_file_name(name))
+                    .unwrap_or(path),
+                Shape::Forge => path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| {
+                        name.strip_suffix("-wal")
+                            .or_else(|| name.strip_suffix("-journal"))
+                    })
                     .map(|name| path.with_file_name(name))
                     .unwrap_or(path),
                 Shape::Bob => path
@@ -581,6 +599,7 @@ mod tests {
             include_copilot: false,
             include_grok: false,
             include_hermes: false,
+            include_forge: false,
             include_jcode: false,
             include_muse: false,
             include_antigravity: false,

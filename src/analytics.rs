@@ -1479,6 +1479,9 @@ fn resolve_session_cwd_from_parts(
     {
         return Some(cwd.to_string_lossy().to_string());
     }
+    if source == SourceKind::Forge {
+        return crate::sources::forge::session_cwd(Path::new(source_path), session_id);
+    }
     let file = std::fs::File::open(source_path).ok()?;
     let reader = std::io::BufReader::new(file);
     let mut fallback: Option<String> = None;
@@ -2160,6 +2163,10 @@ fn extract_session_label(
             } else {
                 first_user_text?.to_string()
             }
+        }
+        SourceKind::Forge => {
+            crate::sources::forge::session_title(Path::new(source_path), session_id)
+                .or_else(|| first_user_text.map(str::to_string))?
         }
         SourceKind::Zcode => {
             if let Some(title) =

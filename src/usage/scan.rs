@@ -124,6 +124,10 @@ pub(crate) fn source_spec(filter: SourceFilter) -> SourceSpec {
             parser_version: crate::sources::hermes::VERSIONS.usage,
             volatile_reuse_ms: no_volatile_reuse,
         },
+        SourceFilter::Forge => SourceSpec {
+            parser_version: crate::sources::forge::VERSIONS.usage,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
         SourceFilter::Jcode => SourceSpec {
             parser_version: crate::sources::jcode::VERSIONS.usage,
             volatile_reuse_ms: no_volatile_reuse,
@@ -192,6 +196,10 @@ pub(crate) fn source_files(filter: SourceFilter) -> Vec<PathBuf> {
             .map(|file| file.path)
             .collect(),
         SourceFilter::Hermes => crate::sources::hermes::discover()
+            .into_iter()
+            .map(|file| file.path)
+            .collect(),
+        SourceFilter::Forge => crate::sources::forge::discover()
             .into_iter()
             .map(|file| file.path)
             .collect(),
@@ -524,6 +532,9 @@ pub(crate) fn parse_source_file(
             crate::sources::grok::parse_usage_file(path).map(FileParse::cacheable)
         }
         SourceFilter::Hermes => crate::sources::hermes::parse_usage_file(path),
+        SourceFilter::Forge => {
+            crate::sources::forge::parse_usage_file(path).map(FileParse::cacheable)
+        }
         SourceFilter::Bob => crate::sources::bob::parse_usage_file(path).map(FileParse::cacheable),
         SourceFilter::Zcode => crate::sources::zcode::parse_usage_file(path),
         SourceFilter::Kilocode => crate::sources::kilocode::parse_usage_file(path),
@@ -813,6 +824,27 @@ pub(crate) fn scan_hermes(
     Ok(())
 }
 
+pub(crate) fn scan_forge(
+    out: &mut Vec<UsageEvent>,
+    warnings: &mut Vec<String>,
+    cache: Option<&mut UsageCache>,
+) -> Result<()> {
+    let files = source_files(SourceFilter::Forge);
+    scan_files_cached(
+        SourceScan {
+            source: "forge",
+            parser_version: crate::sources::forge::VERSIONS.usage,
+            volatile_reuse_ms: no_volatile_reuse,
+        },
+        &files,
+        cache,
+        warnings,
+        out,
+        |path| crate::sources::forge::parse_usage_file(path).map(FileParse::cacheable),
+    );
+    Ok(())
+}
+
 pub(crate) fn scan_jcode(
     out: &mut Vec<UsageEvent>,
     warnings: &mut Vec<String>,
@@ -972,7 +1004,7 @@ pub(crate) type SourceScanner =
 
 /// Scanner ordinals double as merge tiebreaks: partitions are laid out and merged in
 /// this order, reproducing the combined assembly's stable sort exactly.
-pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 19] = [
+pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 20] = [
     (SourceFilter::Claude, scan_claude),
     (SourceFilter::Codex, scan_codex),
     (SourceFilter::Opencode, scan_opencode),
@@ -992,6 +1024,7 @@ pub(crate) const SCANNERS: [(SourceFilter, SourceScanner); 19] = [
     (SourceFilter::Zcode, scan_zcode),
     (SourceFilter::Kiro, scan_kiro),
     (SourceFilter::Kilocode, scan_kilocode),
+    (SourceFilter::Forge, scan_forge),
 ];
 
 /// Scan and reconcile one source partition. Shared by combined assembly and

@@ -13,6 +13,7 @@ pub mod codex;
 pub mod common;
 pub mod copilot;
 pub mod cursor;
+pub mod forge;
 pub mod grok;
 pub mod hermes;
 pub mod jcode;
@@ -294,6 +295,7 @@ pub fn versions(source: SourceKind) -> ParserVersions {
         SourceKind::Copilot => copilot::VERSIONS,
         SourceKind::Grok => grok::VERSIONS,
         SourceKind::Hermes => hermes::VERSIONS,
+        SourceKind::Forge => forge::VERSIONS,
         SourceKind::Jcode => jcode::VERSIONS,
         SourceKind::Muse => muse::VERSIONS,
         SourceKind::Antigravity => antigravity::VERSIONS,
@@ -322,6 +324,7 @@ pub fn session_cwd(source: SourceKind, path: &Path, session_id: &str) -> Option<
         }
         SourceKind::Hermes => hermes::session_cwd(path, session_id),
         SourceKind::Js => js::session_cwd(path),
+        SourceKind::Forge => forge::session_cwd(path, session_id),
         _ => jsonl::scan_session_cwd(path, session_id),
     }
 }
@@ -360,6 +363,11 @@ fn state_store_roots() -> Vec<PathBuf> {
     roots.push(copilot::root());
     roots.push(grok::root());
     roots.extend(hermes::profile_roots());
+    roots.extend(
+        forge::roots()
+            .into_iter()
+            .filter(|root| root.file_name().is_some_and(|name| name == ".forge")),
+    );
     roots.push(jcode::sessions_root());
     roots.push(muse::sessions_root());
     roots.extend(antigravity::profile_roots());
@@ -435,6 +443,8 @@ pub fn classify_path(path: &str) -> SourceKind {
         SourceKind::OpenClaw
     } else if copilot::matches_path(path) {
         SourceKind::Copilot
+    } else if forge::matches_path(path) {
+        SourceKind::Forge
     } else if hermes::matches_path(path) {
         SourceKind::Hermes
     } else {

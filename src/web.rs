@@ -1424,6 +1424,7 @@ fn parse_source(value: &str) -> Result<SourceFilter> {
         "copilot" => Ok(SourceFilter::Copilot),
         "grok" => Ok(SourceFilter::Grok),
         "hermes" => Ok(SourceFilter::Hermes),
+        "forge" => Ok(SourceFilter::Forge),
         "jcode" => Ok(SourceFilter::Jcode),
         "muse" => Ok(SourceFilter::Muse),
         "antigravity" => Ok(SourceFilter::Antigravity),

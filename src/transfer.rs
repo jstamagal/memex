@@ -1549,6 +1549,7 @@ fn resolve_cwd_from_source(records: &[Record]) -> Option<PathBuf> {
             crate::sources::grok::session_cwd(Path::new(&first.source_path)).map(PathBuf::from)
         }
         SourceKind::Hermes => None,
+        SourceKind::Forge => None,
         SourceKind::Jcode => {
             crate::sources::jcode::cwd_from_jcode_session(Path::new(&first.source_path))
         }
